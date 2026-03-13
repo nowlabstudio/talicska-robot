@@ -27,7 +27,6 @@ def generate_launch_description():
             "max_linear_vel":    2.22,
             "wheel_separation":  0.8,
             "rc_mode_threshold": 0.5,
-            "rc_timeout_s":      0.5,
             "publish_rate_hz":   50.0,
         }],
     )
