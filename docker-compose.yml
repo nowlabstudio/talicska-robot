@@ -1,3 +1,18 @@
+# Talicska robot — production stack
+#
+# Services managed here:
+#   microros_agent  — bridges RP2040 bridges (RC, Input, Tilt) to ROS2
+#   robot           — ros2_control + bringup (RoboClaw, EKF, Nav2)
+#
+# NOT managed here (separate stack):
+#   RealSense D435i — runs from robot/realsense-jetson/docker-compose.yml
+#                     Publishes /camera/camera/imu, /camera/camera/depth/*
+#                     on host network — visible to all containers.
+#
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f robot
+
 services:
 
   microros_agent:
@@ -15,14 +30,9 @@ services:
     env_file: .env
     devices:
       - /dev/bus/usb:/dev/bus/usb
+      - /dev/ttyUSB0:/dev/ttyUSB0   # RPLidar A2
     volumes:
       - /dev:/dev
-    command: ros2 launch robot_bringup hardware.launch.py tcp_host:=${ROBOCLAW_HOST:-192.168.68.60}
-
-  realsense:
-    image: nowlabstudio/realsense-jetson:latest
-    network_mode: host
-    restart: unless-stopped
-    devices:
-      - /dev/bus/usb:/dev/bus/usb
-    # TODO: refactor entrypoint to accept launch args (Phase 3)
+    command: >
+      ros2 launch robot_bringup hardware.launch.py
+      tcp_host:=${ROBOCLAW_HOST:-192.168.68.60}
