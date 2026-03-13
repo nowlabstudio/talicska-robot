@@ -6,13 +6,15 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
-find_package(rclcpp REQUIRED)
-find_package(rclcpp_action REQUIRED)
-find_package(std_msgs REQUIRED)
-find_package(geometry_msgs REQUIRED)
-find_package(nav_msgs REQUIRED)
-find_package(nav2_msgs REQUIRED)
-find_package(sensor_msgs REQUIRED)
+
+# Dependencies added in Phase 7 when nodes are implemented:
+# find_package(rclcpp REQUIRED)
+# find_package(rclcpp_action REQUIRED)
+# find_package(std_msgs REQUIRED)
+# find_package(geometry_msgs REQUIRED)
+# find_package(nav_msgs REQUIRED)
+# find_package(nav2_msgs REQUIRED)
+# find_package(sensor_msgs REQUIRED)
 
 # Placeholder: executables will be added in Phase 7
 # add_executable(mission_executive src/mission_executive.cpp)

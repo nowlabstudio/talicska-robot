@@ -6,11 +6,13 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
-find_package(rclcpp REQUIRED)
-find_package(std_msgs REQUIRED)
-find_package(sensor_msgs REQUIRED)
-find_package(geometry_msgs REQUIRED)
-find_package(nav_msgs REQUIRED)
+
+# Dependencies added in Phase 5 when safety_supervisor is implemented:
+# find_package(rclcpp REQUIRED)
+# find_package(std_msgs REQUIRED)
+# find_package(sensor_msgs REQUIRED)
+# find_package(geometry_msgs REQUIRED)
+# find_package(nav_msgs REQUIRED)
 
 # Placeholder: safety_supervisor executable will be added in Phase 5
 # add_executable(safety_supervisor src/safety_supervisor.cpp)
