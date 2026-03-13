@@ -44,7 +44,19 @@ def generate_launch_description():
         ],
     )
 
+    winch = Node(
+        package="robot_teleop",
+        executable="winch_node",
+        name="winch_node",
+        output="screen",
+        parameters=[{
+            "winch_threshold": 0.5,
+            "update_rate_hz":  50.0,
+        }],
+    )
+
     return LaunchDescription([
         rc_teleop,
         twist_mux,
+        winch,
     ])

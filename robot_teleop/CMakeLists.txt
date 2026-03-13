@@ -14,14 +14,13 @@ find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 
 add_executable(rc_teleop_node src/rc_teleop_node.cpp)
-ament_target_dependencies(rc_teleop_node
-  rclcpp
-  std_msgs
-  geometry_msgs
-)
+ament_target_dependencies(rc_teleop_node rclcpp std_msgs geometry_msgs)
+
+add_executable(winch_node src/winch_node.cpp)
+ament_target_dependencies(winch_node rclcpp std_msgs)
 
 install(
-  TARGETS rc_teleop_node
+  TARGETS rc_teleop_node winch_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
