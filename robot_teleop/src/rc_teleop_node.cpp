@@ -35,6 +35,7 @@
 #include <memory>
 
 #include "geometry_msgs/msg/twist.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float32.hpp"
 
@@ -47,15 +48,33 @@ public:
   RcTeleopNode()
   : Node("rc_teleop_node")
   {
-    this->declare_parameter("max_linear_vel",    2.22);  // m/s (8 km/h)
-    this->declare_parameter("wheel_separation",  0.8);   // m
-    this->declare_parameter("rc_mode_threshold", 0.5);   // ch5 > this = RC mode
+    this->declare_parameter("max_linear_vel",    2.22);   // m/s (8 km/h)
+    this->declare_parameter("wheel_separation",  0.8);    // m
+    this->declare_parameter("rc_mode_threshold", 0.5);    // |ch5| threshold
+    this->declare_parameter("rc_mode_invert",    false);  // true: low=RC, high=auto
     this->declare_parameter("publish_rate_hz",  50.0);
 
     max_linear_vel_    = this->get_parameter("max_linear_vel").as_double();
     wheel_separation_  = this->get_parameter("wheel_separation").as_double();
     rc_mode_threshold_ = this->get_parameter("rc_mode_threshold").as_double();
     double rate_hz     = this->get_parameter("publish_rate_hz").as_double();
+
+    // Runtime parameter update — no recompile needed:
+    //   ros2 param set /rc_teleop_node rc_mode_invert true
+    param_cb_handle_ = add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter> & params)
+      -> rcl_interfaces::msg::SetParametersResult {
+        for (const auto & p : params) {
+          if (p.get_name() == "rc_mode_invert") {
+            rc_mode_invert_ = p.as_bool();
+            RCLCPP_INFO(get_logger(), "rc_mode_invert set to %s",
+              rc_mode_invert_ ? "true (low=RC mode)" : "false (high=RC mode)");
+          }
+        }
+        rcl_interfaces::msg::SetParametersResult res;
+        res.successful = true;
+        return res;
+      });
 
     // --- subscriptions ---
     left_sub_ = create_subscription<std_msgs::msg::Float32>(
@@ -85,10 +104,15 @@ public:
       std::chrono::duration<double>(1.0 / rate_hz));
     timer_ = create_wall_timer(period, std::bind(&RcTeleopNode::publish_tick, this));
 
+    rc_mode_invert_ = this->get_parameter("rc_mode_invert").as_bool();
+
     RCLCPP_INFO(get_logger(),
-      "RC teleop ready. max_vel=%.2f m/s, wheel_sep=%.2f m, mode_threshold=%.1f. "
-      "RC receiver failsafe must be set to: ch5=high (RC mode), motors=0.",
-      max_linear_vel_, wheel_separation_, rc_mode_threshold_);
+      "RC teleop ready. max_vel=%.2f m/s, wheel_sep=%.2f m, "
+      "mode_threshold=%.1f, rc_mode_invert=%s. "
+      "RC receiver failsafe must be set to: ch5=%s (RC mode), motors=0.",
+      max_linear_vel_, wheel_separation_, rc_mode_threshold_,
+      rc_mode_invert_ ? "true" : "false",
+      rc_mode_invert_ ? "LOW" : "HIGH");
   }
 
 private:
@@ -96,7 +120,11 @@ private:
   {
     geometry_msgs::msg::Twist twist;
 
-    if (rc_mode_ > rc_mode_threshold_) {
+    const bool in_rc_mode = rc_mode_invert_
+      ? (rc_mode_ < -rc_mode_threshold_)   // inverted: low = RC mode
+      : (rc_mode_ >  rc_mode_threshold_);  // normal:   high = RC mode
+
+    if (in_rc_mode) {
       // RC mode: kinematic inversion of motor values (-1..+1) → Twist
       const double v_left  = motor_left_  * max_linear_vel_;
       const double v_right = motor_right_ * max_linear_vel_;
@@ -114,6 +142,9 @@ private:
   double max_linear_vel_;
   double wheel_separation_;
   double rc_mode_threshold_;
+  bool   rc_mode_invert_ = false;
+
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 
   float motor_left_  = 0.0f;
   float motor_right_ = 0.0f;
