@@ -67,6 +67,21 @@ def generate_launch_description():
         ],
     )
 
+    # -------------------------------------------------------------- safety ----
+    # Delay 4 s — after hardware is up, before Nav2 starts publishing cmd_vel_raw.
+    # Safety Supervisor gates cmd_vel_raw → cmd_vel for diff_drive_controller.
+    safety = TimerAction(
+        period=4.0,
+        actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    PathJoinSubstitution([
+                        FindPackageShare("robot_safety"), "launch", "safety.launch.py"
+                    ])),
+            )
+        ],
+    )
+
     # ------------------------------------------------------------- navigation --
     # Delay 6 s so /scan and /odom_combined are publishing before SLAM subscribes
     navigation = TimerAction(
@@ -90,5 +105,6 @@ def generate_launch_description():
         serial_port_arg,
         hardware,
         sensors,
+        safety,
         navigation,
     ])

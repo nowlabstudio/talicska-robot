@@ -137,8 +137,9 @@ def generate_launch_description():
         output="screen",
         parameters=[params_file],
         remappings=[
-            ("cmd_vel",     "cmd_vel_nav"),
-            ("cmd_vel_smoothed", "cmd_vel"),
+            ("cmd_vel",          "cmd_vel_nav"),
+            # Output to cmd_vel_raw so safety_supervisor can gate it
+            ("cmd_vel_smoothed", "cmd_vel_raw"),
         ],
     )
 
