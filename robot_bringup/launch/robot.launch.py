@@ -3,8 +3,10 @@ robot.launch.py — Master launch file for the Talicska robot
 
 Launches the full stack in dependency order:
   1. hardware.launch.py   — robot_state_publisher + ros2_control + diff_drive
-  2. sensors.launch.py    — RPLidar + EKF
-  3. navigation.launch.py — SLAM Toolbox + Nav2
+  2. teleop.launch.py     — rc_teleop_node + twist_mux  (+2 s)
+  3. sensors.launch.py    — RPLidar + EKF               (+3 s)
+  4. safety.launch.py     — Safety Supervisor            (+4 s)
+  5. navigation.launch.py — SLAM Toolbox + Nav2          (+6 s)
 
 Arguments are passed through to the relevant sub-launches.
 
@@ -50,6 +52,21 @@ def generate_launch_description():
         launch_arguments={
             "tcp_host": LaunchConfiguration("tcp_host"),
         }.items(),
+    )
+
+    # --------------------------------------------------------------- teleop ---
+    # Delay 2 s — rc_teleop + twist_mux up before sensors/safety/nav.
+    # RC mode is immediately available; twist_mux ready for Nav2 when it starts.
+    teleop = TimerAction(
+        period=2.0,
+        actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    PathJoinSubstitution([
+                        FindPackageShare("robot_teleop"), "launch", "teleop.launch.py"
+                    ])),
+            )
+        ],
     )
 
     # --------------------------------------------------------------- sensors --
@@ -104,6 +121,7 @@ def generate_launch_description():
         map_file_arg,
         serial_port_arg,
         hardware,
+        teleop,
         sensors,
         safety,
         navigation,

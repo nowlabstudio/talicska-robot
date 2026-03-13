@@ -1,0 +1,27 @@
+# twist_mux — multiplexer for cmd_vel sources
+#
+# Priority: higher number wins.
+# Timeout: if no message for this many seconds, topic is considered inactive
+#          and the next lower priority source takes over.
+#
+# Sources:
+#   rc         — RC teleop (priority 20): active when rc_teleop publishes
+#                Becomes inactive when RC mode is off or signal lost.
+#                twist_mux timeout then falls through to navigation.
+#   navigation — Nav2 (priority 10): active when SLAM/Nav2 is running.
+#
+# The output /cmd_vel_raw is consumed by safety_supervisor,
+# which gates it to /cmd_vel for diff_drive_controller.
+
+twist_mux:
+  ros__parameters:
+    topics:
+      rc:
+        topic:    /cmd_vel_rc
+        timeout:  0.5    # 0.5s without RC msg → fall through to nav
+        priority: 20
+      navigation:
+        topic:    /cmd_vel_nav2
+        timeout:  0.5
+        priority: 10
+    locks: []

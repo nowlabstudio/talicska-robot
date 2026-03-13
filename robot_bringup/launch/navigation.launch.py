@@ -138,8 +138,8 @@ def generate_launch_description():
         parameters=[params_file],
         remappings=[
             ("cmd_vel",          "cmd_vel_nav"),
-            # Output to cmd_vel_raw so safety_supervisor can gate it
-            ("cmd_vel_smoothed", "cmd_vel_raw"),
+            # Output to cmd_vel_nav2 — twist_mux mixes this with /cmd_vel_rc
+            ("cmd_vel_smoothed", "cmd_vel_nav2"),
         ],
     )
 
