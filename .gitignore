@@ -1,0 +1,17 @@
+# ROS2 / colcon
+build/
+install/
+log/
+*.pyc
+__pycache__/
+
+# Docker
+.env.local
+
+# Editor
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store

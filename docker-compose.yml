@@ -1,0 +1,29 @@
+services:
+
+  microros_agent:
+    image: microros/micro-ros-agent:jazzy
+    network_mode: host
+    restart: unless-stopped
+    command: udp4 -p ${MICROROS_AGENT_PORT:-8888}
+
+  robot:
+    build: .
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - microros_agent
+    env_file: .env
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    volumes:
+      - /dev:/dev
+    # TODO: command will be added in Phase 2
+    # command: ros2 launch robot_bringup robot.launch.py
+
+  realsense:
+    image: nowlabstudio/realsense-jetson:latest
+    network_mode: host
+    restart: unless-stopped
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    # TODO: refactor entrypoint to accept launch args (Phase 3)
