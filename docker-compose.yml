@@ -33,6 +33,7 @@ services:
       - /dev/ttyUSB0:/dev/ttyUSB0   # RPLidar A2
     volumes:
       - /dev:/dev
+      - ./cyclonedds.xml:/root/talicska-robot/cyclonedds.xml:ro
     command: >
       ros2 launch robot_bringup hardware.launch.py
       tcp_host:=${ROBOCLAW_HOST:-192.168.68.60}

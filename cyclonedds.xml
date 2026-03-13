@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  CycloneDDS configuration for Talicska robot (Jetson Orin Nano)
+
+  Goals:
+  - Bind to the lab LAN interface (192.168.68.x) only — avoids docker0 conflicts
+  - Cap historical data (WHC) and receiver buffers for 8 GB Jetson RAM
+  - Keep discovery local (no multicast beyond lab subnet)
+
+  Usage:
+    export CYCLONEDDS_URI=file:///path/to/cyclonedds.xml
+    or set via docker-compose env_file
+
+  Tune NetworkInterfaceAddress to match the actual Jetson NIC name
+  (check with: ip -br addr | grep 192.168.68)
+-->
+<CycloneDDS>
+  <Domain>
+    <General>
+      <!-- Bind only to lab LAN — adjust if NIC name differs -->
+      <NetworkInterfaceAddress>192.168.68.125</NetworkInterfaceAddress>
+      <AllowMulticast>true</AllowMulticast>
+      <MaxMessageSize>65500B</MaxMessageSize>
+    </General>
+
+    <Internal>
+      <!-- Watermark-based Historical Cache: limit memory on Jetson -->
+      <Watermarks>
+        <WhcHigh>8MB</WhcHigh>
+        <WhcLow>4MB</WhcLow>
+        <WhcUnreliable>1MB</WhcUnreliable>
+      </Watermarks>
+
+      <!-- Receive buffer: 4 MB (kernel default is often 212 kB) -->
+      <SocketReceiveBufferSize min="4MB"/>
+    </Internal>
+
+    <Discovery>
+      <!-- Restrict discovery to lab subnet -->
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>32</MaxAutoParticipantIndex>
+    </Discovery>
+
+    <Tracing>
+      <!-- Set to "warning" or "info" for debugging; "none" for production -->
+      <Verbosity>warning</Verbosity>
+      <OutputFile>/tmp/cyclonedds.log</OutputFile>
+    </Tracing>
+  </Domain>
+</CycloneDDS>
