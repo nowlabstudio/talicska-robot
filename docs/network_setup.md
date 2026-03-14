@@ -17,16 +17,13 @@
 Jetson ETH1 (eth1, DHCP, 192.168.68.x)   ← lab LAN, internet, SSH hozzáférés
 Jetson ETH0 (eth0, static, 10.0.10.1)    ← robot belső hálózat
     │
-   SW1 (TL-SG105E, 8-port managed)
+   SW1 (6-port managed)
     ├── port 1 ── Jetson ETH0       (10.0.10.1)
     ├── port 2 ── RC bridge         (10.0.10.22)  RP2040 + W6100
     ├── port 3 ── E-Stop bridge     (10.0.10.23)  RP2040 + W6100
-    ├── port 4 ── Pedal bridge      (10.0.10.21)  RP2040 + W6100  [ÜRES]
-    └── port 5 ──────────────────────────────── SW2/1 (uplink)
-                                                 ├── SW2/2 ── RoboClaw / USR-K6  (10.0.10.24)  M1, M2
-                                                 ├── SW2/3 ── Sabertooth          (10.0.10.25)  M3 (billencs)
-                                                 ├── SW2/4 ── (üres)
-                                                 └── SW2/5 ── (üres)
+    ├── port 4 ── RoboClaw / USR-K6 (10.0.10.24)  M1, M2
+    ├── port 5 ── Pedal bridge      (10.0.10.21)  RP2040 + W6100  [ÜRES]
+    └── port 6 ── Sabertooth        (10.0.10.25)  M3 (billencs)   [ÜRES]
 
 Jetson USB3 ── RealSense D435i
 Jetson USB  ── RPLidar A2  (/dev/ttyUSB0)
@@ -135,25 +132,16 @@ Ez egyszerre:
 
 ## Switch Port Mapping
 
-### SW1 (TL-SG105E — robot vezérlő switch)
+### SW1 (6-port managed switch)
 
 | Port | Eszköz               | IP          | Megjegyzés                |
 |------|----------------------|-------------|---------------------------|
 | 1    | Jetson ETH0          | 10.0.10.1   |                           |
 | 2    | RC bridge            | 10.0.10.22  |                           |
 | 3    | E-Stop bridge        | 10.0.10.23  |                           |
-| 4    | Pedal bridge         | 10.0.10.21  | ⏳ nincs bekötve           |
-| 5    | Uplink → SW2/1       | —           |                           |
-
-### SW2 (5-port switch — motorvezérlő switch)
-
-| Port | Eszköz               | IP          | Megjegyzés                |
-|------|----------------------|-------------|---------------------------|
-| 1    | Uplink ← SW1/5       | —           |                           |
-| 2    | RoboClaw / USR-K6    | 10.0.10.24  |                           |
-| 3    | Sabertooth (ETH)     | 10.0.10.25  | ⏳ nincs bekötve           |
-| 4    | (üres)               | —           |                           |
-| 5    | (üres)               | —           |                           |
+| 4    | RoboClaw / USR-K6    | 10.0.10.24  |                           |
+| 5    | Pedal bridge         | 10.0.10.21  | ⏳ nincs bekötve           |
+| 6    | Sabertooth (ETH)     | 10.0.10.25  | ⏳ nincs bekötve           |
 
 ---
 
