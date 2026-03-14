@@ -171,6 +171,15 @@ hatás. Node logikailag helyes, de élőben egyáltalán nem lett tesztelve.
 **Prompt:** `memory/prompt_ekf_tuning.md`
 Éles tesztelés után, valódi robot dinamika alapján.
 
+### Task #3 — Robot belső hálózat külön subnet | ⏳ JÖVŐBELI
+**Mikor:** miután minden eszköz asztalon működik és stabil.
+**Indok:** Jelenleg Jetson eth0 (robot) és eth1 (LAN) azonos 192.168.68.x/24 subneten
+van — Linux routing konfliktus lehetséges. Külön subnet (pl. 192.168.10.x) ezt tisztán
+megoldja, de jelenleg ne vigyen be plusz konfigurációs pontot (managed switch VLAN stb.).
+**Lépések:** robot eszközök átcímezése (RP2040 firmware, USR-K6, Sabertooth), .env,
+netplan — részletek: `docs/network_setup.md`.
+
+
 ### Fázis 8 — Remote access + headless operation
 Nincs még spec.
 
