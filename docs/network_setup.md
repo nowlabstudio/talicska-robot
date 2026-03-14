@@ -95,14 +95,36 @@ SW1 port 4  ←→  RoboClaw USR-K6 (Ethernet)
 
 ---
 
-### Lépés 2 — Jetson netplan
+### Lépés 2 — Jetson hálózat (NetworkManager / nmcli)
 
-A konfig fájl a repóban van: `config/netplan/01-robot.yaml`
+Ez a Jetson Ubuntu 22.04 NetworkManager-t használ (nem netplan).
 
+**Automatikus** (install.sh csinálja):
 ```bash
-sudo cp ~/talicska-robot-ws/src/robot/talicska-robot/config/netplan/01-robot.yaml /etc/netplan/01-robot.yaml
-sudo chmod 600 /etc/netplan/01-robot.yaml
-sudo netplan apply
+bash ~/talicska-robot-ws/src/robot/talicska-robot/scripts/install.sh
+```
+
+**Kézi** (ha csak a hálózatot kell beállítani):
+```bash
+bash ~/talicska-robot-ws/src/robot/talicska-robot/scripts/setup_network.sh
+```
+
+**Vagy direktben** — előbb keresd meg a robot interfészt (amelyiken nincs default route):
+```bash
+ip route show default          # → melyik interfész a LAN (pl. enP1p1s0)
+ip link show | grep '^[0-9].*en'  # → összes ethernet interfész
+```
+
+Majd (cseréld `enP8p1s0`-t a valódi robot interfész nevére):
+```bash
+sudo nmcli connection add type ethernet ifname enP8p1s0 con-name robot-internal ipv4.method manual ipv4.addresses 10.0.10.1/24 ipv4.never-default yes ipv6.method disabled
+sudo nmcli connection up robot-internal
+```
+
+Ellenőrzés:
+```bash
+ip addr show      # → enP8p1s0: 10.0.10.1/24
+ip route show     # → 10.0.10.0/24 dev enP8p1s0, default via 192.168.68.1 dev enP1p1s0
 ```
 
 Ellenőrzés:
