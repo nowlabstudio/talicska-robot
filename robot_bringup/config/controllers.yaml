@@ -1,6 +1,9 @@
 controller_manager:
   ros__parameters:
-    update_rate: 100
+    # 50 Hz — RoboClaw TCP round-trip ~7-8ms (GetEncoders) + ~5ms (SetSpeed).
+    # 100 Hz (10ms budget) → constant overrun. 50 Hz (20ms budget) → fits comfortably.
+    # ROS2_RoboClaw optimizations (write-on-change, rotating diags) designed for 50 Hz.
+    update_rate: 50
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
