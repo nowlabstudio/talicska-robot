@@ -108,10 +108,11 @@ print_help() {
     echo "  Mit csinál:"
     echo "    1. Docker Engine telepítés + Jetson iptables fix"
     echo "    2. vcstool telepítés"
-    echo "    3. Workspace létrehozás (~/talicska-robot-ws/src/)"
-    echo "    4. Összes repo klónozása robot.repos alapján"
-    echo "    5. Docker image build (robot + microros_agent)"
-    echo "    6. Validáció"
+    echo "    3. Robot belső hálózat: enP8p1s0 → 10.0.10.1/24 (nmcli, permanent)"
+    echo "    4. Workspace létrehozás (~/talicska-robot-ws/src/)"
+    echo "    5. Összes repo klónozása robot.repos alapján"
+    echo "    6. Docker image build (robot + microros_agent)"
+    echo "    7. Validáció"
     echo ""
     echo "  Idempotent — már kész lépések kihagyva."
     echo "  Log: scripts/logs/install_latest.log"
@@ -296,9 +297,71 @@ print(json.dumps(d, indent=2))
     fi
 }
 
-# ── 3. vcstool telepítés ──────────────────────────────────────────────────────
+# ── 3. Hálózat konfiguráció ───────────────────────────────────────────────────
+setup_network() {
+    section "3. Fázis: Robot belső hálózat (10.0.10.1/24)"
+
+    # Már konfigurálva?
+    if nmcli connection show robot-internal &>/dev/null 2>&1; then
+        local current_ip
+        current_ip="$(nmcli -g ipv4.addresses connection show robot-internal 2>/dev/null || echo '')"
+        if [[ "${current_ip}" == *"10.0.10.1"* ]]; then
+            skip "robot-internal kapcsolat már létezik: 10.0.10.1/24"
+            return 0
+        else
+            warn "robot-internal kapcsolat létezik, de más IP-vel: ${current_ip}"
+            warn "Törli és újra létrehozza..."
+            run sudo nmcli connection delete robot-internal
+        fi
+    fi
+
+    # Robot interfész detektálása:
+    # A LAN interfész az, amelyiken a default route van.
+    # A robot interfész a másik ethernet (nincs default route).
+    local lan_iface
+    lan_iface="$(ip route show default | awk '{print $5}' | head -1)"
+    if [[ -z "${lan_iface}" ]]; then
+        fail "Nincs default route — Jetson ETH1 (lab LAN) nincs csatlakoztatva?"
+    fi
+    log "INFO" "LAN interfész (default route): ${lan_iface}"
+
+    local robot_iface
+    robot_iface="$(ip link show \
+        | grep -E '^[0-9]+: en' \
+        | awk -F': ' '{print $2}' \
+        | grep -v "${lan_iface}" \
+        | head -1)"
+
+    if [[ -z "${robot_iface}" ]]; then
+        fail "Robot ethernet interfész nem található. Ellenőrizd: ip link show"
+    fi
+    ok "Robot interfész: ${robot_iface} (nem default route interfész)"
+
+    step "NetworkManager kapcsolat létrehozása: ${robot_iface} → 10.0.10.1/24..."
+    run sudo nmcli connection add \
+        type ethernet \
+        ifname "${robot_iface}" \
+        con-name robot-internal \
+        ipv4.method manual \
+        ipv4.addresses 10.0.10.1/24 \
+        ipv4.never-default yes \
+        ipv6.method disabled
+
+    run sudo nmcli connection up robot-internal
+
+    # Ellenőrzés
+    if ip addr show "${robot_iface}" | grep -q "10.0.10.1"; then
+        ok "Hálózat konfigurálva: ${robot_iface} → 10.0.10.1/24"
+    else
+        fail "IP nem jelent meg ${robot_iface}-n — nmcli connection up sikertelen?"
+    fi
+
+    log "INFO" "Hálózat konfiguráció kész: ${robot_iface} → 10.0.10.1/24"
+}
+
+# ── 4. vcstool telepítés ──────────────────────────────────────────────────────
 install_vcstool() {
-    section "3. Fázis: vcstool"
+    section "4. Fázis: vcstool"
 
     if command -v vcs &>/dev/null; then
         skip "vcstool: $(vcs --version 2>/dev/null || echo 'OK')"
@@ -313,7 +376,7 @@ install_vcstool() {
 
 # ── 4. Workspace + repo-k ─────────────────────────────────────────────────────
 setup_workspace() {
-    section "4. Fázis: Workspace + Repók"
+    section "5. Fázis: Workspace + Repók"
 
     # Workspace létrehozás
     if [[ -d "${SRC}" ]]; then
@@ -358,7 +421,7 @@ setup_workspace() {
 
 # ── 5. Docker image build ─────────────────────────────────────────────────────
 build_docker_image() {
-    section "5. Fázis: Docker Image Build"
+    section "6. Fázis: Docker Image Build"
 
     # Image neve a Dockerfile alapján
     local compose_project
@@ -405,7 +468,7 @@ build_docker_image() {
 
 # ── 6. Validáció ─────────────────────────────────────────────────────────────
 run_validation() {
-    section "6. Fázis: Validáció"
+    section "7. Fázis: Validáció"
 
     local passed=0 failed=0 warnings=0
 
@@ -550,10 +613,11 @@ main() {
 
     check_prerequisites      # 1. git, internet, helyes könyvtár
     install_docker           # 2. Docker Engine + Compose + Jetson fix
-    install_vcstool          # 3. vcstool
-    setup_workspace          # 4. workspace + vcs import/pull
-    build_docker_image       # 5. docker compose build
-    run_validation           # 6. validáció
+    setup_network            # 3. robot belső hálózat (10.0.10.1/24)
+    install_vcstool          # 4. vcstool
+    setup_workspace          # 5. workspace + vcs import/pull
+    build_docker_image       # 6. docker compose build
+    run_validation           # 7. validáció
     print_summary
 
     echo ""
