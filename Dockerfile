@@ -48,7 +48,6 @@ RUN apt-get update && \
 # ── colcon build ───────────────────────────────────────────────────────────────
 RUN . /opt/ros/jazzy/setup.sh && \
     colcon build \
-        --symlink-install \
         --cmake-args -DCMAKE_BUILD_TYPE=Release && \
     rm -rf build log
 
