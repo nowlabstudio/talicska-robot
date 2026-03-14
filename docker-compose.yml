@@ -22,7 +22,9 @@ services:
     command: udp4 -p ${MICROROS_AGENT_PORT:-8888}
 
   robot:
-    build: .
+    build:
+      context: ../..
+      dockerfile: robot/talicska-robot/Dockerfile
     network_mode: host
     restart: unless-stopped
     depends_on:

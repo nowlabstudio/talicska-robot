@@ -1,0 +1,17 @@
+repositories:
+  robot/ROS2-Bridge:
+    type: git
+    url: https://github.com/nowlabstudio/ROS2-Bridge.git
+    version: main
+  robot/ROS2_RoboClaw:
+    type: git
+    url: https://github.com/nowlabstudio/ROS2_RoboClaw.git
+    version: main
+  robot/realsense-jetson:
+    type: git
+    url: https://github.com/nowlabstudio/realsense-jetson.git
+    version: main
+  robot/rplidar_ros:
+    type: git
+    url: https://github.com/Slamtec/rplidar_ros.git
+    version: ros2

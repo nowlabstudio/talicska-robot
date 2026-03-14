@@ -6,7 +6,18 @@
 
 ---
 
-## Fázis 0 — Repo struktúra ✓
+## Teszt státusz jelölések
+
+| Jel | Jelentés |
+|-----|----------|
+| ✅ TESZTELT | Éles roboton futott, működik |
+| ⚠️ RÉSZBEN TESZTELT | Futott, de nem minden ág/feltétel ellenőrzött |
+| 🔴 NEM TESZTELT | Csak build-elve, élőben nem futott |
+| 🏗️ SKELETON | Váz, nem kész |
+
+---
+
+## Fázis 0 — Repo struktúra ✓ | ✅ TESZTELT
 
 **Eredmény:**
 - `robot.repos` vcs workspace (ROS2-Bridge, ROS2_RoboClaw, realsense-jetson, rplidar_ros, talicska-robot)
@@ -18,7 +29,7 @@
 
 ---
 
-## Fázis 1 — URDF ✓
+## Fázis 1 — URDF ✓ | ⚠️ RÉSZBEN TESZTELT
 
 **Eredmény:** `robot_description/urdf/robot.urdf.xacro`
 
@@ -31,9 +42,12 @@
 - lidar_link, camera_link fixed joints
 - ros2_control plugin: RoboClawSystem, rear_left/right_wheel_joint
 
+**Teszt megjegyzés:** URDF parse + robot_state_publisher fut. Fizikai méretek nem lettek
+összevetbe valódi odometriával (EKF tuning még nincs).
+
 ---
 
-## Fázis 2 — Hardware Interface ✓
+## Fázis 2 — Hardware Interface ✓ | ⚠️ RÉSZBEN TESZTELT
 
 **Eredmény:** `ROS2_RoboClaw` csomag (nowlabstudio/ROS2_RoboClaw)
 
@@ -45,9 +59,12 @@
 
 **Tanulság:** rosidl generáláshoz `LANGUAGES C CXX` kell a CMakeLists.txt-ben.
 
+**Teszt megjegyzés:** Motor mozgás működik RC-vel. Az 5 új service (StopMotors stb.)
+élőben nem lett hívva — csak build szintű ellenőrzés.
+
 ---
 
-## Fázis 3 — Szenzorok ✓
+## Fázis 3 — Szenzorok ✓ | ⚠️ RÉSZBEN TESZTELT
 
 **Eredmény:** `robot_bringup/launch/sensors.launch.py` + `ekf.yaml`
 
@@ -57,9 +74,12 @@
 - `cyclonedds.xml`: lab LAN bind 192.168.68.125, WHC korlátok Jetson RAM-hoz
 - docker-compose.yml: RPLidar /dev/ttyUSB0 device mapping, cyclonedds.xml mount
 
+**Teszt megjegyzés:** LiDAR és RealSense IMU topicok láthatók. EKF fúzió elindult,
+de covariance nincs finomhangolva (Task #2).
+
 ---
 
-## Fázis 4 — SLAM + Nav2 ✓
+## Fázis 4 — SLAM + Nav2 ✓ | 🔴 NEM TESZTELT
 
 **Eredmény:** `robot_bringup/config/slam_params.yaml`, `nav2_params.yaml`, `navigation.launch.py`, `robot.launch.py`
 
@@ -70,9 +90,12 @@
 - `robot.launch.py` master: hardware(0s) → sensors(3s) → safety(4s) → navigation(6s)
 - Nav2 lifecycle_manager autostart: true
 
+**Teszt megjegyzés:** Nav2 + SLAM Toolbox éles roboton még nem futott. Config értékek
+elméletiek, valódi tesztelés szükséges.
+
 ---
 
-## Fázis 5 — Safety Supervisor ✓
+## Fázis 5 — Safety Supervisor ✓ | ⚠️ RÉSZBEN TESZTELT
 
 **Eredmény:** `robot_safety/src/safety_supervisor.cpp`, `robot_safety/launch/safety.launch.py`
 
@@ -85,11 +108,14 @@
 - cmd_vel gate: `cmd_vel_raw` → `cmd_vel` (zero ha bármi fault)
 - `/safety/state` JSON string publikálás 20Hz-en
 
+**Teszt megjegyzés:** E-Stop HW + watchdog élőben tesztelve (robot megáll bridge offline
+esetén). IMU tilt és LiDAR proximity feltételek NEM lettek szándékosan kiváltva.
+
 ---
 
-## Fázis 6 — RC Teleop ✓
+## Fázis 6 — RC Teleop ✓ | ✅ TESZTELT
 
-**Eredmény:** `robot_teleop/` csomag (rc_teleop_node + twist_mux + winch_node)
+**Eredmény:** `robot_teleop/` csomag (rc_teleop_node + twist_mux)
 
 **Architektúra döntés:** RC mixer az adón van (NEM ROS-ban). A ROS csak kinematikai konverziót végez.
 
@@ -109,7 +135,7 @@ velocity_smoother → /cmd_vel_nav2 (prio 10) ┘ → twist_mux → /cmd_vel_raw
 
 ---
 
-## Fázis 7 — Winch/Billencs ✓
+## Fázis 7 — Winch/Billencs ✓ | 🔴 NEM TESZTELT
 
 **Eredmény:** `robot_teleop/src/winch_node.cpp`
 
@@ -120,31 +146,39 @@ velocity_smoother → /cmd_vel_nav2 (prio 10) ┘ → twist_mux → /cmd_vel_raw
 - Auto-return: elengedésre automatikusan visszamegy hazába (endstop_retract-ig)
 - Safety-aware: fault esetén azonnal stop
 
-**TODO:** PEDAL bridge (192.168.68.201, /robot/pedal) konfigolása szükséges hogy
-`/robot/tilt/cmd` fizikailag hasson az aktuátorra. Addig a node logikailag helyes
-de nincs fizikai hatás.
+**Teszt megjegyzés:** PEDAL bridge (192.168.68.201) nincs konfigurálva → nincs fizikai
+hatás. Node logikailag helyes, de élőben egyáltalán nem lett tesztelve.
+
+---
+
+## Task #1 — Install script ✓ | 🔴 NEM TESZTELT
+
+**Elkészült (2026-03-14):**
+- `scripts/install.sh` — idempotent, színes output, log rendszer
+- `Dockerfile` — rosdep alapú, ROS2 Jazzy, ARM64
+- `scripts/ros_entrypoint.sh`
+- `robot.repos` (talicska-robot-ban, deps only)
+- `docker-compose.yml`: build context → `../..` (workspace src gyökér)
+
+**Teszt megjegyzés:** Friss Jetsonon még nem futott. Logika átnézve, de docker build
+és vcs import nem lett végigfuttatva.
 
 ---
 
 ## Hátralévő feladatok
 
-### Task #1 — Install script
-**Prompt:** `memory/prompt_install_script.md`
-Teljes stack felállítása nulláról egyetlen `install.sh` paranccsal.
-Referencia: realsense-jetson/install.sh
-
-### Task #2 — EKF covariance finomhangolás
+### Task #2 — EKF covariance finomhangolás | 🔴 NEM TESZTELT
 **Prompt:** `memory/prompt_ekf_tuning.md`
 Éles tesztelés után, valódi robot dinamika alapján.
 
 ### Fázis 8 — Remote access + headless operation
 Nincs még spec.
 
-### PEDAL bridge konfigolás
+### PEDAL bridge konfigolás | 🔴 NEM TESZTELT
 - `/robot/tilt/cmd` (Float32) → Sabertooth aktuátor
 - `/robot/tilt/endstop_extend` + `/robot/tilt/endstop_retract` (Bool) GPIO input
 
-### LiDAR mask (szerkezeti elemek)
+### LiDAR mask (szerkezeti elemek) | 🔴 NEM TESZTELT
 - `laser_filters` package, `sensors.launch.py`-ba filter node
 - Zavaró szögek konfigolása YAML-ban, az éles tesztelés után
 
