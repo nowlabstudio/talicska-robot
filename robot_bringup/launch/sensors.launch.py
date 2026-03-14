@@ -13,7 +13,7 @@ def generate_launch_description():
     )
     serial_baudrate_arg = DeclareLaunchArgument(
         'serial_baudrate',
-        default_value='115200',
+        default_value='256000',
         description='RPLidar A2 serial baudrate',
     )
 
