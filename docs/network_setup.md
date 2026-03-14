@@ -1,7 +1,7 @@
 # Talicska Robot — Hálózati Konfiguráció
 
-**Robot belső subnet:** 10.0.10.0/24
-**Lab LAN subnet:** 192.168.68.0/24
+**Robot belső subnet:** 10.0.10.0/24 — Jetson ETH0 (static)
+**Lab LAN subnet:** 192.168.68.0/24 — Jetson ETH1 (DHCP)
 
 ---
 
@@ -21,7 +21,7 @@ Jetson ETH0 (eth0, static, 10.0.10.1)    ← robot belső hálózat
     ├── port 1 ── Jetson ETH0       (10.0.10.1)
     ├── port 2 ── RC bridge         (10.0.10.22)  RP2040 + W6100
     ├── port 3 ── E-Stop bridge     (10.0.10.23)  RP2040 + W6100
-    ├── port 4 ── RoboClaw / USR-K6 (10.0.10.24)  M1, M2
+    ├── port 4 ── RoboClaw / USR-K6 (10.0.10.24)  M1, M2 — TCP 8234
     ├── port 5 ── Pedal bridge      (10.0.10.21)  RP2040 + W6100  [ÜRES]
     └── port 6 ── Sabertooth        (10.0.10.25)  M3 (billencs)   [ÜRES]
 
@@ -31,182 +31,76 @@ Jetson USB  ── RPLidar A2  (/dev/ttyUSB0)
 
 **Kritikus:** A Jetson az egyetlen híd SW-MAIN (lab LAN) és SW1 (robot) között.
 SW1 és SW-MAIN között **nincs közvetlen kábel** — ha Jetson ETH1 leesik,
-a robot csak konzolon (HDMI/UART) érhető el, ETH0 (.10.1) továbbra is él.
+a robot csak konzolon (HDMI/UART) érhető el.
 
 ---
 
-## Tervezési döntések és indoklások
+## IP és MAC Cím Táblázat
 
-### Miért két külön subnet (10.0.10.x és 192.168.68.x)?
+| IP            | Eszköz                    | MAC                 | Szerepkör                       | Státusz        |
+|---------------|---------------------------|---------------------|---------------------------------|----------------|
+| **Lab LAN — 192.168.68.0/24, gateway: 192.168.68.1, mask: 255.255.255.0** |||||
+| 192.168.68.1  | Gateway / Router          | —                   | LAN gateway, DHCP               | ✅ aktív        |
+| 192.168.68.125| Dev laptop                | MAC-alapú DHCP      | Fejlesztői gép                  | ✅ aktív        |
+| 192.168.68.x  | Jetson ETH1               | `ip link show eth1` | SSH, internet, ROS2 DDS         | 🔧 netplan      |
+| **Robot belső — 10.0.10.0/24, gateway: 10.0.10.1, mask: 255.255.255.0** |||||
+| 10.0.10.1     | Jetson ETH0               | `ip link show eth0` | MicroROS agent, ROS2, Nav2      | 🔧 netplan      |
+| 10.0.10.22    | RC bridge (RP2040+W6100)  | 0C:2F:94:30:58:22   | /robot/motor_left, motor_right  | 🔧 upload_config|
+| 10.0.10.23    | E-Stop bridge (RP2040+W6100)| 0C:2F:94:30:58:33 | /robot/estop                    | 🔧 upload_config|
+| 10.0.10.24    | RoboClaw / USR-K6         | USR-K6 web UI       | Motor M1, M2 — TCP 8234         | 🔧 web UI       |
+| 10.0.10.21    | Pedal bridge (RP2040+W6100)| 0C:2F:94:30:58:11  | /robot/pedal                    | ⏳ jövőbeli     |
+| 10.0.10.25    | Sabertooth (ETH adapter)  | —                   | Motor M3 — billencs             | ⏳ jövőbeli     |
 
-**Probléma:** Ha Jetson ETH0 és ETH1 ugyanazon a /24-en van (pl. mindkettő
-`192.168.68.x`), a Linux kernel routing táblájában két route kerül ugyanarra
-a hálózatra:
+---
+
+## Tervezési döntések
+
+### Miért két külön subnet?
+
+Ha Jetson ETH0 és ETH1 ugyanazon a /24-en van, a Linux kernel routing táblájában
+két route kerül ugyanarra a hálózatra — a kernel nem determinisztikusan választ.
+Robot eszköz forgalma ETH1-en is kimehet (SW-MAIN irányba), ahol sosem ér célba.
+Különböző subnet → a kernel egyértelműen dönt: `10.0.10.0/24 → eth0`, `192.168.68.0/24 → eth1`.
+
+### Miért subnet és nem VLAN?
+
+Fizikai air gap (nincs kábel SW1 ↔ SW-MAIN) már megadja az izolációt.
+VLAN csak redundáns adminisztrációt adna. VLAN akkor kell, ha SW1 és SW-MAIN
+összekötve lesznek (fleet switch infrastruktúra), vagy safety-critical és non-critical
+forgalmat kell izolálni ugyanazon switch-en belül.
+
+### Miért `10.0.10.x`?
+
+`192.168.x.x` és `10.x.x.x` egyaránt RFC 1918 privát tartomány — nincs technikai különbség.
+`10.0.x.x` garantáltan nem ütközik lab LAN-nal, fleet-en robot-id szerint skálázható
+(Robot 1: `10.0.1.x`, Robot 2: `10.0.2.x`), és az architektúra ezt definiálja.
+
+---
+
+## Bekötési sorrend
+
+### Lépés 1 — SW1 (6-port switch)
+
+A switch flat L2 üzemmódban működik, konfigurálni **nem kell** — csak bekötni:
 
 ```
-192.168.68.0/24 dev eth0
-192.168.68.0/24 dev eth1
+SW1 port 1  ←→  Jetson ETH0
+SW1 port 2  ←→  RC bridge (Ethernet)
+SW1 port 3  ←→  E-Stop bridge (Ethernet)
+SW1 port 4  ←→  RoboClaw USR-K6 (Ethernet)
 ```
 
-A kernel nem determinisztikusan választ — ha az RC bridge (`.202`) forgalma
-ETH1-en megy ki (SW-MAIN irányba), az sosem ér célba, mert SW1 és SW-MAIN
-között nincs kábel. Ez nehezen debugolható, intermittens hiba.
-
-**Megoldás:** Különböző subnet → a kernel egyértelműen tud dönteni:
-```
-10.0.10.0/24  dev eth0   → robot eszközök (RP2040k, RoboClaw)
-192.168.68.0/24 dev eth1  → lab LAN (dev laptop, internet)
-```
-
-### Miért VLAN helyett subnet szeparáció?
-
-**VLAN (802.1Q)** L2 (switch) szintű szegmentáció. Hasznos ha:
-- Azonos fizikai switch-en kell elkülöníteni forgalmakat
-- Több robot osztja ugyanazt a SW-MAIN switch-et (fleet kontextus)
-
-**Subnet szeparáció** L3 (IP) szintű szegmentáció. Elegendő ha:
-- A fizikai topológia már szeparált (nincs kábel SW-MAIN ↔ SW1)
-- Egyetlen robot, saját SW1-gyel
-
-Esetünkben a fizikai air gap (Jetson az egyetlen híd) már megadja az izolációt.
-A VLAN csak redundáns adminisztrációt adna hozzá — nem nyerünk semmit.
-
-**Mikor érdemes VLAN-ra váltani?**
-- Ha SW1-et és SW-MAIN-t összekötnénk (pl. fleet switch infrastruktúra)
-- Ha ugyanazon SW1-en kellene safety-critical és non-critical forgalmat izolálni
-- Fleet kontextusban több robot közös switch-en: VLAN 10/robot-id per robot
-
-### Miért `10.0.10.x` és nem `192.168.10.x`?
-
-A `10.0.0.0/8` és `192.168.0.0/16` egyaránt RFC 1918 privát tartomány — modern
-hálózatban nincs technikai különbség ("A osztály" vs "C osztály" classful legacy).
-
-Praktikus okok a `10.0.x.x` választásra:
-- **Ütközésmentesség:** lab LAN és általános consumer eszközök szinte kizárólag
-  `192.168.x.x`-et használnak → `10.0.x.x` garantáltan különböző
-- **Fleet skálázás:** Robot 1: `10.0.1.x`, Robot 2: `10.0.2.x`... clean
-- **VLAN olvashatóság (jövő):** VLAN 10 → `10.0.10.x`, VLAN 20 → `10.0.20.x`
-- **Architektúra konvenció:** robot_architecture.md ezt definiálja
-
-### Miért a Jetson ETH0 = .1 (gateway cím a subneten)?
-
-Az RP2040-k `gateway: 10.0.10.1`-re mutatnak. Valójában az RP2040-k csak
-a MicroROS agent-tel (szintén `10.0.10.1`) kommunikálnak — same subnet,
-gateway-t nem használnak. De ha valaha szükség lenne route-olásra (pl. OTA
-firmware), a Jetson ETH0 természetesen a gateway.
-
-### Miért `eth1` a CycloneDDS NetworkInterfaceAddress-ben?
-
-A ROS2 DDS discovery a lab LAN-on kell fusson, hogy a dev laptopról
-`ros2 topic list` és Foxglove működjön. ETH0 (robot belső) DDS forgalma
-felesleges és ütközhet. ETH1 DHCP → interface névvel stabilabb mint hardkódolt IP.
-
-### Miért nincs SW1 ↔ SW-MAIN kábel?
-
-Szándékos air gap — a robot eszközök csak a Jetsonen keresztül érhetők el.
-Ez egyszerre:
-- **Routing tisztaság:** nincs loop, nincs véletlen keresztforgalom
-- **Biztonsági szeparáció:** lab LAN eszközök nem érik el közvetlenül
-  a RoboClaw-t (nem kell tűzfal szabály a SW1/SW2 eszközökre)
-- **Fallback:** ha ETH1 leesik, a robot továbbra is autonóm marad
+> Ha a TL-SG105E-t korábban módosítottad (VLAN stb.), factory reset:
+> tartsd nyomva a Reset gombot 5 másodpercig.
 
 ---
 
-## IP Cím Táblázat
+### Lépés 2 — Jetson netplan
 
-| IP            | Eszköz                       | Szerepkör                        | Státusz         |
-|---------------|------------------------------|----------------------------------|-----------------|
-| **Lab LAN — 192.168.68.0/24** ||||
-| 192.168.68.1  | Gateway / Router             | LAN gateway, DHCP                | ✅ aktív         |
-| 192.168.68.125| Dev laptop                   | Fejlesztői gép (MAC-alapú DHCP)  | ✅ aktív         |
-| 192.168.68.x  | Jetson ETH1 (DHCP)           | SSH, internet, ROS2 DDS          | 🔧 konfigurálni  |
-| **Robot belső — 10.0.10.0/24** ||||
-| 10.0.10.1     | Jetson ETH0                  | ROS2, Nav2, MicroROS agent       | 🔧 konfigurálni  |
-| 10.0.10.21    | Pedal bridge (RP2040)        | /robot/pedal                     | ⏳ jövőbeli      |
-| 10.0.10.22    | RC bridge (RP2040)           | /robot/motor_left, motor_right   | 🔧 konfigurálni  |
-| 10.0.10.23    | E-Stop bridge (RP2040)       | /robot/estop                     | 🔧 konfigurálni  |
-| 10.0.10.24    | RoboClaw / USR-K6            | Motor M1, M2 (TCP 8234)          | 🔧 konfigurálni  |
-| 10.0.10.25    | Sabertooth (ETH adapter)     | Motor M3 — billencs              | ⏳ jövőbeli      |
-
----
-
-## Switch Port Mapping
-
-### SW1 (6-port managed switch)
-
-| Port | Eszköz               | IP          | Megjegyzés                |
-|------|----------------------|-------------|---------------------------|
-| 1    | Jetson ETH0          | 10.0.10.1   |                           |
-| 2    | RC bridge            | 10.0.10.22  |                           |
-| 3    | E-Stop bridge        | 10.0.10.23  |                           |
-| 4    | RoboClaw / USR-K6    | 10.0.10.24  |                           |
-| 5    | Pedal bridge         | 10.0.10.21  | ⏳ nincs bekötve           |
-| 6    | Sabertooth (ETH)     | 10.0.10.25  | ⏳ nincs bekötve           |
-
----
-
-## MAC Cím Táblázat
-
-| Eszköz               | IP          | MAC               | Forrás               |
-|----------------------|-------------|-------------------|----------------------|
-| RC bridge (RP2040)   | 10.0.10.22  | 0C:2F:94:30:58:22 | firmware (hardkód)   |
-| E-Stop bridge (RP2040)| 10.0.10.23 | 0C:2F:94:30:58:33 | firmware (hardkód)   |
-| Pedal bridge (RP2040)| 10.0.10.21  | 0C:2F:94:30:58:11 | firmware (hardkód)   |
-| Jetson ETH0          | 10.0.10.1   | `ip link show eth0` | **KITÖLTENI**      |
-| Jetson ETH1          | DHCP        | `ip link show eth1` | **KITÖLTENI**      |
-| RoboClaw / USR-K6    | 10.0.10.24  | USR-K6 web UI     | **KITÖLTENI**        |
-| Sabertooth ETH       | 10.0.10.25  | —                 | **KITÖLTENI**        |
-
----
-
-## Konfigurációs Checklist
-
-### Jetson Orin Nano
-
-- [ ] ETH0 static IP: 10.0.10.1/24, no default route
-      `sudo nano /etc/netplan/01-robot.yaml`
-- [ ] ETH1 DHCP, default route via 192.168.68.1
-- [ ] `sudo netplan apply`
-- [ ] Ping teszt: `ping 10.0.10.22` (RC), `ping 10.0.10.23` (E-Stop)
-- [ ] MAC cím feljegyezve: `ip link show eth0 | grep link/ether`
-
-### RoboClaw / USR-K6
-
-- [ ] USR-K6 web UI-ban IP átírva: régi → 10.0.10.24
-- [ ] Subnet mask: 255.255.255.0
-- [ ] Gateway: 10.0.10.1
-- [ ] TCP server port: 8234 (nem változik)
-- [ ] Ping teszt: `ping 10.0.10.24`
-- [ ] TCP teszt: `nc -zv 10.0.10.24 8234`
-
-### RP2040 bridge-ek (upload_config.py)
+SSH-val vagy konzolon:
 
 ```bash
-cd ~/talicska-robot-ws/src/robot/ROS2-Bridge
-# RC bridge (USB soros port ellenőrizd: ls /dev/ttyUSB* vagy /dev/ttyACM*)
-python3 tools/upload_config.py --config devices/RC/config.json --port /dev/ttyACM0
-# E-Stop bridge
-python3 tools/upload_config.py --config devices/E_STOP/config.json --port /dev/ttyACM1
-```
-
-Config-ok (repo-ban már frissítve):
-- RC:     ip=10.0.10.22, agent_ip=10.0.10.1
-- E-Stop: ip=10.0.10.23, agent_ip=10.0.10.1
-- Pedal:  ip=10.0.10.21, agent_ip=10.0.10.1
-
-### MicroROS Agent
-
-- [ ] `docker compose up -d microros_agent`
-- [ ] Topicok megjelennek: `ros2 topic list | grep robot`
-  - `/robot/motor_left`, `/robot/motor_right` (RC bridge)
-  - `/robot/estop` (E-Stop bridge)
-
----
-
-## Netplan konfig (Jetson)
-
-```yaml
-# /etc/netplan/01-robot.yaml
+sudo tee /etc/netplan/01-robot.yaml > /dev/null << 'EOF'
 network:
   version: 2
   ethernets:
@@ -214,36 +108,157 @@ network:
       dhcp4: false
       addresses:
         - 10.0.10.1/24
-      # Nincs default route — robot-belső forgalom
+      nameservers:
+        addresses: []
     eth1:
       dhcp4: true
       routes:
         - to: default
           via: 192.168.68.1
+EOF
+
+sudo chmod 600 /etc/netplan/01-robot.yaml
+sudo netplan apply
+```
+
+Ellenőrzés:
+
+```bash
+ip addr show eth0   # → 10.0.10.1/24
+ip addr show eth1   # → 192.168.68.x/24
+ip route show       # → 10.0.10.0/24 dev eth0, default via 192.168.68.1 dev eth1
 ```
 
 ---
 
-## Gyors diagnózis parancsok
+### Lépés 3 — RoboClaw / USR-K6 web UI
+
+Az USR-K6 jelenlegi IP-je ismeretlen vagy régi (pl. `192.168.68.60`).
+
+**Ha az USR-K6 jelenlegi IP-je ismeretlen:**
 
 ```bash
-# Hálózati interfészek és IP-k
-ip addr show
+# Dev laptopról — ARP scan a lab LAN-on (USB kábellel közvetlenül a Jetsonhoz kötve is megy)
+sudo arp-scan 192.168.68.0/24
+# vagy
+nmap -sn 192.168.68.0/24
+```
 
-# Routing tábla — ellenőrizd, hogy 10.0.10.0/24 → eth0, 192.168.68.0/24 → eth1
-ip route show
+**Web UI elérése** (`http://<jelenlegi-ip>`, default login: `admin` / `admin`):
 
-# Ping sweep — robot eszközök
-for ip in 1 21 22 23 24 25; do
-    ping -c1 -W1 10.0.10.$ip &>/dev/null && echo "10.0.10.${ip} UP" || echo "10.0.10.${ip} DOWN"
+```
+Network → IP Address:   10.0.10.24
+          Subnet Mask:  255.255.255.0
+          Gateway:      10.0.10.1
+          DNS:          (üresen hagyható)
+
+Serial → Baud Rate:  460800  (RoboClaw firmware default — NE változtasd)
+         TCP Port:   8234    (NE változtasd)
+         Protocol:   TCP Server
+```
+
+Mentés → USR-K6 újraindul. Ezután:
+
+```bash
+ping 10.0.10.24           # → él
+nc -zv 10.0.10.24 8234    # → open
+```
+
+---
+
+### Lépés 4 — RP2040 bridge-ek (upload_config.py)
+
+A config.json fájlok a repóban már frissítve vannak (`10.0.10.x` IP-kkel).
+Csak fel kell tölteni USB-n keresztül, **firmware flash nem kell**.
+
+**Egy bridge egyszerre** — kösd USB-n a Jetsonhoz (vagy dev laptophoz):
+
+```bash
+cd ~/talicska-robot-ws/src/robot/ROS2-Bridge
+
+# USB port megkeresése:
+ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null
+
+# RC bridge (port 2 a switch-en):
+python3 tools/upload_config.py \
+    --config devices/RC/config.json \
+    --port /dev/ttyACM0          # ← cseréld a valódi portra
+
+# E-Stop bridge (port 3 a switch-en):
+python3 tools/upload_config.py \
+    --config devices/E_STOP/config.json \
+    --port /dev/ttyACM0          # ← cseréld a valódi portra
+```
+
+Upload után a bridge újraindul és az új IP-n jelenik meg. Ellenőrzés:
+
+```bash
+ping -c3 10.0.10.22   # RC bridge
+ping -c3 10.0.10.23   # E-Stop bridge
+```
+
+**Config tartalom (referencia):**
+
+| Eszköz  | ip          | netmask       | gateway    | agent_ip   | agent_port |
+|---------|-------------|---------------|------------|------------|------------|
+| RC      | 10.0.10.22  | 255.255.255.0 | 10.0.10.1  | 10.0.10.1  | 8888       |
+| E-Stop  | 10.0.10.23  | 255.255.255.0 | 10.0.10.1  | 10.0.10.1  | 8888       |
+| Pedal   | 10.0.10.21  | 255.255.255.0 | 10.0.10.1  | 10.0.10.1  | 8888       |
+
+---
+
+### Lépés 5 — MicroROS Agent + validáció
+
+```bash
+cd ~/talicska-robot-ws/src/robot/talicska-robot
+
+# Agent indítása
+docker compose up -d microros_agent
+
+# Ping sweep — minden robot eszköz él-e?
+for ip in 1 22 23 24; do
+    ping -c1 -W1 10.0.10.$ip &>/dev/null \
+        && echo "10.0.10.${ip} UP" \
+        || echo "10.0.10.${ip} DOWN"
 done
 
-# MicroROS topicok
+# ROS2 topicok — RC és E-Stop bridge megjelenik-e?
 ros2 topic list | grep robot
+# Elvárt:
+#   /robot/motor_left
+#   /robot/motor_right
+#   /robot/rc_mode
+#   /robot/winch
+#   /robot/estop
 
-# TCP port teszt (RoboClaw)
+# RoboClaw TCP kapcsolat
 nc -zv 10.0.10.24 8234
+```
 
-# Jetson ETH1 (lab LAN) IP ellenőrzés
-ip -br addr show eth1
+---
+
+## Gyors diagnózis
+
+```bash
+# Interfészek és IP-k
+ip -br addr show
+
+# Routing tábla
+ip route show
+
+# Jetson ETH0 MAC (feljegyezni)
+ip link show eth0 | grep link/ether
+
+# Docker container állapot
+docker compose ps
+
+# MicroROS agent log
+docker compose logs microros_agent
+
+# Teljes ping sweep
+for ip in 1 21 22 23 24 25; do
+    ping -c1 -W1 10.0.10.$ip &>/dev/null \
+        && echo "10.0.10.${ip} UP" \
+        || echo "10.0.10.${ip} DOWN"
+done
 ```
