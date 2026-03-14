@@ -171,13 +171,19 @@ hatás. Node logikailag helyes, de élőben egyáltalán nem lett tesztelve.
 **Prompt:** `memory/prompt_ekf_tuning.md`
 Éles tesztelés után, valódi robot dinamika alapján.
 
-### Task #3 — Robot belső hálózat külön subnet | ⏳ JÖVŐBELI
-**Mikor:** miután minden eszköz asztalon működik és stabil.
-**Indok:** Jelenleg Jetson eth0 (robot) és eth1 (LAN) azonos 192.168.68.x/24 subneten
-van — Linux routing konfliktus lehetséges. Külön subnet (pl. 192.168.10.x) ezt tisztán
-megoldja, de jelenleg ne vigyen be plusz konfigurációs pontot (managed switch VLAN stb.).
-**Lépések:** robot eszközök átcímezése (RP2040 firmware, USR-K6, Sabertooth), .env,
-netplan — részletek: `docs/network_setup.md`.
+### Task #3 — Robot belső hálózat külön subnet | ✓ | 🔴 NEM TESZTELT
+
+**Elkészült (2026-03-14):**
+- Robot belső subnet: `10.0.10.0/24` (Jetson ETH0: 10.0.10.1)
+- Lab LAN marad: `192.168.68.0/24` (Jetson ETH1: DHCP)
+- `.env` frissítve: összes bridge IP és ROBOCLAW_HOST
+- RP2040 config.json-ok frissítve (ip, gateway, agent_ip)
+- CycloneDDS: ETH1 (eth1 NIC névvel) — DDS a lab LAN-on fut
+- Netplan minta: `docs/network_setup.md`
+
+**Teszt megjegyzés:** A konfigok frissítve, de Jetson netplan nem lett alkalmazva,
+RP2040-k nem lettek upload_config.py-val frissítve, USR-K6 web UI-ban nem lett átírva.
+Élőben nem tesztelt.
 
 
 ### Fázis 8 — Remote access + headless operation

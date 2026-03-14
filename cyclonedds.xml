@@ -3,22 +3,30 @@
   CycloneDDS configuration for Talicska robot (Jetson Orin Nano)
 
   Goals:
-  - Bind to the lab LAN interface (192.168.68.x) only — avoids docker0 conflicts
+  - Bind to the lab LAN interface (eth1, 192.168.68.x DHCP) only
+    → avoids docker0 and robot-internal (eth0, 10.0.10.x) conflicts
   - Cap historical data (WHC) and receiver buffers for 8 GB Jetson RAM
   - Keep discovery local (no multicast beyond lab subnet)
+
+  Network layout:
+    Jetson ETH0 (eth0): 10.0.10.1/24  — robot internal (RP2040s, RoboClaw)
+    Jetson ETH1 (eth1): 192.168.68.x  — lab LAN (dev laptop, internet)
+
+  DDS binds to eth1 so that ros2 topic list works from the dev laptop.
+  MicroROS agent binds to 0.0.0.0 and receives from RP2040s via eth0.
 
   Usage:
     export CYCLONEDDS_URI=file:///path/to/cyclonedds.xml
     or set via docker-compose env_file
 
-  Tune NetworkInterfaceAddress to match the actual Jetson NIC name
-  (check with: ip -br addr | grep 192.168.68)
+  Tune NetworkInterfaceAddress if NIC name differs:
+    ip -br addr show | grep 192.168.68
 -->
 <CycloneDDS>
   <Domain>
     <General>
-      <!-- Bind only to lab LAN — adjust if NIC name differs -->
-      <NetworkInterfaceAddress>192.168.68.125</NetworkInterfaceAddress>
+      <!-- Bind to lab LAN NIC (eth1) — robot traffic is on eth0 (10.0.10.x) -->
+      <NetworkInterfaceAddress>eth1</NetworkInterfaceAddress>
       <AllowMulticast>true</AllowMulticast>
       <MaxMessageSize>65500B</MaxMessageSize>
     </General>
