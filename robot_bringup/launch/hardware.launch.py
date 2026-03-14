@@ -26,12 +26,21 @@ def generate_launch_description():
         value_type=str,
     )
 
-    # ros2_control_node loads the RoboClawHardware plugin and manages controllers
+    # robot_state_publisher publishes /robot_description topic (required by
+    # ros2_control_node in Jazzy) and /tf, /tf_static from joint states.
+    robot_state_publisher = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        parameters=[{'robot_description': robot_description}],
+        output='screen',
+    )
+
+    # ros2_control_node loads the RoboClawHardware plugin and manages controllers.
+    # In Jazzy it subscribes to /robot_description topic instead of reading a param.
     controller_manager = Node(
         package='controller_manager',
         executable='ros2_control_node',
         parameters=[
-            {'robot_description': robot_description},  # ParameterValue(str)
             PathJoinSubstitution([
                 FindPackageShare('robot_bringup'), 'config', 'controllers.yaml'
             ]),
@@ -64,6 +73,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         tcp_host_arg,
+        robot_state_publisher,
         controller_manager,
         joint_state_broadcaster_spawner,
         spawn_diff_drive_after_jsb,

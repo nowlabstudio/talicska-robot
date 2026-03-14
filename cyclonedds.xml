@@ -26,22 +26,12 @@
   <Domain>
     <General>
       <!-- Bind to lab LAN NIC (eth1) — robot traffic is on eth0 (10.0.10.x) -->
-      <NetworkInterfaceAddress>eth1</NetworkInterfaceAddress>
+      <Interfaces>
+        <NetworkInterface name="enP1p1s0" multicast="default"/>
+      </Interfaces>
       <AllowMulticast>true</AllowMulticast>
       <MaxMessageSize>65500B</MaxMessageSize>
     </General>
-
-    <Internal>
-      <!-- Watermark-based Historical Cache: limit memory on Jetson -->
-      <Watermarks>
-        <WhcHigh>8MB</WhcHigh>
-        <WhcLow>4MB</WhcLow>
-        <WhcUnreliable>1MB</WhcUnreliable>
-      </Watermarks>
-
-      <!-- Receive buffer: 4 MB (kernel default is often 212 kB) -->
-      <SocketReceiveBufferSize min="4MB"/>
-    </Internal>
 
     <Discovery>
       <!-- Restrict discovery to lab subnet -->

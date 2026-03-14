@@ -32,6 +32,7 @@
 #include <string>
 
 #include "geometry_msgs/msg/twist.hpp"
+#include "geometry_msgs/msg/twist_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
@@ -80,7 +81,7 @@ public:
       std::bind(&SafetySupervisor::cmd_vel_raw_cb, this, std::placeholders::_1));
 
     // --- publishers ---
-    cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", rclcpp::QoS(10));
+    cmd_vel_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel", rclcpp::QoS(10));
     state_pub_   = create_publisher<std_msgs::msg::String>("/safety/state", rclcpp::QoS(10));
 
     // --- watchdog timer ---
@@ -168,7 +169,11 @@ private:
     // Gate: only pass through when fully safe.
     // Watchdog publishes zeros when unsafe (see watchdog_tick).
     if (is_safe()) {
-      cmd_vel_pub_->publish(*msg);
+      geometry_msgs::msg::TwistStamped stamped;
+      stamped.header.stamp = now();
+      stamped.header.frame_id = "base_link";
+      stamped.twist = *msg;
+      cmd_vel_pub_->publish(stamped);
     }
   }
 
@@ -184,7 +189,9 @@ private:
     }
 
     if (!is_safe()) {
-      geometry_msgs::msg::Twist zero;
+      geometry_msgs::msg::TwistStamped zero;
+      zero.header.stamp = now();
+      zero.header.frame_id = "base_link";
       cmd_vel_pub_->publish(zero);
     }
 
@@ -236,7 +243,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr   cmd_vel_raw_sub_;
 
-  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_vel_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr     state_pub_;
 
   rclcpp::TimerBase::SharedPtr watchdog_timer_;

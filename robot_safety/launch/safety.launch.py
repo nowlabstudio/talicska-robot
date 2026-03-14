@@ -47,6 +47,9 @@ def generate_launch_description():
             "proximity_angle_deg":   30.0,
             "watchdog_rate_hz":      20.0,
         }],
+        remappings=[
+            ("cmd_vel", "/diff_drive_controller/cmd_vel"),
+        ],
     )
 
     return LaunchDescription([

@@ -1,3 +1,5 @@
+name: robot
+
 # Talicska robot — production stack
 #
 # Services managed here:
@@ -16,12 +18,14 @@
 services:
 
   microros_agent:
+    container_name: microros_agent
     image: microros/micro-ros-agent:jazzy
     network_mode: host
     restart: unless-stopped
     command: udp4 -p ${MICROROS_AGENT_PORT:-8888}
 
   robot:
+    container_name: robot
     build:
       context: ../..
       dockerfile: robot/talicska-robot/Dockerfile
@@ -36,6 +40,16 @@ services:
     volumes:
       - /dev:/dev
       - ./cyclonedds.xml:/root/talicska-robot/cyclonedds.xml:ro
+      # slam_params.yaml: runtime override — rebuild NEM kell, csak docker compose up -d
+      - ./robot_bringup/config/slam_params.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/slam_params.yaml:ro
+      # /data/maps: perzisztens térképek (host gépen tárolt)
+      - /data/maps:/data/maps
+    # Safety limits és stack selector a .env-ből jönnek — rebuild NEM kell, csak restart
     command: >
-      ros2 launch robot_bringup hardware.launch.py
+      ros2 launch robot_bringup robot.launch.py
       tcp_host:=${ROBOCLAW_HOST:-10.0.10.24}
+      use_nav:=${USE_NAV:-false}
+      proximity_distance_m:=${PROXIMITY_DISTANCE_M:-0.3}
+      estop_timeout_s:=${ESTOP_TIMEOUT_S:-2.0}
+      tilt_roll_limit_deg:=${TILT_ROLL_LIMIT_DEG:-25.0}
+      tilt_pitch_limit_deg:=${TILT_PITCH_LIMIT_DEG:-20.0}

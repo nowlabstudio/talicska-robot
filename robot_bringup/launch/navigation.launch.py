@@ -165,7 +165,21 @@ def generate_launch_description():
         }],
     )
 
-    # Separate lifecycle for SLAM / map_server (must start after slam_toolbox is up)
+    # Lifecycle manager for SLAM Toolbox (use_slam=true)
+    lifecycle_slam = Node(
+        package="nav2_lifecycle_manager",
+        executable="lifecycle_manager",
+        name="lifecycle_manager_slam",
+        output="screen",
+        parameters=[{
+            "use_sim_time": False,
+            "autostart": True,
+            "node_names": ["slam_toolbox"],
+        }],
+        condition=IfCondition(use_slam),
+    )
+
+    # Lifecycle manager for map_server + amcl (use_slam=false)
     lifecycle_map = Node(
         package="nav2_lifecycle_manager",
         executable="lifecycle_manager",
@@ -194,6 +208,7 @@ def generate_launch_description():
         bt_navigator,
         waypoint_follower,
         velocity_smoother,
+        lifecycle_slam,
         lifecycle_nav2,
         lifecycle_map,
     ])

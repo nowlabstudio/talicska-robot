@@ -15,6 +15,7 @@
 
 twist_mux:
   ros__parameters:
+    use_stamped: false
     topics:
       rc:
         topic:    /cmd_vel_rc
@@ -27,4 +28,3 @@ twist_mux:
         topic:    /cmd_vel_nav2
         timeout:  0.5
         priority: 10
-    locks: []

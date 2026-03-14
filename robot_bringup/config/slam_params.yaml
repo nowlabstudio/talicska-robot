@@ -13,7 +13,7 @@ slam_toolbox:
 
     # ── Map persistence ───────────────────────────────────────────────────
     map_file_name: /data/maps/talicska_map
-    map_start_at_dock: true
+    map_start_at_dock: false
 
     # ── Scan matching ─────────────────────────────────────────────────────
     minimum_travel_distance: 0.3        # m — don't update if robot hasn't moved
