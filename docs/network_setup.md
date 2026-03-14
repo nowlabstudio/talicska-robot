@@ -97,26 +97,10 @@ SW1 port 4  ←→  RoboClaw USR-K6 (Ethernet)
 
 ### Lépés 2 — Jetson netplan
 
-SSH-val vagy konzolon:
+A konfig fájl a repóban van: `config/netplan/01-robot.yaml`
 
 ```bash
-sudo tee /etc/netplan/01-robot.yaml > /dev/null << 'EOF'
-network:
-  version: 2
-  ethernets:
-    eth0:
-      dhcp4: false
-      addresses:
-        - 10.0.10.1/24
-      nameservers:
-        addresses: []
-    eth1:
-      dhcp4: true
-      routes:
-        - to: default
-          via: 192.168.68.1
-EOF
-
+sudo cp ~/talicska-robot-ws/src/robot/talicska-robot/config/netplan/01-robot.yaml /etc/netplan/01-robot.yaml
 sudo chmod 600 /etc/netplan/01-robot.yaml
 sudo netplan apply
 ```
