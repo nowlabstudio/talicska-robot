@@ -3,6 +3,7 @@ from launch.actions import DeclareLaunchArgument, RegisterEventHandler
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -14,18 +15,23 @@ def generate_launch_description():
     )
 
     # Xacro → robot_description string, forwarding tcp_host to hardware plugin
-    robot_description = Command([
-        'xacro ',
-        PathJoinSubstitution([FindPackageShare('robot_description'), 'urdf', 'robot.urdf.xacro']),
-        ' tcp_host:=', LaunchConfiguration('tcp_host'),
-    ])
+    # ParameterValue(..., value_type=str) prevents ROS2 Jazzy from trying to
+    # parse the URDF XML as YAML (which fails on '<', '>', ':' characters).
+    robot_description = ParameterValue(
+        Command([
+            'xacro ',
+            PathJoinSubstitution([FindPackageShare('robot_description'), 'urdf', 'robot.urdf.xacro']),
+            ' tcp_host:=', LaunchConfiguration('tcp_host'),
+        ]),
+        value_type=str,
+    )
 
     # ros2_control_node loads the RoboClawHardware plugin and manages controllers
     controller_manager = Node(
         package='controller_manager',
         executable='ros2_control_node',
         parameters=[
-            {'robot_description': robot_description},
+            {'robot_description': robot_description},  # ParameterValue(str)
             PathJoinSubstitution([
                 FindPackageShare('robot_bringup'), 'config', 'controllers.yaml'
             ]),
