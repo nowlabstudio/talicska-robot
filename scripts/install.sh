@@ -112,6 +112,7 @@ print_help() {
     echo "    4. Workspace létrehozás (~/talicska-robot-ws/src/)"
     echo "    5. Összes repo klónozása robot.repos alapján"
     echo "    6. Docker image build (robot + microros_agent)"
+    echo "    6b. RealSense image build (dustynv base + librealsense + realsense-ros)"
     echo "    7. Validáció"
     echo ""
     echo "  Idempotent — már kész lépések kihagyva."
@@ -466,9 +467,53 @@ build_docker_image() {
     log "INFO" "Docker build kész"
 }
 
-# ── 6. Validáció ─────────────────────────────────────────────────────────────
+# ── 6b. RealSense Docker image build ─────────────────────────────────────────
+build_realsense_image() {
+    section "6b. Fázis: RealSense Docker Image Build"
+
+    local realsense_dir="${SRC}/robot/realsense-jetson"
+    local realsense_compose="${realsense_dir}/docker-compose.yml"
+
+    if [[ ! -f "${realsense_compose}" ]]; then
+        warn "realsense-jetson repo nem található: ${realsense_dir}"
+        warn "Kihagyva — telepítsd külön: cd ${realsense_dir} && docker compose build"
+        return 0
+    fi
+
+    # Image már megvan?
+    if docker images --format "{{.Repository}}:{{.Tag}}" 2>/dev/null \
+            | grep -q "ros2-realsense:jazzy-isaac"; then
+        skip "RealSense image már létezik: ros2-realsense:jazzy-isaac"
+        warn "Újrabuildeléshez: cd ${realsense_dir} && docker compose build"
+        return 0
+    fi
+
+    step "RealSense image build (dustynv base + librealsense + realsense-ros)..."
+    info "Build context: ${realsense_dir}"
+    info "Várható idő: ~20-30 perc (ARM64, első build)"
+    info "Valós idejű log: tail -f ${LOG_FILE}"
+    info ""
+    info "MEGJEGYZÉS: dustynv base image workaround-ok:"
+    info "  --force-overwrite: OpenCV 4.11 (dustynv) ↔ apt libopencv-dev ütközés"
+    info "  CMAKE_PREFIX_PATH: forrásból buildelt ROS2 nem látja az apt csomagokat"
+
+    if [[ "${VERBOSE}" == true ]]; then
+        run_show docker compose -f "${realsense_compose}" build
+    else
+        if ! docker compose -f "${realsense_compose}" build >> "${LOG_FILE}" 2>&1; then
+            error "RealSense build sikertelen — részletek:"
+            tail -50 "${LOG_FILE}" >&2
+            fail "RealSense docker compose build meghiúsult"
+        fi
+    fi
+
+    ok "RealSense image kész: ros2-realsense:jazzy-isaac"
+    log "INFO" "RealSense build kész"
+}
+
+# ── 7. Validáció ─────────────────────────────────────────────────────────────
 run_validation() {
-    section "7. Fázis: Validáció"
+    section "8. Fázis: Validáció"
 
     local passed=0 failed=0 warnings=0
 
@@ -616,7 +661,8 @@ main() {
     setup_network            # 3. robot belső hálózat (10.0.10.1/24)
     install_vcstool          # 4. vcstool
     setup_workspace          # 5. workspace + vcs import/pull
-    build_docker_image       # 6. docker compose build
+    build_docker_image       # 6. docker compose build (robot + microros)
+    build_realsense_image    # 6b. RealSense image build (dustynv base)
     run_validation           # 7. validáció
     print_summary
 

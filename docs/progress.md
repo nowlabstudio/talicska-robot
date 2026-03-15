@@ -20,7 +20,8 @@
 ## Fázis 0 — Repo struktúra ✓ | ✅ TESZTELT
 
 **Eredmény:**
-- `robot.repos` vcs workspace (ROS2-Bridge, ROS2_RoboClaw, realsense-jetson, rplidar_ros, talicska-robot)
+- `robot.repos` vcs workspace (ROS2-Bridge, ROS2_RoboClaw, rplidar_ros, talicska-robot)
+- `realsense-jetson` repo: **DEPRECATED** — Isaac ROS alapú stackre cserélve (validálásig git-ben marad)
 - `talicska-robot/` csomag struktúra: robot_description, robot_bringup, robot_safety, robot_missions (skeleton)
 - `docker-compose.yml`: microros_agent + robot service, network_mode: host
 - `.env`: Jetson IP, RoboClaw host, bridge IP-k, ROS_DOMAIN_ID, CycloneDDS
@@ -69,13 +70,72 @@
 **Eredmény:** `robot_bringup/launch/sensors.launch.py` + `ekf.yaml`
 
 - RPLidar A2: /dev/ttyUSB0, frame_id: lidar_link, /scan topic
-- RealSense D435i: külön realsense-jetson stack, `/camera/camera/imu` (NEM /camera/imu!)
+- RealSense D435i: Isaac ROS stack (WIP, átírás folyamatban), `/camera/camera/imu` (NEM /camera/imu!)
 - robot_localization EKF: odom0=/odom + imu0=/camera/camera/imu, 50Hz, two_d_mode: true
 - `cyclonedds.xml`: lab LAN bind 192.168.68.125, WHC korlátok Jetson RAM-hoz
 - docker-compose.yml: RPLidar /dev/ttyUSB0 device mapping, cyclonedds.xml mount
 
 **Teszt megjegyzés:** LiDAR és RealSense IMU topicok láthatók. EKF fúzió elindult,
 de covariance nincs finomhangolva (Task #2).
+
+---
+
+## Fázis 3b — RealSense Docker Stack ✓ | ✅ TESZTELT
+
+**Eredmény:** `realsense-jetson/Dockerfile` + `docker-compose.yml` + `Makefile` + udev rules
+
+- **Alap image:** `dustynv/ros:jazzy-ros-base-r36.4.0-cu128-24.04`
+- **librealsense:** v2.56.4 forrásból, RSUSB backend
+- **realsense-ros:** 4.56.4 forrásból, colcon overlay
+- Egyetlen service (`ros2-realsense`): depth + stereo IR + IMU, color/PointCloud kikapcsolva
+
+### Dustynv-specifikus workaround-ok (2026-03-15)
+
+A dustynv base image forrásból buildelt ROS2-t tartalmaz, ami 4 problémát okoz:
+
+1. **OpenCV ütközés:** dustynv NVIDIA OpenCV 4.11 ↔ apt `libopencv-*-dev` 4.6
+   - Fix: `apt-get -o Dpkg::Options::="--force-overwrite"`
+2. **CMake nem találja az apt ROS2 csomagokat:** `setup.sh` nem adja hozzá az apt prefix-et
+   - Fix: `colcon build --cmake-args -DCMAKE_PREFIX_PATH="/opt/ros/jazzy"`
+3. **Hiányzó ROS2 dep-ek:** `std_srvs`, `rclcpp-lifecycle`, `lifecycle-msgs`,
+   `rclcpp-components`, `launch-ros`, `libeigen3-dev`
+4. **`ros2` CLI path:** `/opt/ros/jazzy/install/bin/ros2` (nem `/opt/ros/jazzy/bin/`)
+   - Fix: `ENV PATH="/opt/ros/jazzy/install/bin:${PATH}"`
+
+### USB kernel driver ütközés (Jetson + RSUSB + Docker)
+
+A `uvcvideo`/`usbhid` kernel driverek bindolnak a RealSense USB interface-ekre →
+libusb nem tudja megnyitni (`RS2_USB_STATUS_NO_DEVICE`). Docker `privileged: true`
+mellett sem tud a container `libusb_detach_kernel_driver`-t hívni.
+
+- Fix: `99-realsense-unbind.rules` udev rule → auto-unbind plug/reset után
+- Fix: `initial_reset:=false` (reset → re-enumerate → kernel driver rebind)
+- Telepítés: `cd realsense-jetson && make install-udev` (egyszer kell)
+
+### Validált eredmények (2026-03-15)
+
+```
+RealSense Node Is Up!
+Depth:  640x480@30 Z16
+Infra1: 848x480@30 Y8
+Infra2: 848x480@30 Y8
+Accel:  250Hz MOTION_XYZ32F
+Gyro:   400Hz MOTION_XYZ32F
+IMU:    ~400Hz (unite_imu_method:=2)
+```
+
+### Makefile (realsense-jetson/)
+
+```bash
+make build         # Docker image build
+make install-udev  # udev rules telepítés (egyszer kell)
+make up            # Container indítás (auto unbind-usb)
+make down          # Container leállítás
+make validate      # Container log + topic lista + IMU Hz
+make topics        # ROS2 topic list
+make logs          # Container logok
+make shell         # Bash shell a containerben
+```
 
 ---
 
@@ -165,6 +225,26 @@ hatás. Node logikailag helyes, de élőben egyáltalán nem lett tesztelve.
 
 ---
 
+## Fázis 8 — Startup Supervisor ✓ | ⚠️ RÉSZBEN TESZTELT
+
+**Eredmény:** `robot_safety/src/startup_supervisor.cpp`, frissített `safety.launch.py`, `robot.launch.py`
+
+- **Állapotgép:** INIT → CHECK_MOTION → CHECK_TILT → CHECK_ESTOP → ARMED / FAULT (latchelt)
+- **Togglek** (`.env` + launch paraméterek): `CHECK_MOTION_ENABLED`, `CHECK_TILT_ENABLED`, `CHECK_ESTOP_ENABLED`
+  - Fontos: deszkamodellen nem minden szenzor elérhető — ez teszi felhasználhatóvá
+- **Topicok:** `/startup/state` (String JSON 10Hz), `/startup/armed` (Bool, latched QoS)
+- **Paraméterek:** `tilt_timeout_s=30.0` (RealSense 20-30s-t vesz el), `motion_stable_s=2.0`
+- **FAULT latching:** node restart szükséges — nincs auto-recover szándékosan
+- **Billencs check:** auto-pass placeholder (Sabertooth WIP)
+- **Dokumentálva:** `robot_architecture.md` 6.8 szekció
+- **CMakeLists.txt:** `nav_msgs` hozzáadva, startup_supervisor target felépítve
+
+**Teszt megjegyzés:** Build OK. ARMED állapot elérve tesztelve (E-Stop bridge online + IMU topic
+él). FAULT path tesztelve (IMU timeout → FAULT). RealSense container nélkül a tilt check
+disabled-del kerülhető meg.
+
+---
+
 ## Hátralévő feladatok
 
 ### Task #2 — EKF covariance finomhangolás | 🔴 NEM TESZTELT
@@ -199,12 +279,30 @@ Nincs még spec.
 
 ---
 
+## Egyéb javítások (2026-03-15)
+
+| Fix | Fájl | Státusz |
+|-----|------|---------|
+| NavfnPlanner plugin név: `/` → `::` | `nav2_params.yaml:68` | ✅ |
+| Portainer `network_mode: host` fix | `docker-compose.tools.yml` | ✅ |
+| Foxglove bridge rebuild (controller_manager_msgs, nav2_msgs, slam_toolbox) | `docker-compose.tools.yml` | ✅ |
+| NVIDIA container runtime `daemon.json` | `/etc/docker/daemon.json` | ✅ |
+| Makefile: `logs-f`, `logs-all`, `realsense-*` célok | `Makefile` | ✅ |
+| startup_supervisor `.env` togglek + tilt_timeout_s | `.env` | ✅ |
+| RealSense Dockerfile: dustynv workaround-ok (4 fix) | `realsense-jetson/Dockerfile` | ✅ |
+| RealSense USB unbind udev rule | `realsense-jetson/99-realsense-unbind.rules` | ✅ |
+| RealSense `initial_reset:=false` | `realsense-jetson/docker-compose.yml` | ✅ |
+| RealSense Makefile + validate | `realsense-jetson/Makefile` | ✅ |
+| Fő install.sh: 6b RealSense fázis | `talicska-robot/scripts/install.sh` | ✅ |
+
+---
+
 ## Build állapot
 
 ```bash
-# Build script: ~/tmp/build_nav.sh
 # Csomagok: robot_description, robot_bringup, robot_safety, robot_teleop
-# Utolsó sikeres build: 2026-03-13
+# Utolsó sikeres build: 2026-03-15
+# startup_supervisor hozzáadva: robot_safety csomag bővítve
 ```
 
 Összes csomag buildel, hibák nélkül.

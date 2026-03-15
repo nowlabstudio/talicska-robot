@@ -3,14 +3,92 @@ EXEC := sudo docker compose exec robot bash -c
 
 ROS := source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && export CYCLONEDDS_URI=file:///root/talicska-robot/cyclonedds.xml &&
 
-.PHONY: topics nodes rc estop motors cmd-stop logs ps
+.PHONY: up down rc-up rc-down check topics nodes rc estop motors cmd-stop logs ps realsense-fix
+
+## Stack lifecycle
+up:
+	@bash scripts/start.sh
+
+down:
+	@sudo docker compose stop
+	@echo ""
+	@echo "Robot stack leállítva. Foxglove és Portainer fut tovább."
+	@echo "RC fallback: make rc-up  |  Teljes leállítás: make tools-down"
+	@echo ""
+
+check:
+	@bash scripts/start.sh --dry-run
+
+rc-up:
+	@bash scripts/start.sh --rc
+
+rc-down:
+	@sudo docker compose -f docker-compose.rc.yml stop 2>/dev/null || true
+	@echo "RC fallback leállítva."
+
+## RealSense D435i — Isaac ROS alapú stack (robot stack leállása NEM érinti)
+REALSENSE_DIR := $(shell cd ../realsense-jetson 2>/dev/null && pwd)
+
+realsense-fix:
+	@echo "── RealSense udev rules telepítése ──"
+	@if [ -f /etc/udev/rules.d/99-realsense-libusb.rules ]; then \
+		echo "udev rules már telepítve, kihagyás."; \
+	else \
+		sudo curl -sSL https://raw.githubusercontent.com/IntelRealSense/librealsense/master/config/99-realsense-libusb.rules \
+			-o /etc/udev/rules.d/99-realsense-libusb.rules \
+		&& sudo udevadm control --reload-rules \
+		&& sudo udevadm trigger \
+		&& echo "udev rules telepítve, udev újratöltve."; \
+	fi
+	@echo ""
+	@echo "── RealSense container újraindítása ──"
+	@sudo docker compose -f $(REALSENSE_DIR)/docker-compose.yml down 2>/dev/null || true
+	@sudo docker compose -f $(REALSENSE_DIR)/docker-compose.yml up -d --build
+	@echo "Várakozás initial_reset + kamera init (15s)..."
+	@sleep 15
+	@echo ""
+	@echo "── Logok (Ctrl+C kilépéshez) ──"
+	@sudo docker compose -f $(REALSENSE_DIR)/docker-compose.yml logs -f ros2-realsense
+
+realsense-up:
+	@sudo docker compose -f $(REALSENSE_DIR)/docker-compose.yml up -d --build
+
+realsense-down:
+	@sudo docker compose -f $(REALSENSE_DIR)/docker-compose.yml stop
+
+realsense-logs:
+	@sudo docker compose -f $(REALSENSE_DIR)/docker-compose.yml logs -f ros2-realsense
+
+## Tools (Foxglove + Portainer) — robot stack leállása NEM érinti
+tools-up:
+	@sudo docker compose -f docker-compose.tools.yml up -d --build
+	@echo ""
+	@echo "Foxglove:  ws://$(shell hostname -I | awk '{print $$1}'):8765"
+	@echo "Portainer: http://$(shell hostname -I | awk '{print $$1}'):9000"
+	@echo ""
+
+tools-down:
+	@sudo docker compose -f docker-compose.tools.yml stop foxglove_bridge
+	@echo "Foxglove leállítva. Portainer fut tovább."
+
+tools-restart:
+	@sudo docker compose -f docker-compose.tools.yml restart foxglove_bridge
+
+tools-logs:
+	@sudo docker compose -f docker-compose.tools.yml logs --tail=30 foxglove_bridge
 
 ## Status
 ps:
 	sudo docker compose ps
 
 logs:
-	sudo docker compose logs --tail=30 robot
+	sudo docker compose logs --tail=50 robot
+
+logs-f:
+	sudo docker compose logs -f robot
+
+logs-all:
+	sudo docker compose logs -f
 
 ## ROS2 introspection
 topics:
