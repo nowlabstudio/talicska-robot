@@ -7,10 +7,12 @@ repositories:
     type: git
     url: https://github.com/nowlabstudio/ROS2_RoboClaw.git
     version: main
-  robot/realsense-jetson:
-    type: git
-    url: https://github.com/nowlabstudio/realsense-jetson.git
-    version: main
+  # DEPRECATED: saját realsense-jetson stack kiváltva Isaac ROS alapú megoldással
+  # Validálás után törlendő innen és a repóból is.
+  # robot/realsense-jetson:
+  #   type: git
+  #   url: https://github.com/nowlabstudio/realsense-jetson.git
+  #   version: main
   robot/rplidar_ros:
     type: git
     url: https://github.com/Slamtec/rplidar_ros.git

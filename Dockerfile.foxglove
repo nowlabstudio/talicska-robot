@@ -1,0 +1,26 @@
+FROM ros:jazzy-ros-base
+
+# foxglove_bridge: ROS2 → WebSocket bridge (port 8765)
+# rmw_cyclonedds_cpp: ugyanaz a DDS mint a robot containerben
+# robot-specifikus message package-ek: service-ek elérhetők lesznek Foxglove-ból
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ros-jazzy-foxglove-bridge \
+        ros-jazzy-rmw-cyclonedds-cpp \
+        ros-jazzy-controller-manager-msgs \
+        ros-jazzy-nav2-msgs \
+        ros-jazzy-robot-localization \
+        ros-jazzy-slam-toolbox \
+    && rm -rf /var/lib/apt/lists/*
+
+# Port dokumentáció (network_mode: host miatt nem kell EXPOSE, de jelöljük)
+# 8765 — Foxglove WebSocket (ws://jetson-ip:8765)
+
+CMD ["/bin/bash", "-c", \
+     "source /opt/ros/jazzy/setup.bash && \
+      ros2 run foxglove_bridge foxglove_bridge \
+        --ros-args \
+        -p port:=8765 \
+        -p address:=0.0.0.0 \
+        -p tls:=false \
+        -p send_buffer_limit:=10000000"]

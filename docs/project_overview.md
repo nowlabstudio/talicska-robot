@@ -1,8 +1,8 @@
 # Robot Project — Teljes Projekt Áttekintés
 
-**Verzió:** 2.0
-**Dátum:** 2026-03-13
-**Státusz:** Tervezés lezárva, implementáció következik
+**Verzió:** 2.1
+**Dátum:** 2026-03-15
+**Státusz:** Implementáció folyamatban — Fázis 0–8 kész, RealSense stack validálás alatt
 
 ---
 
@@ -266,8 +266,9 @@ repositories:
     url: https://github.com/nowlabstudio/ROS2-Bridge.git
   robot/motorcontrol_roboclaw:
     url: https://github.com/nowlabstudio/ROS2_RoboClaw.git
-  robot/realsense:
-    url: https://github.com/nowlabstudio/realsense-jetson.git
+  # robot/realsense — DEPRECATED, Isaac ROS alapú stackre cserélve
+  # robot/realsense:
+  #   url: https://github.com/nowlabstudio/realsense-jetson.git
   robot/motorcontrol_sabertooth:
     url: https://github.com/nowlabstudio/SabertoothMicroROSBridge.git
     # DEPRECATED — tilt bridge a ROS2-Bridge platformra kerül
@@ -288,7 +289,7 @@ talicska-robot-ws/                         ← workspace gyökér
 │   ├── robot/                             ← külső repók (vcs clone)
 │   │   ├── bridge/                        ← ROS2-Bridge (firmware)
 │   │   ├── motorcontrol_roboclaw/         ← ROS2_RoboClaw (C++ driver)
-│   │   └── realsense/                     ← realsense-jetson (Docker infra)
+│   │   └── realsense/                     ← [DEPRECATED] realsense-jetson → Isaac ROS (WIP)
 │   │
 │   └── robot/bringup/                     ← talicska-robot repo (saját)
 │       ├── docker-compose.yml             ← Jetson prod stack
@@ -310,10 +311,11 @@ talicska-robot-ws/                         ← workspace gyökér
 │       │   │   ├── slam_params.yaml
 │       │   │   └── cyclonedds.xml
 │       │   └── package.xml
-│       ├── robot_safety/                  ← ROS2 csomag: Safety Supervisor
-│       │   ├── src/safety_supervisor.cpp
+│       ├── robot_safety/                  ← ROS2 csomag: Safety + Startup Supervisor
+│       │   ├── src/safety_supervisor.cpp   ← runtime motor gate (continuous)
+│       │   ├── src/startup_supervisor.cpp  ← pre-arm state machine (one-shot)
 │       │   ├── include/robot_safety/
-│       │   ├── launch/safety.launch.py
+│       │   ├── launch/safety.launch.py     ← mindkét node-ot indítja
 │       │   └── package.xml
 │       └── robot_missions/                ← ROS2 csomag: Mission Executive
 │           ├── src/
@@ -332,7 +334,7 @@ talicska-robot-ws/                         ← workspace gyökér
 |---|---|---|
 | URDF rossz csomagban (ROS2_RoboClaw/urdf/) | ROS2_RoboClaw | Migrálni robot_description-be |
 | host_ws elavult | ROS2-Bridge | Kivezetni |
-| realsense entrypoint.sh hardkódolt, nem launch-ból indítható | realsense-jetson | Refaktorálni |
+| realsense-jetson stack: Isaac ROS → dustynv | realsense-jetson | ⚠️ Build fix folyamatban (GPG kulcs) |
 | PEDAL bridge channelek üresek | ROS2-Bridge | WIP |
 | Input bridge új channelek hiányoznak | ROS2-Bridge | Megírni |
 | Tilt bridge nem létezik még | ROS2-Bridge | Megírni |
@@ -340,3 +342,5 @@ talicska-robot-ws/                         ← workspace gyökér
 | Robot tömeg URDF placeholder (18.3kg → 100kg+) | ROS2_RoboClaw | Frissíteni |
 | 5 új RoboClaw service hiányzik | ROS2_RoboClaw | Megírni |
 | IMU tilt safety USB/Docker-dependent (V1) | — | V2-ben MCU szintre hozni |
+| NavfnPlanner plugin: `/` → `::` | nav2_params.yaml | ✅ Javítva 2026-03-15 |
+| startup_supervisor hiányzott | robot_safety | ✅ Implementálva 2026-03-15 |

@@ -288,6 +288,8 @@ Nincs még spec.
 | Foxglove bridge rebuild (controller_manager_msgs, nav2_msgs, slam_toolbox) | `docker-compose.tools.yml` | ✅ |
 | NVIDIA container runtime `daemon.json` | `/etc/docker/daemon.json` | ✅ |
 | Makefile: `logs-f`, `logs-all`, `realsense-*` célok | `Makefile` | ✅ |
+| `start.sh` → `prestart.sh` átnevezés + refaktor | `scripts/prestart.sh`, `Makefile` | ✅ |
+| Makefile orchestráció: `make up` = check → realsense → fő stack | `Makefile` | ✅ |
 | startup_supervisor `.env` togglek + tilt_timeout_s | `.env` | ✅ |
 | RealSense Dockerfile: dustynv workaround-ok (4 fix) | `realsense-jetson/Dockerfile` | ✅ |
 | RealSense USB unbind udev rule | `realsense-jetson/99-realsense-unbind.rules` | ✅ |

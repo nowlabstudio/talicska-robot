@@ -566,6 +566,95 @@ Minden lehetséges meghibásodási módhoz definiált viselkedés tartozik:
 | Kritikus töltöttség | Load shedding, misszió leállítás | Legközelebbi tölőponthoz navigáció |
 | Ember közelségének detektálása | Sebesség csökkentés / megállás | Várakozás, újraindítás csak ha szabad |
 
+### 6.7 Degradált Üzemmódok (Degraded Operation Modes)
+
+A robot nem bináris állapotban létezik (teljes működés / teljes leállás). Szoftver meghibásodás, karbantartás vagy frissítés esetén fokozatos visszalépés lehetséges, megőrizve a mozgathatóságot.
+
+#### RC Fallback mód
+
+Ha a fő robot stack leáll (crash, frissítés, karbantartás, docker compose down), a robot **ne legyen mozgásképtelen**. Egy 100kg+ platform kézi mozgatása a stack visszaállásáig elfogadhatatlan operatív korlát.
+
+**Minimális RC Fallback stack:**
+```
+MicroROS Agent        ← RC bridge UDP kapcsolat
+rc_teleop_node        ← Float32 → Twist konverzió
+controller_manager    ← 50 Hz
+diff_drive_controller ← Twist → joint parancsok
+RoboClaw HW interface ← TCP → motorvezérlő
+E-Stop watchdog       ← minimális safety
+```
+
+**Mi NEM fut RC fallback módban:**
+- Nav2, SLAM, szenzorfúzió (EKF)
+- Safety supervisor (LiDAR proximity, IMU tilt)
+- Foxglove telemetria
+
+**Safety korlát:** RC fallback módban a magasabb szintű biztonsági rétegek (LiDAR proximity, IMU tilt) nem aktívak. Ez elfogadható, mert:
+1. Az operátor közvetlen látótávolságban vezérel (RC TX)
+2. A Hardware E-Stop (1. réteg) és E-Stop watchdog aktív marad
+3. A mód explicit jelzése kötelező (terminál output, LED/fizikai jelzés)
+
+**Implementáció:** Külön `docker-compose.rc.yml`, `make rc-up` / `make rc-down` targetek. A fő stack leállításakor (`make down`) automatikusan elindul a RC fallback; `make up` leállítja és átvált a teljes stackre.
+
+#### Üzemmód összefoglaló
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   OPERATING MODES                       │
+│                                                         │
+│  FULL STACK         RC FALLBACK        EMERGENCY        │
+│  ───────────        ───────────        ─────────        │
+│  Nav2 ✓             Nav2 ✗             Minden SW ✗      │
+│  SLAM ✓             SLAM ✗             HW E-Stop ✓      │
+│  Safety sup. ✓      Safety sup. ✗      Motorok le ✓     │
+│  RC teleop ✓        RC teleop ✓                         │
+│  E-Stop HW ✓        E-Stop HW ✓                         │
+│  Foxglove ✓         Foxglove ✗                          │
+│                                                         │
+│  make up            make down          E-Stop gomb      │
+│  (→ auto RC         (→ auto RC                          │
+│   fallback le)       fallback fel)                      │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 6.8 Startup Supervisor — Indítási Ellenőrzési Szekvencia
+
+A `startup_supervisor` node (csomag: `robot_safety`) az indítás után egyszer lefutó state machine. Célja: mielőtt a robot mozgásra kész állapotba kerül, ellenőrzi hogy a hardware feltételek teljesülnek-e.
+
+**State machine:**
+```
+INIT (1s) → CHECK_MOTION → CHECK_TILT → CHECK_ESTOP → ARMED
+                 ↓               ↓            ↓
+               FAULT           FAULT        FAULT  (latch — node restart kell)
+```
+
+**Checkek:**
+
+| Check | Mit vizsgál | Timeout |
+|---|---|---|
+| `CHECK_MOTION` | odom sebesség < 0.05 m/s, 2 másodpercig stabil | 30 s |
+| `CHECK_TILT` | IMU roll < ±25°, pitch < ±20° | 10 s |
+| `CHECK_ESTOP` | E-Stop bridge online ÉS nem aktív | 30 s (operator feloldhatja) |
+| billencs | (placeholder — Sabertooth WIP) | auto-pass |
+
+**Topics:**
+- `/startup/state` (String JSON, 10 Hz) — Foxglove-ban látható, tartalmazza a state-et, check flageket, sensor értékeket
+- `/startup/armed` (Bool, latched) — true ha ARMED
+
+**Konfiguráció (`.env` fájl, rebuild NEM kell):**
+
+```bash
+CHECK_MOTION_ENABLED=true   # false = kihagyja a motion checkot
+CHECK_TILT_ENABLED=true     # false = kihagyja a tilt checkot (pl. deszkamodell, ferde IMU)
+CHECK_ESTOP_ENABLED=true    # false = kihagyja az E-Stop checkot (pl. bridge nincs bekötve)
+```
+
+> **FIGYELEM:** `false` értékek kizárólag fejlesztési/prototype célra. Éles roboton minden checknek `true`-nak kell lennie.
+
+A `safety_supervisor` (runtime motor gate) párhuzamosan fut — az ARMED állapot független tőle. A FEGYELMEZETT indítási szekvencia biztosítja, hogy a robot ne induljon el billenő helyzetből, mozgás közben, vagy aktív E-Stop mellett.
+
 ---
 
 ## 7. Szenzor Framework
@@ -805,6 +894,38 @@ Vészhelyzeti fallback:
 
 **Dual-SIM / dual-modem architektúra:**
 Az elsődleges és másodlagos transport fizikailag független modemeken fut. Ha az LTE elvész, a Wi-Fi átveszi (ha fleet közelben van); ha mindkettő elvész, a LoRa vészcsatorna él. A robot autonómiája nincs hálózatfüggő — ez csak monitorozásra és koordinációra kell.
+
+### 10.4 Operátori Távoli Hozzáférés — Tailscale VPN
+
+A Zenoh fleet kommunikációtól elkülönül az **operátori hozzáférési réteg**: Foxglove (vizualizáció) és Portainer (container management) LTE-n keresztüli elérhetősége.
+
+**Probléma:** LTE-n CG-NAT jellemző — az operátor mögötti hálózatban nincs publikus IP, port forward és befelé irányuló kapcsolat nem lehetséges a Mikrotik routeren keresztül sem.
+
+**Megoldás: Tailscale a Jetsonon**
+
+```
+Operátor laptop/telefon
+  └─ Tailscale kliens
+        │ WireGuard tunnel (CG-NAT-on átmegy)
+        │ DERP relay ha szükséges
+        ▼
+  Tailscale mesh (100.x.x.x névtér)
+        │
+        ▼
+  Jetson (Tailscale node, állandó 100.x.x.x IP)
+    ├─ :8765  Foxglove WebSocket
+    ├─ :9000  Portainer HTTP
+    └─ :8888  MicroROS Agent (debug)
+```
+
+**Miért Tailscale és nem saját WireGuard szerver?**
+- CG-NAT-on is átmegy (DERP relay koordinálja a kapcsolatot)
+- Nincs szükség publikus szerverre vagy statikus IP-re
+- WireGuard alapú — ugyanolyan biztonságos
+- A Tailscale hálózat zárt: csak meghívott eszközök látják egymást
+
+**Zenoh és Tailscale viszonya:**
+A fleet Zenoh kommunikáció és az operátori Tailscale hozzáférés **független rétegek**. A Zenoh fleet protokoll a robot-robot és robot-cloud koordinációhoz, a Tailscale az ember-robot közvetlen debug/management hozzáféréshez. Átfedés esetén (pl. szükség esetén Zenoh-t is lehet Tailscale-en routolni) ez egy döntési pont, de alapértelmezetten szeparált.
 
 ### 10.4 mTLS Konfiguráció
 

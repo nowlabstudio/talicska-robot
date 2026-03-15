@@ -1,0 +1,44 @@
+name: tools
+
+# =============================================================================
+# Talicska — Debug / Management eszközök
+#
+# Ez a stack FÜGGETLEN a robot stacktől:
+#   - make down NEM állítja le
+#   - make tools-up / make tools-down
+#   - Portainer soha nem áll le (manage tools-down is kihagyja)
+#
+# Services:
+#   foxglove_bridge  — ROS2 WebSocket bridge, Foxglove Studio csatlakozáshoz
+#                      Port: 8765 (ws://jetson-ip:8765)
+#   portainer        — Docker management UI
+#                      Port: 9000 (http://jetson-ip:9000)
+# =============================================================================
+
+services:
+
+  foxglove_bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.foxglove
+    container_name: foxglove_bridge
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - CYCLONEDDS_URI=file:///cyclonedds.xml
+    volumes:
+      - ./cyclonedds.xml:/cyclonedds.xml:ro
+
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    network_mode: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    restart: unless-stopped
+
+volumes:
+  portainer_data:

@@ -67,6 +67,22 @@ def generate_launch_description():
         "proximity_distance_m", default_value="0.3",
         description="Front proximity stop distance (m). Set 0.0 to disable.")
 
+    check_motion_arg = DeclareLaunchArgument(
+        "check_motion_enabled", default_value="true",
+        description="Startup check: robot stationary before arming")
+
+    check_tilt_arg = DeclareLaunchArgument(
+        "check_tilt_enabled", default_value="true",
+        description="Startup check: IMU tilt within limits before arming")
+
+    check_estop_arg = DeclareLaunchArgument(
+        "check_estop_enabled", default_value="true",
+        description="Startup check: E-Stop bridge online and not active before arming")
+
+    tilt_timeout_arg = DeclareLaunchArgument(
+        "tilt_timeout_s", default_value="30.0",
+        description="Startup tilt check: max wait for IMU topic (RealSense may be slow)")
+
     # -------------------------------------------------------------- hardware --
     hardware = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -115,10 +131,14 @@ def generate_launch_description():
                         FindPackageShare("robot_safety"), "launch", "safety.launch.py"
                     ])),
                 launch_arguments={
-                    "estop_timeout_s":      LaunchConfiguration("estop_timeout_s"),
-                    "tilt_roll_limit_deg":  LaunchConfiguration("tilt_roll_limit_deg"),
-                    "tilt_pitch_limit_deg": LaunchConfiguration("tilt_pitch_limit_deg"),
-                    "proximity_distance_m": LaunchConfiguration("proximity_distance_m"),
+                    "estop_timeout_s":       LaunchConfiguration("estop_timeout_s"),
+                    "tilt_roll_limit_deg":   LaunchConfiguration("tilt_roll_limit_deg"),
+                    "tilt_pitch_limit_deg":  LaunchConfiguration("tilt_pitch_limit_deg"),
+                    "proximity_distance_m":  LaunchConfiguration("proximity_distance_m"),
+                    "check_motion_enabled":  LaunchConfiguration("check_motion_enabled"),
+                    "check_tilt_enabled":    LaunchConfiguration("check_tilt_enabled"),
+                    "check_estop_enabled":   LaunchConfiguration("check_estop_enabled"),
+                    "tilt_timeout_s":        LaunchConfiguration("tilt_timeout_s"),
                 }.items(),
             )
         ],
@@ -151,6 +171,10 @@ def generate_launch_description():
         tilt_roll_arg,
         tilt_pitch_arg,
         proximity_distance_arg,
+        check_motion_arg,
+        check_tilt_arg,
+        check_estop_arg,
+        tilt_timeout_arg,
         hardware,
         teleop,
         sensors,

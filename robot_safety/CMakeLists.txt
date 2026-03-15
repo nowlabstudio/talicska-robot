@@ -13,6 +13,7 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 
 add_executable(safety_supervisor src/safety_supervisor.cpp)
 ament_target_dependencies(safety_supervisor
@@ -22,8 +23,16 @@ ament_target_dependencies(safety_supervisor
   geometry_msgs
 )
 
+add_executable(startup_supervisor src/startup_supervisor.cpp)
+ament_target_dependencies(startup_supervisor
+  rclcpp
+  std_msgs
+  sensor_msgs
+  nav_msgs
+)
+
 install(
-  TARGETS safety_supervisor
+  TARGETS safety_supervisor startup_supervisor
   DESTINATION lib/${PROJECT_NAME}
 )
 

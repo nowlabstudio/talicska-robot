@@ -1,8 +1,8 @@
 controller_manager:
   ros__parameters:
-    # 50 Hz — RoboClaw TCP round-trip ~7-8ms (GetEncoders) + ~5ms (SetSpeed).
-    # 100 Hz (10ms budget) → constant overrun. 50 Hz (20ms budget) → fits comfortably.
-    # ROS2_RoboClaw optimizations (write-on-change, rotating diags) designed for 50 Hz.
+    # 50 Hz — RoboClaw TCP round-trip ~7-8ms (GetEncoders) + ~3ms (1 rotating diag slot)
+    # = ~11ms per cycle. Fits 20ms budget (50Hz) comfortably; overflows at 100Hz because
+    # the USR-K6 serial bridge latency alone consumes most of the 10ms budget.
     update_rate: 50
 
     joint_state_broadcaster:

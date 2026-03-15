@@ -7,7 +7,9 @@ name: robot
 #   robot           — ros2_control + bringup (RoboClaw, EKF, Nav2)
 #
 # NOT managed here (separate stack):
-#   RealSense D435i — runs from robot/realsense-jetson/docker-compose.yml
+#   RealSense D435i — Isaac ROS alapú stack (WIP, átírás folyamatban)
+#                     Régi: robot/realsense-jetson/ (deprecated, git-ben marad validálásig)
+#                     Új:   nvcr.io/isaac/ros:noble-ros2_jazzy_*-arm64 alapon
 #                     Publishes /camera/camera/imu, /camera/camera/depth/*
 #                     on host network — visible to all containers.
 #
@@ -53,3 +55,7 @@ services:
       estop_timeout_s:=${ESTOP_TIMEOUT_S:-2.0}
       tilt_roll_limit_deg:=${TILT_ROLL_LIMIT_DEG:-25.0}
       tilt_pitch_limit_deg:=${TILT_PITCH_LIMIT_DEG:-20.0}
+      check_motion_enabled:=${CHECK_MOTION_ENABLED:-true}
+      check_tilt_enabled:=${CHECK_TILT_ENABLED:-true}
+      check_estop_enabled:=${CHECK_ESTOP_ENABLED:-true}
+      tilt_timeout_s:=${TILT_TIMEOUT_S:-30.0}

@@ -3,61 +3,72 @@ EXEC := sudo docker compose exec robot bash -c
 
 ROS := source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && export CYCLONEDDS_URI=file:///root/talicska-robot/cyclonedds.xml &&
 
-.PHONY: up down rc-up rc-down check topics nodes rc estop motors cmd-stop logs ps realsense-fix
+.PHONY: up down rc-up rc-down check check-rc realsense-up realsense-down realsense-logs realsense-fix topics nodes rc estop motors cmd-stop logs ps
 
-## Stack lifecycle
-up:
-	@bash scripts/start.sh
+## Stack lifecycle — orchestráció
+##   make up      = prestart check → realsense container → fő stack
+##   make down    = fő stack + realsense leállítás
+##   make rc-up   = prestart check (RC mód) → fő stack (kamera nélkül)
+##   make check   = csak hardware check, semmi nem indul
+
+REALSENSE_DIR := $(shell cd ../realsense-jetson 2>/dev/null && pwd)
+
+up: check realsense-up
+	@echo ""
+	@echo "── Fő stack indítása ──"
+	@sudo docker compose up -d
 
 down:
 	@sudo docker compose stop
+	@if [ -n "$(REALSENSE_DIR)" ]; then \
+		cd $(REALSENSE_DIR) && sudo docker compose stop 2>/dev/null || true; \
+	fi
 	@echo ""
-	@echo "Robot stack leállítva. Foxglove és Portainer fut tovább."
+	@echo "Robot stack + RealSense leállítva. Foxglove és Portainer fut tovább."
 	@echo "RC fallback: make rc-up  |  Teljes leállítás: make tools-down"
 	@echo ""
 
 check:
-	@bash scripts/start.sh --dry-run
+	@bash scripts/prestart.sh
 
-rc-up:
-	@bash scripts/start.sh --rc
+check-rc:
+	@bash scripts/prestart.sh --rc
+
+rc-up: check-rc
+	@if [ ! -f docker-compose.rc.yml ]; then \
+		echo "HIBA: docker-compose.rc.yml nem létezik — RC fallback mód még nincs implementálva (backlog)"; \
+		exit 1; \
+	fi
+	@sudo docker compose -f docker-compose.rc.yml up -d
 
 rc-down:
 	@sudo docker compose -f docker-compose.rc.yml stop 2>/dev/null || true
 	@echo "RC fallback leállítva."
 
-## RealSense D435i — Isaac ROS alapú stack (robot stack leállása NEM érinti)
-REALSENSE_DIR := $(shell cd ../realsense-jetson 2>/dev/null && pwd)
-
-realsense-fix:
-	@echo "── RealSense udev rules telepítése ──"
-	@if [ -f /etc/udev/rules.d/99-realsense-libusb.rules ]; then \
-		echo "udev rules már telepítve, kihagyás."; \
-	else \
-		sudo curl -sSL https://raw.githubusercontent.com/IntelRealSense/librealsense/master/config/99-realsense-libusb.rules \
-			-o /etc/udev/rules.d/99-realsense-libusb.rules \
-		&& sudo udevadm control --reload-rules \
-		&& sudo udevadm trigger \
-		&& echo "udev rules telepítve, udev újratöltve."; \
-	fi
-	@echo ""
-	@echo "── RealSense container újraindítása ──"
-	@sudo docker compose -f $(REALSENSE_DIR)/docker-compose.yml down 2>/dev/null || true
-	@sudo docker compose -f $(REALSENSE_DIR)/docker-compose.yml up -d --build
-	@echo "Várakozás initial_reset + kamera init (15s)..."
-	@sleep 15
-	@echo ""
-	@echo "── Logok (Ctrl+C kilépéshez) ──"
-	@sudo docker compose -f $(REALSENSE_DIR)/docker-compose.yml logs -f ros2-realsense
-
+## RealSense D435i — dustynv alapú külön stack (saját repo: realsense-jetson)
 realsense-up:
-	@sudo docker compose -f $(REALSENSE_DIR)/docker-compose.yml up -d --build
+	@if [ -z "$(REALSENSE_DIR)" ]; then \
+		echo "⚠ realsense-jetson repo nem található (../realsense-jetson), kihagyás"; \
+	elif lsusb 2>/dev/null | grep -q "8086:0b3a"; then \
+		echo "── RealSense container indítása ──"; \
+		cd $(REALSENSE_DIR) && make up; \
+	else \
+		echo "⚠ RealSense USB nem található, kihagyás"; \
+	fi
 
 realsense-down:
-	@sudo docker compose -f $(REALSENSE_DIR)/docker-compose.yml stop
+	@if [ -n "$(REALSENSE_DIR)" ]; then \
+		cd $(REALSENSE_DIR) && sudo docker compose stop 2>/dev/null || true; \
+	fi
 
 realsense-logs:
-	@sudo docker compose -f $(REALSENSE_DIR)/docker-compose.yml logs -f ros2-realsense
+	@cd $(REALSENSE_DIR) && sudo docker compose logs -f ros2-realsense
+
+realsense-fix:
+	@if [ -z "$(REALSENSE_DIR)" ]; then \
+		echo "HIBA: realsense-jetson repo nem található"; exit 1; \
+	fi
+	@cd $(REALSENSE_DIR) && make install-udev
 
 ## Tools (Foxglove + Portainer) — robot stack leállása NEM érinti
 tools-up:
