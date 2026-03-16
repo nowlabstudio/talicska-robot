@@ -32,6 +32,7 @@
  */
 
 #include <chrono>
+#include <cmath>
 #include <memory>
 
 #include "geometry_msgs/msg/twist.hpp"
@@ -53,10 +54,12 @@ public:
     this->declare_parameter("rc_mode_threshold", 0.5);    // |ch5| threshold
     this->declare_parameter("rc_mode_invert",    false);  // true: low=RC, high=auto
     this->declare_parameter("publish_rate_hz",  50.0);
+    this->declare_parameter("deadzone",        0.05);   // |motor| < deadzone → 0
 
     max_linear_vel_    = this->get_parameter("max_linear_vel").as_double();
     wheel_separation_  = this->get_parameter("wheel_separation").as_double();
     rc_mode_threshold_ = this->get_parameter("rc_mode_threshold").as_double();
+    deadzone_          = this->get_parameter("deadzone").as_double();
     double rate_hz     = this->get_parameter("publish_rate_hz").as_double();
 
     // Runtime parameter update — no recompile needed:
@@ -126,8 +129,11 @@ private:
 
     if (in_rc_mode) {
       // RC mode: kinematic inversion of motor values (-1..+1) → Twist
-      const double v_left  = motor_left_  * max_linear_vel_;
-      const double v_right = motor_right_ * max_linear_vel_;
+      // Deadzone: ignore small joystick noise that would drift open-loop odom
+      const double left_in  = (std::abs(motor_left_)  < deadzone_) ? 0.0 : motor_left_;
+      const double right_in = (std::abs(motor_right_) < deadzone_) ? 0.0 : motor_right_;
+      const double v_left  = left_in  * max_linear_vel_;
+      const double v_right = right_in * max_linear_vel_;
       twist.linear.x  = (v_left + v_right) / 2.0;
       twist.angular.z = (v_right - v_left) / wheel_separation_;
     }
@@ -142,6 +148,7 @@ private:
   double max_linear_vel_;
   double wheel_separation_;
   double rc_mode_threshold_;
+  double deadzone_;
   bool   rc_mode_invert_ = false;
 
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;

@@ -3,7 +3,7 @@ EXEC := sudo docker compose exec robot bash -c
 
 ROS := source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && export CYCLONEDDS_URI=file:///root/talicska-robot/cyclonedds.xml &&
 
-.PHONY: up down rc-up rc-down check check-rc realsense-up realsense-down realsense-logs realsense-fix topics nodes rc estop motors cmd-stop logs ps
+.PHONY: up down rc-up rc-down check check-rc agent-restart realsense-up realsense-down realsense-logs realsense-fix topics nodes rc estop motors cmd-stop logs ps
 
 ## Stack lifecycle — orchestráció
 ##   make up      = prestart check → realsense container → fő stack
@@ -44,6 +44,13 @@ rc-up: check-rc
 rc-down:
 	@sudo docker compose -f docker-compose.rc.yml stop 2>/dev/null || true
 	@echo "RC fallback leállítva."
+
+## MicroROS agent restart — bridge session cleanup (workaround duplikált DDS node-okra)
+agent-restart:
+	@sudo docker compose restart microros_agent
+	@echo ""
+	@echo "MicroROS agent újraindítva. Bridge-ek ~2-5s alatt újracsatlakoznak."
+	@echo ""
 
 ## RealSense D435i — dustynv alapú külön stack (saját repo: realsense-jetson)
 realsense-up:

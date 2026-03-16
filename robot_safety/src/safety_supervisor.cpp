@@ -69,7 +69,7 @@ public:
       std::bind(&SafetySupervisor::estop_cb, this, std::placeholders::_1));
 
     imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
-      "/camera/camera/imu", rclcpp::QoS(10),
+      "/camera/camera/imu", rclcpp::SensorDataQoS(),
       std::bind(&SafetySupervisor::imu_cb, this, std::placeholders::_1));
 
     scan_sub_ = create_subscription<sensor_msgs::msg::LaserScan>(

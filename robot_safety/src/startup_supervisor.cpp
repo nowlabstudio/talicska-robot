@@ -21,7 +21,7 @@
  *   /diff_drive_controller/odom  (nav_msgs/Odometry)    — motion check
  *   /camera/camera/imu           (sensor_msgs/Imu)      — tilt check
  *   /robot/estop                 (std_msgs/Bool)        — E-Stop state
- *   /robot/rc_mode               (std_msgs/Bool)        — informational only
+ *   /robot/rc_mode               (std_msgs/Float32)     — informational only (>0.5 = RC mode)
  *
  * NOTE: This node handles STARTUP checks only.
  *       Runtime safety monitoring (E-Stop watchdog, proximity, continuous tilt)
@@ -38,6 +38,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/string.hpp"
 
 namespace robot_safety
@@ -112,7 +113,7 @@ public:
       });
 
     imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
-      "/camera/camera/imu", rclcpp::QoS(10),
+      "/camera/camera/imu", rclcpp::SensorDataQoS(),
       [this](sensor_msgs::msg::Imu::SharedPtr msg) {
         const double ax = msg->linear_acceleration.x;
         const double ay = msg->linear_acceleration.y;
@@ -129,10 +130,10 @@ public:
         estop_received_ = true;
       });
 
-    rc_mode_sub_ = create_subscription<std_msgs::msg::Bool>(
+    rc_mode_sub_ = create_subscription<std_msgs::msg::Float32>(
       "/robot/rc_mode", rclcpp::QoS(10),
-      [this](std_msgs::msg::Bool::SharedPtr msg) {
-        rc_mode_active_   = msg->data;
+      [this](std_msgs::msg::Float32::SharedPtr msg) {
+        rc_mode_active_   = (msg->data > 0.5f);
         rc_mode_received_ = true;
       });
 
@@ -426,7 +427,7 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr  odom_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr    imu_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr      estop_sub_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr      rc_mode_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr    rc_mode_sub_;
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr       state_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr         armed_pub_;

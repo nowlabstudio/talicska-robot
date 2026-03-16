@@ -12,14 +12,17 @@ ekf_filter_node:
     frequency: 50.0
     sensor_timeout: 0.1
     two_d_mode: true
-    publish_tf: true
+    # KIKAPCSOLVA: egyetlen szenzor (wheel odom) mellett az EKF random walk driftet okoz.
+    # Jelenleg a diff_drive_controller publikálja az odom→base_link TF-et (enable_odom_tf: true).
+    # IMU visszakapcsolásakor: true-ra állítani + controllers.yaml enable_odom_tf: false!
+    publish_tf: false
     map_frame:       map
     odom_frame:      odom
     base_link_frame: base_link
     world_frame:     odom
 
     # Wheel odometry from diff_drive_controller
-    odom0: /odom
+    odom0: /diff_drive_controller/odom
     odom0_config:
       [true,  true,  false,
        false, false, true,
@@ -29,33 +32,42 @@ ekf_filter_node:
     odom0_queue_size: 10
     odom0_differential: false
 
-    # RealSense D435i IMU (fused accel+gyro, unite_imu_method:=2)
-    # NOTE: topic is /camera/camera/imu (not /camera/imu)
-    imu0: /camera/camera/imu
-    imu0_config:
-      [false, false, false,
-       true,  true,  true,
-       false, false, false,
-       true,  true,  true,
-       true,  true,  false]
-    imu0_queue_size: 20
-    imu0_differential: false
-    imu0_relative: false
-    imu0_remove_gravitational_acceleration: true
+    # RealSense D435i IMU — KIKAPCSOLVA
+    # A kamera fizikai orientációja nem egyezik a robot base_link frame-jével
+    # (pl. oldalra fektetve → -66° roll). Az EKF-be nyers IMU adat nem adható
+    # amíg a kamera→base_link transzformáció nincs implementálva.
+    # Visszakapcsolás: backlog → "IMU tilt check — RealSense kamera frame orientáció"
+    #
+    # imu0: /camera/camera/imu
+    # imu0_config:
+    #   [false, false, false,
+    #    true,  true,  true,
+    #    false, false, false,
+    #    true,  true,  true,
+    #    true,  true,  false]
+    # imu0_queue_size: 20
+    # imu0_differential: false
+    # imu0_relative: false
+    # imu0_remove_gravitational_acceleration: true
 
+    # Process noise — alacsony értékek, mert jelenleg CSAK wheel odom van (IMU ki).
+    # Egyetlen szenzorral a magas process noise random walk driftet okoz.
+    # IMU visszakapcsolásakor ezeket NÖVELNI KELL (0.01-0.05 tartomány).
+    #
+    # Állapotvektor: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
     process_noise_covariance:
-      [0.05,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.05,  0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.06,  0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.03,  0.0,   0.0,   0.0,    0.0,    0.0,    0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.03,  0.0,   0.0,    0.0,    0.0,    0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.06,  0.0,    0.0,    0.0,    0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.025,  0.0,    0.0,    0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.025,  0.0,    0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.04,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.01,  0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,   0.01,  0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,   0.0,   0.02,  0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,   0.0,   0.0,   0.01,  0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,   0.0,   0.0,   0.0,   0.01,  0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,   0.0,   0.0,   0.0,   0.0,   0.015]
+      [0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001,  0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.001,  0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.001,  0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.001,  0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.001,  0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.001,  0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.001, 0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.001, 0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.001]

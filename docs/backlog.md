@@ -14,6 +14,12 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 - **Motor irány + M1/M2 mapping paraméterek a hardware plugin-ban** — jelenleg nincs `invert_left`/`invert_right` URDF param. Egyszer megírni a plugin-ba (rebuild), utána URDF xacro arg-ként terepen állítható. 4 motoros konfignál fontosabb lesz (melyik M1, melyik M2, melyik controller). Az URDF volume-mounttal együtt csinálandó.
 
+## URDF / Vizualizáció
+
+- **URDF modell hibás — kerekek rossz pozícióban, robot "szétesik"** — 2026-03-16, Foxglove-ban látható. Kanyarodáskor az odom vektorok fordulnak (nem a robot), a map az odom-hoz van kötve (nem a robot base_link-hez). Az URDF joint pozíciókat a valós méretek alapján kell korrigálni. Emellett szükséges egy **3D modell** (mesh) a robotról, hogy a Foxglove vizualizáció egyértelműen mutassa a robot pozícióját és orientációját.
+
+- **IMU tilt check — RealSense kamera frame orientáció nem egyezik a robot frame-mel** — 2026-03-16. A startup_supervisor tilt check a kamera IMU nyers adatából számol roll/pitch-et, de a D435i kamera fizikai felszerelési orientációja eltér a robot `base_link` frame-jétől (pl. kamera oldalra fektetve → -66° roll). Fix: (1) a tilt számításban figyelembe venni a kamera→base_link transzformációt (URDF extrinsic), vagy (2) TF-ből kiolvasni a gravitáció irányt base_link frame-ben. Addig: `CHECK_TILT_ENABLED=false` a `.env`-ben.
+
 ## Ismert hibák
 
 - **RC módban a jobb motor gyorsabban forog mint a bal** — Enkóder nélkül tesztelve (2026-03-15, open-loop). Lehetséges okok: (1) RoboClaw M1/M2 eltérő kalibrációja, (2) mechanikai ellenállás különbség, (3) RC mixer aszimmetria az adón. Enkóder bekötése + PID tuning után visszatérni — closed-loop-ban a controller kompenzálja. Addig: adón trimmelhető.
@@ -23,6 +29,16 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 - **E-Stop bridge (10.0.10.23) nem csatlakozik a microros agent-hez stack újraindítás után** — 2026-03-16, többször reprodukálva. A `/robot/estop` topic nem jelenik meg, bridge reset után feljön. Az RC bridge (10.0.10.22) és Pedal bridge (10.0.10.21) ugyanazzal a firmware-rel működik — tehát nem firmware hiba. Valószínűleg hálózati/UDP szintű probléma: microros agent újrainduláskor a bridge nem tud újracsatlakozni (UDP session elvész). Vizsgálandó: (1) microros agent reconnect logika, (2) bridge-oldali watchdog/reconnect timeout, (3) SW1 port/kábel fizikai állapot, (4) ARP cache / UDP port reuse a Jetsonon.
 
 - **Összes bridge egyszerre leesik — microros agent session elvesztés** — 2026-03-16, RC + E-Stop + Pedal bridge egyszerre elérhetetlenné vált. `make down && make up` (agent restart) után minden bridge visszajött — tehát az agent oldalán van a probléma, nem a bridge-ek/hálózat. A bridge firmware watchdog reconnectet próbál, de a "régi" agent nem fogadja el a sessionöket. Vizsgálandó: (1) microros agent logok a kiesés időpontjában, (2) agent `--reliable` / `--best-effort` beállítás, (3) agent memória/resource leak hosszabb futásnál, (4) docker compose restart policy hozzáadása az agent-hez.
+
+- **`make agent-restart` workaround eltávolítása** — A `make agent-restart` a duplikált DDS session probléma ideiglenes megoldása. Ha a microros agent session cleanup végleges fixe elkészül (lásd alább), a Makefile target-et és a docker-compose.tools.yml-ben szükséges módosításokat el kell távolítani.
+
+- **Duplikált DDS node-ok reconnect után — Foxglove "multiple channels" hiba** — 2026-03-16. Bridge reconnect után az agent NEM törli a régi session DDS participant-jeit mielőtt az újat létrehozza. Eredmény: `/robot/estop` 2×, `/robot/pedal` 2× jelenik meg a `ros2 node list`-ben. A Foxglove bridge mindkét verziót látja (eltérő type hash/encoding) → "multiple channels on same topic" hiba, `/diagnostics` parse failure. **Agent CLI:** `/uros_ws/install/micro_ros_agent/lib/micro_ros_agent/micro_ros_agent udp4 -p 8888` — nincs `--client-timeout` vagy session cleanup paraméter. Elérhető middleware opciók: `-m ced|dds|rtps` (jelenlegi: `dds` default). **Vizsgálandó:** (1) `-m ced` vagy `-m rtps` middleware-rel jobb-e a session cleanup, (2) microros agent forráskód — van-e session timeout beállítás compile-time, (3) Foxglove bridge oldalon topic filter (MicroROS topicok kiszűrése), (4) agent periodikus restart (cron/healthcheck) mint workaround amíg nincs végleges fix.
+
+- **slam_toolbox lifecycle verzió buildelése forrásból** — 2026-03-16. Az apt-s `ros-jazzy-slam-toolbox` csomag NEM tartalmazza a `lifecycle_slam_toolbox_node` executable-t — csak `async_slam_toolbox_node` van. Az async verzió nem hoz létre bondot → a lifecycle manager nem tudja felügyelni → `bond_timeout: 0.0` workaround kell, ami **biztonsági kockázat** egy 100kg/2.2m/s robotnál (bond nélkül a SLAM crash után a robot vakon halad tovább). **Fix:** slam_toolbox forrásból buildelés a Dockerfile-ban (`lifecycle_slam_toolbox_node` bináris előállítása), utána `bond_timeout: 4.0` visszaállítás. Jelenlegi állapot: `async_slam_toolbox_node` + `bond_timeout: 0.0` (ideiglenes, veszélyes).
+
+- **EKF `/odometry/filtered` — "no events recorded" Foxglove-ban** — 2026-03-16. Az EKF működik (46 Hz stack_test.sh-ban), de Foxglove nem látja az eventeket. Legvalószínűbb ok: enkóder nincs bekötve → diff_drive_controller open-loop odom nem változik → EKF output konstans. Enkóder bekötése után elvárt: valós odom adat.
+
+- **Controller manager execution jitter / high mean error** — 2026-03-16, Foxglove diagnostics. `diff_drive_controller` avg exec time: 138μs, `joint_state_broadcaster` avg: 165μs. A `RoboClawSystem` hardware interface `read_cycle` avg: 5567μs (5.5ms — USR-K6 TCP latencia), `write_cycle` avg: 82.64μs. A jitter a TCP round-trip variabilitásából ered. 50Hz-en elfogadható (20ms budget, ~6ms read = bőven belefér), de a Foxglove diagnosztika warningot jelez. A K6 csere (backlog: Infrastruktúra) csökkenti.
 
 ## Biztonság / Robustness
 

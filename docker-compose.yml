@@ -42,8 +42,13 @@ services:
     volumes:
       - /dev:/dev
       - ./cyclonedds.xml:/root/talicska-robot/cyclonedds.xml:ro
-      # slam_params.yaml: runtime override — rebuild NEM kell, csak docker compose up -d
+      # Config + launch override — rebuild NEM kell, csak docker compose restart robot
       - ./robot_bringup/config/slam_params.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/slam_params.yaml:ro
+      - ./robot_bringup/config/nav2_params.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/nav2_params.yaml:ro
+      - ./robot_bringup/config/ekf.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/ekf.yaml:ro
+      - ./robot_bringup/launch/navigation.launch.py:/root/talicska-ws/install/robot_bringup/share/robot_bringup/launch/navigation.launch.py:ro
+      - ./robot_bringup/config/controllers.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/controllers.yaml:ro
+      - ./robot_description/urdf/robot.urdf.xacro:/root/talicska-ws/install/robot_description/share/robot_description/urdf/robot.urdf.xacro:ro
       # /data/maps: perzisztens térképek (host gépen tárolt)
       - /data/maps:/data/maps
     # Safety limits és stack selector a .env-ből jönnek — rebuild NEM kell, csak restart
