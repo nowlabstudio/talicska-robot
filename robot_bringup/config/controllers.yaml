@@ -18,26 +18,26 @@ diff_drive_controller:
     left_wheel_names:  [rear_left_wheel_joint]
     right_wheel_names: [rear_right_wheel_joint]
 
-    wheel_separation: 0.8    # 800 mm track width
-    wheel_radius: 0.2        # 400 mm diameter
+    wheel_separation: 0.7    # 700 mm track width (centre-centre)
+    wheel_radius: 0.19       # 380 mm diameter
 
     # Velocity limits — nested format required in Jazzy diff_drive_controller 4.x.
-    # max_velocity matches duty_max_rad_s * wheel_radius = 22.5 * 0.2 = 4.5 m/s
+    # max_velocity matches duty_max_rad_s * wheel_radius = 22.5 * 0.19 = 4.275 m/s
     # → 100% duty at max speed.
     # Nav2 is separately limited to 2.22 m/s (8 km/h) in nav2_params.yaml.
     linear:
       x:
         has_velocity_limits: true
         has_acceleration_limits: false
-        max_velocity:  4.5
-        min_velocity: -4.5
+        max_velocity:  4.275
+        min_velocity: -4.275
     angular:
       z:
         has_velocity_limits: true
         has_acceleration_limits: false
-        # max = 2 * max_wheel_speed / wheel_separation = 2 * 4.5 / 0.8 = 11.25
-        max_velocity:  11.25
-        min_velocity: -11.25
+        # max = 2 * max_wheel_speed / wheel_separation = 2 * 4.275 / 0.7 = 12.21
+        max_velocity:  12.21
+        min_velocity: -12.21
 
     publish_rate: 50.0
 

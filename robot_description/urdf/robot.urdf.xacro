@@ -1,12 +1,17 @@
 <?xml version="1.0"?>
 <!--
   Talicska rover — robot_description
-  Physical measurements:
-    Chassis:        1100 × 800 mm, ~350 mm tall
-    Wheels:         Ø400 mm (r=0.2m), 150 mm wide, 800 mm track
-    Axles:          ±235 mm from rotation centre (= base_link)
-    base_link:      rotation centre, at ground plane (z=0)
-    Tilt hinge:     300 mm from platform front → 205 mm forward of base_link
+  Physical measurements (2026-03-16, verified):
+    Vehicle:        1100 mm long, 800 mm wide (wheel edge to edge), 750 mm tall
+    Chassis:        640 × 550 × 140 mm, bottom at 120 mm, top at 260 mm
+    Wheels:         Ø380 mm (r=190mm), 100 mm wide, 700 mm track (centre-centre)
+    Axles:          front 340 mm from vehicle front, rear 790 mm → ±225 mm from base_link
+    base_link:      rotation centre (axle midpoint), 565 mm from vehicle front, at ground (z=0)
+    Chassis front:  240 mm behind vehicle front → +325 mm from base_link
+    Platform:       1100 × 750 × 300 mm, bottom at 450 mm, tilts forward
+    Tilt hinge:     chassis top (260 mm), 20 mm from chassis front → +305 mm from base_link
+    LiDAR:          on chassis, 340 mm from chassis front → -15 mm from base_link, Z=295 mm
+    Camera:         chassis front edge, Z=290 mm (lens centre 30 mm above chassis top)
 
   Wheel naming convention:
     rear_left / rear_right   — driven by RoboClaw (ros2_control joints)
@@ -43,32 +48,51 @@
   <xacro:arg name="encoder_max_speed_rad_s"   default="30.0"/>
 
   <!-- ============================================================
+       MESH BASE URL
+       Foxglove needs HTTP access to meshes (package:// doesn't work in browser).
+       Override at launch: xacro robot.urdf.xacro mesh_base:=package://robot_description
+       Alternatives:
+         LAN:       http://192.168.68.122:8081/robot_description
+         Tailscale: http://100.71.242.128:8081/robot_description
+         Robot net: http://10.0.10.1:8081/robot_description
+       ============================================================ -->
+  <xacro:arg name="mesh_base" default="http://192.168.68.122:8081/robot_description"/>
+  <xacro:property name="mesh_base" value="$(arg mesh_base)"/>
+
+  <!-- ============================================================
        GEOMETRY CONSTANTS  (metres)
        ============================================================ -->
-  <!-- Chassis -->
-  <xacro:property name="chassis_length"    value="1.1"/>
-  <xacro:property name="chassis_width"     value="0.8"/>
-  <xacro:property name="chassis_height"    value="0.35"/>
-  <!-- base_link is 505 mm from front, 595 mm from rear.
-       Visual box origin is at the chassis geometric centre: -->
-  <xacro:property name="chassis_x_offset"  value="${0.505 - chassis_length / 2.0}"/> <!-- -0.045 m -->
+  <!-- Chassis (alváz) -->
+  <xacro:property name="chassis_length"    value="0.64"/>
+  <xacro:property name="chassis_width"     value="0.55"/>
+  <xacro:property name="chassis_height"    value="0.14"/>
+  <xacro:property name="chassis_bottom_z"  value="0.12"/>
+  <!-- Chassis centre in base_link frame:
+       chassis front = +0.325, rear = -0.315, centre = +0.005 -->
+  <xacro:property name="chassis_x_offset"  value="0.005"/>
+  <xacro:property name="chassis_z_centre"  value="${chassis_bottom_z + chassis_height / 2.0}"/> <!-- 0.19 m -->
 
   <!-- Wheels -->
-  <xacro:property name="wheel_radius"      value="0.2"/>
-  <xacro:property name="wheel_width"       value="0.15"/>
-  <xacro:property name="wheel_separation"  value="0.8"/>
-  <!-- Axles are equidistant from rotation centre: 595-360 = 235 mm -->
-  <xacro:property name="axle_offset"       value="0.235"/>
+  <xacro:property name="wheel_radius"      value="0.19"/>
+  <xacro:property name="wheel_width"       value="0.1"/>
+  <xacro:property name="wheel_separation"  value="0.7"/>
+  <xacro:property name="axle_offset"       value="0.225"/>
 
-  <!-- Tilt platform -->
-  <xacro:property name="platform_length"   value="1.03"/>
+  <!-- Tilt platform (felépítmény) -->
+  <xacro:property name="platform_length"   value="1.1"/>
   <xacro:property name="platform_width"    value="0.75"/>
-  <xacro:property name="platform_height"   value="0.04"/>
-  <!-- Hinge is 300 mm from platform front.  Joint frame origin = hinge.
-       Platform CG from hinge (child +X = forward):
-         (0.3 - 0.73) / 2 = -0.215 m  (mostly behind hinge) -->
-  <xacro:property name="hinge_x"           value="${0.505 - 0.3}"/>           <!-- 0.205 m -->
-  <xacro:property name="platform_cg_x"     value="${0.3 - platform_length / 2.0}"/> <!-- -0.215 m -->
+  <xacro:property name="platform_height"   value="0.3"/>
+  <!-- Hinge at chassis top, 20 mm from chassis front
+       chassis front = +0.325 → hinge_x = +0.305
+       Platform bottom at 450 mm, hinge at 260 mm → support rod height = 190 mm
+       Platform centre Z relative to hinge: 190 + 150 = 340 mm
+       Platform centre X relative to hinge: vehicle centre (0.0) is at -0.305 from hinge
+       Platform spans +0.535 to -0.565 from base_link → centre = -0.015
+       Relative to hinge: -0.015 - 0.305 = -0.320 -->
+  <xacro:property name="hinge_x"           value="0.305"/>
+  <xacro:property name="hinge_z"           value="0.26"/>
+  <xacro:property name="platform_cg_x"     value="-0.32"/>
+  <xacro:property name="platform_cg_z"     value="0.34"/>
 
   <!-- Mass distribution  (total ≈ 108 kg) -->
   <xacro:property name="chassis_mass"      value="84.0"/>
@@ -104,15 +128,15 @@
        WHEEL MACRO
        Joint frame: x=forward, y=left, z=up (ROS convention).
        Spin axis = Y (lateral) → axis xyz="0 1 0".
-       Cylinder visual is rotated 90° so its geometric axis aligns
-       with the Y (spin) axis.
+       Mesh origin = hub/axle mount point. Left wheels use mesh as-is,
+       right wheels mirror on Y axis (scale 1 -1 1).
        ============================================================ -->
-  <xacro:macro name="wheel" params="name x y">
+  <xacro:macro name="wheel" params="name x y reflect">
     <link name="${name}">
       <visual>
-        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <origin xyz="0 0 0" rpy="0 0 ${pi}"/>
         <geometry>
-          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+          <mesh filename="${mesh_base}/meshes/wheel.stl" scale="1 ${reflect} 1"/>
         </geometry>
       </visual>
       <collision>
@@ -133,17 +157,18 @@
   </xacro:macro>
 
   <!-- ============================================================
-       BASE LINK  (rotation centre, at ground plane)
+       BASE LINK  (rotation centre, at ground plane z=0)
        ============================================================ -->
   <link name="base_link">
     <visual>
-      <origin xyz="${chassis_x_offset} 0 ${wheel_radius + chassis_height / 2.0}" rpy="0 0 0"/>
+      <!-- STL origin aligned to model nullpoint; lift to chassis_z_centre (0.19m) -->
+      <origin xyz="0 0 ${chassis_z_centre}" rpy="0 0 0"/>
       <geometry>
-        <box size="${chassis_length} ${chassis_width} ${chassis_height}"/>
+        <mesh filename="${mesh_base}/meshes/chassis.stl"/>
       </geometry>
     </visual>
     <collision>
-      <origin xyz="${chassis_x_offset} 0 ${wheel_radius + chassis_height / 2.0}" rpy="0 0 0"/>
+      <origin xyz="${chassis_x_offset} 0 ${chassis_z_centre}" rpy="0 0 0"/>
       <geometry>
         <box size="${chassis_length} ${chassis_width} ${chassis_height}"/>
       </geometry>
@@ -156,15 +181,17 @@
        WHEELS
        ============================================================ -->
   <!-- Rear — driven by RoboClaw via ros2_control -->
-  <xacro:wheel name="rear_left_wheel"   x="${-axle_offset}" y="${ wheel_separation / 2.0}"/>
-  <xacro:wheel name="rear_right_wheel"  x="${-axle_offset}" y="${-wheel_separation / 2.0}"/>
+  <xacro:wheel name="rear_left_wheel"   x="${-axle_offset}" y="${ wheel_separation / 2.0}" reflect="1"/>
+  <xacro:wheel name="rear_right_wheel"  x="${-axle_offset}" y="${-wheel_separation / 2.0}" reflect="-1"/>
   <!-- Front — mechanically linked to rear (same chain/shaft per side).
        Mimic joints: robot_state_publisher mirrors rear wheel joint states
        to front wheels automatically. No separate joint_state needed. -->
   <link name="front_left_wheel">
     <visual>
-      <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
-      <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+      <origin xyz="0 0 0" rpy="0 0 ${pi}"/>
+      <geometry>
+        <mesh filename="${mesh_base}/meshes/wheel.stl" scale="1 1 1"/>
+      </geometry>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
@@ -182,8 +209,10 @@
 
   <link name="front_right_wheel">
     <visual>
-      <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
-      <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+      <origin xyz="0 0 0" rpy="0 0 ${pi}"/>
+      <geometry>
+        <mesh filename="${mesh_base}/meshes/wheel.stl" scale="1 -1 1"/>
+      </geometry>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
@@ -201,8 +230,8 @@
 
   <!-- ============================================================
        LIDAR — RPLidar A2
-       Mounted on top of chassis, forward-centre.
-       NOTE: exact XY position to be verified with physical measurements.
+       On chassis, 340 mm from chassis front → X = -0.015 m from base_link
+       Z = chassis top (0.26) + sensor half-height (0.035)
        ============================================================ -->
   <link name="lidar_link">
     <visual>
@@ -219,14 +248,13 @@
   <joint name="lidar_joint" type="fixed">
     <parent link="base_link"/>
     <child  link="lidar_link"/>
-    <!-- Top of chassis (z = wheel_radius + chassis_height) + sensor half-height -->
-    <origin xyz="0.3 0 ${wheel_radius + chassis_height + 0.035}" rpy="0 0 0"/>
+    <origin xyz="-0.015 0 0.295" rpy="0 0 0"/>
   </joint>
 
   <!-- ============================================================
        CAMERA — RealSense D435i
-       Mounted on front face of chassis, centre height.
-       NOTE: exact position to be verified with physical measurements.
+       Chassis front edge (X = +0.325), lens centre 30 mm above chassis top
+       Z = 0.26 + 0.03 = 0.29
        ============================================================ -->
   <link name="camera_link">
     <visual>
@@ -243,24 +271,25 @@
   <joint name="camera_joint" type="fixed">
     <parent link="base_link"/>
     <child  link="camera_link"/>
-    <origin xyz="0.505 0 ${wheel_radius + chassis_height / 2.0}" rpy="0 0 0"/>
+    <origin xyz="0.325 0 0.29" rpy="0 0 0"/>
   </joint>
 
   <!-- ============================================================
-       TILT PLATFORM
-       Hinge 300 mm from platform front → hinge at x=0.205 m from base_link.
-       Joint frame origin = hinge.  Child +X = forward.
-       Platform CG is 215 mm behind the hinge.
+       TILT PLATFORM (felépítmény)
+       Hinge at chassis top (Z=0.26), 20 mm from chassis front (X=+0.305).
+       Platform 1100×750×300 mm, bottom at 450 mm when level.
+       Support rods lift platform 190 mm above hinge.
+       Platform centre relative to hinge: X=-0.32, Z=+0.34
+       Tilts forward (positive Y rotation = nose down), max 45°.
        ============================================================ -->
   <link name="tilt_platform_link">
     <visual>
-      <origin xyz="${platform_cg_x} 0 0" rpy="0 0 0"/>
       <geometry>
-        <box size="${platform_length} ${platform_width} ${platform_height}"/>
+        <mesh filename="${mesh_base}/meshes/platform.stl"/>
       </geometry>
     </visual>
     <collision>
-      <origin xyz="${platform_cg_x} 0 0" rpy="0 0 0"/>
+      <origin xyz="${platform_cg_x} 0 ${platform_cg_z}" rpy="0 0 0"/>
       <geometry>
         <box size="${platform_length} ${platform_width} ${platform_height}"/>
       </geometry>
@@ -271,10 +300,9 @@
   <joint name="tilt_joint" type="revolute">
     <parent link="base_link"/>
     <child  link="tilt_platform_link"/>
-    <origin xyz="${hinge_x} 0 ${wheel_radius + chassis_height + platform_height / 2.0}"
-            rpy="0 0 0"/>
+    <origin xyz="${hinge_x} 0 ${hinge_z}" rpy="0 0 0"/>
     <axis   xyz="0 1 0"/>
-    <limit  lower="${-pi/4}" upper="${pi/4}" effort="500.0" velocity="0.5"/>
+    <limit  lower="0.0" upper="${pi/4}" effort="500.0" velocity="0.5"/>
   </joint>
 
   <!-- ============================================================

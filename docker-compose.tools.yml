@@ -30,6 +30,18 @@ services:
       - CYCLONEDDS_URI=file:///cyclonedds.xml
     volumes:
       - ./cyclonedds.xml:/cyclonedds.xml:ro
+      # robot_description package mount — package:// URL feloldáshoz
+      - ./robot_description/:/opt/ros/jazzy/share/robot_description/:ro
+
+  mesh_server:
+    image: python:3-alpine
+    container_name: mesh_server
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./robot_description/:/data/robot_description/:ro
+      - ./scripts/mesh_server.py:/mesh_server.py:ro
+    command: ["python3", "/mesh_server.py"]
 
   portainer:
     image: portainer/portainer-ce:latest

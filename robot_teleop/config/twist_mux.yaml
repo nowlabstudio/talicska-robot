@@ -24,6 +24,10 @@ twist_mux:
         # when TX is off. Timeout only triggers if the rc_teleop node itself crashes.
         timeout:  1.0
         priority: 20
+      foxglove:
+        topic:    /cmd_vel_foxglove
+        timeout:  0.5
+        priority: 30
       navigation:
         topic:    /cmd_vel_nav2
         timeout:  0.5

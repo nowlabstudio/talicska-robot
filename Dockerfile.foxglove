@@ -16,6 +16,12 @@ RUN apt-get update \
 # Port dokumentáció (network_mode: host miatt nem kell EXPOSE, de jelöljük)
 # 8765 — Foxglove WebSocket (ws://jetson-ip:8765)
 
+# Register robot_description as ament package so package:// URLs resolve.
+# The actual meshes/urdf are volume-mounted at runtime.
+RUN mkdir -p /opt/ros/jazzy/share/ament_index/resource_index/packages && \
+    touch /opt/ros/jazzy/share/ament_index/resource_index/packages/robot_description && \
+    mkdir -p /opt/ros/jazzy/share/robot_description
+
 CMD ["/bin/bash", "-c", \
      "source /opt/ros/jazzy/setup.bash && \
       ros2 run foxglove_bridge foxglove_bridge \
@@ -23,4 +29,5 @@ CMD ["/bin/bash", "-c", \
         -p port:=8765 \
         -p address:=0.0.0.0 \
         -p tls:=false \
-        -p send_buffer_limit:=10000000"]
+        -p send_buffer_limit:=10000000 \
+        -p asset_uri_allowlist:=\"['^package://.*']\""]

@@ -48,7 +48,9 @@ services:
       - ./robot_bringup/config/ekf.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/ekf.yaml:ro
       - ./robot_bringup/launch/navigation.launch.py:/root/talicska-ws/install/robot_bringup/share/robot_bringup/launch/navigation.launch.py:ro
       - ./robot_bringup/config/controllers.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/controllers.yaml:ro
+      - ./robot_teleop/config/twist_mux.yaml:/root/talicska-ws/install/robot_teleop/share/robot_teleop/config/twist_mux.yaml:ro
       - ./robot_description/urdf/robot.urdf.xacro:/root/talicska-ws/install/robot_description/share/robot_description/urdf/robot.urdf.xacro:ro
+      - ./robot_description/meshes/:/root/talicska-ws/install/robot_description/share/robot_description/meshes/:ro
       # /data/maps: perzisztens térképek (host gépen tárolt)
       - /data/maps:/data/maps
     # Safety limits és stack selector a .env-ből jönnek — rebuild NEM kell, csak restart
