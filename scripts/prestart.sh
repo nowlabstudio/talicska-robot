@@ -182,7 +182,7 @@ while true; do
       STATUS["${name}"]="ok"
       echo -e "  ${GREEN}✓${RESET}  ${desc}"
     else
-      case "${effective_criticality}" in
+      case "${criticality}" in
         required)
           STATUS["${name}"]="fail"
           required_all_ok=false
