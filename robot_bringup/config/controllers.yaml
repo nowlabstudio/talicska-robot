@@ -22,29 +22,27 @@ diff_drive_controller:
     wheel_radius: 0.19       # 380 mm diameter
 
     # Velocity limits — nested format required in Jazzy diff_drive_controller 4.x.
-    # max_velocity matches duty_max_rad_s * wheel_radius = 22.5 * 0.19 = 4.275 m/s
-    # → 100% duty at max speed.
+    # max_velocity matches ~14 km/h = 3.89 m/s (physical max in RC mode).
     # Nav2 is separately limited to 2.22 m/s (8 km/h) in nav2_params.yaml.
     linear:
       x:
         has_velocity_limits: true
         has_acceleration_limits: false
-        max_velocity:  4.275
-        min_velocity: -4.275
+        max_velocity:  3.89
+        min_velocity: -3.89
     angular:
       z:
         has_velocity_limits: true
         has_acceleration_limits: false
-        # max = 2 * max_wheel_speed / wheel_separation = 2 * 4.275 / 0.7 = 12.21
-        max_velocity:  12.21
-        min_velocity: -12.21
+        # max = 2 * max_wheel_speed / wheel_separation = 2 * 3.89 / 0.7 = 11.11
+        max_velocity:  11.11
+        min_velocity: -11.11
 
     publish_rate: 50.0
 
-    # open_loop: true — required when encoders are not mounted.
-    # Closed-loop with no encoders causes noise-driven motor fighting.
-    # Switch to false once encoders are wired and tested.
-    open_loop: true
+    # open_loop: false — encoders mounted and calibrated in Motion Studio.
+    # Closed-loop mode: diff_drive_controller uses encoder feedback for odometry.
+    open_loop: false
 
     # Safety: stop motors if no cmd_vel arrives within 500 ms.
     cmd_vel_timeout: 0.5

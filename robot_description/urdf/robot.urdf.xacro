@@ -32,20 +32,27 @@
   <xacro:arg name="tcp_port"                  default="8234"/>
   <xacro:arg name="socket_timeout"            default="0.05"/>
   <xacro:arg name="address"                   default="0x80"/>
-  <xacro:arg name="encoder_counts_per_rev"    default="1000"/>
-  <xacro:arg name="gear_ratio"                default="16.0"/>
-  <xacro:arg name="motion_strategy"           default="duty_accel"/>
+  <!-- Combined encoder+gearbox counts per wheel revolution.
+       Derived from Motion Studio QPPS (~230k) and ~14 km/h max speed.
+       gear_ratio=1.0 because the individual CPR and mechanical ratio are unknown;
+       this value represents total counts per wheel revolution.
+       TODO: calibrate on wheels — see backlog. -->
+  <xacro:arg name="encoder_counts_per_rev"    default="70300"/>
+  <xacro:arg name="gear_ratio"                default="1.0"/>
+  <xacro:arg name="motion_strategy"           default="speed_accel"/>
   <xacro:arg name="duty_accel_rate"           default="50000"/>
   <xacro:arg name="duty_decel_rate"           default="50000"/>
   <xacro:arg name="default_acceleration"      default="15000"/>
-  <xacro:arg name="duty_max_rad_s"            default="22.5"/>
+  <xacro:arg name="duty_max_rad_s"            default="20.5"/>
   <xacro:arg name="buffer_depth"              default="4"/>
   <xacro:arg name="auto_home_on_startup"      default="false"/>
   <xacro:arg name="position_limits_enabled"   default="false"/>
-  <xacro:arg name="encoder_stuck_limit"       default="0"/>
+  <xacro:arg name="encoder_stuck_limit"       default="50"/>
   <xacro:arg name="encoder_runaway_limit"     default="5"/>
   <xacro:arg name="encoder_comm_fail_limit"   default="10"/>
   <xacro:arg name="encoder_max_speed_rad_s"   default="30.0"/>
+  <xacro:arg name="invert_left_motor"        default="true"/>
+  <xacro:arg name="invert_right_motor"       default="true"/>
 
   <!-- ============================================================
        MESH BASE URL
@@ -338,6 +345,9 @@
       <param name="encoder_runaway_limit">$(arg encoder_runaway_limit)</param>
       <param name="encoder_comm_fail_limit">$(arg encoder_comm_fail_limit)</param>
       <param name="encoder_max_speed_rad_s">$(arg encoder_max_speed_rad_s)</param>
+
+      <param name="invert_left_motor">$(arg invert_left_motor)</param>
+      <param name="invert_right_motor">$(arg invert_right_motor)</param>
     </hardware>
 
     <joint name="rear_left_wheel_joint">

@@ -20,6 +20,10 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 - **IMU tilt check — RealSense kamera frame orientáció nem egyezik a robot frame-mel** — 2026-03-16. A startup_supervisor tilt check a kamera IMU nyers adatából számol roll/pitch-et, de a D435i kamera fizikai felszerelési orientációja eltér a robot `base_link` frame-jétől (pl. kamera oldalra fektetve → -66° roll). Fix: (1) a tilt számításban figyelembe venni a kamera→base_link transzformációt (URDF extrinsic), vagy (2) TF-ből kiolvasni a gravitáció irányt base_link frame-ben. Addig: `CHECK_TILT_ENABLED=false` a `.env`-ben.
 
+## Kalibrálás
+
+- **Enkóder CPR × áttétel kalibrálás kerekeken** — 2026-03-18. Az `encoder_counts_per_rev=70300` és `gear_ratio=1.0` egy becsült összeg, Motion Studio QPPS (M1: 232650, M2: 225720) és ~14 km/h max sebesség alapján számolva. A pontos áttétel (motor gearhead → lánc → kerék) nem ismert külön-külön. **Kalibráció módja:** robot kerekeken áll, ismert távolság megtétele, enkóder count összevetés → `encoder_counts_per_rev` finomhangolás. Érintett fájl: `robot_description/urdf/robot.urdf.xacro` (`encoder_counts_per_rev` arg). A `duty_max_rad_s` (jelenleg 20.5) és a `controllers.yaml` velocity limitek is frissítendők a valós max sebességgel.
+
 ## Ismert hibák
 
 - **RC módban a jobb motor gyorsabban forog mint a bal** — Enkóder nélkül tesztelve (2026-03-15, open-loop). Lehetséges okok: (1) RoboClaw M1/M2 eltérő kalibrációja, (2) mechanikai ellenállás különbség, (3) RC mixer aszimmetria az adón. Enkóder bekötése + PID tuning után visszatérni — closed-loop-ban a controller kompenzálja. Addig: adón trimmelhető.
