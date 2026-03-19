@@ -55,6 +55,7 @@ public:
     this->declare_parameter("proximity_distance_m",  0.3);
     this->declare_parameter("proximity_angle_deg",  30.0);
     this->declare_parameter("watchdog_rate_hz",     20.0);
+    this->declare_parameter("imu_process_rate_hz", 20.0);
 
     estop_timeout_    = this->get_parameter("estop_timeout_s").as_double();
     tilt_roll_limit_  = deg2rad(this->get_parameter("tilt_roll_limit_deg").as_double());
@@ -62,6 +63,8 @@ public:
     proximity_dist_   = this->get_parameter("proximity_distance_m").as_double();
     proximity_angle_  = deg2rad(this->get_parameter("proximity_angle_deg").as_double());
     double rate_hz    = this->get_parameter("watchdog_rate_hz").as_double();
+    double imu_hz     = this->get_parameter("imu_process_rate_hz").as_double();
+    imu_min_interval_ns_ = static_cast<int64_t>(1.0e9 / imu_hz);
 
     // --- subscriptions ---
     estop_sub_ = create_subscription<std_msgs::msg::Bool>(
@@ -92,11 +95,13 @@ public:
 
     RCLCPP_INFO(get_logger(),
       "SafetySupervisor ready. Holding until E-Stop bridge online. "
-      "Limits: roll±%.0f° pitch±%.0f°, proximity %.2fm front±%.0f°.",
+      "Limits: roll±%.0f° pitch±%.0f°, proximity %.2fm front±%.0f°. "
+      "IMU throttle: %.0f Hz.",
       this->get_parameter("tilt_roll_limit_deg").as_double(),
       this->get_parameter("tilt_pitch_limit_deg").as_double(),
       proximity_dist_,
-      this->get_parameter("proximity_angle_deg").as_double());
+      this->get_parameter("proximity_angle_deg").as_double(),
+      imu_hz);
   }
 
 private:
@@ -116,6 +121,15 @@ private:
 
   void imu_cb(const sensor_msgs::msg::Imu::SharedPtr msg)
   {
+    // Throttle: the RealSense D435i IMU publishes at ~200 Hz, but tilt
+    // detection only needs ~20 Hz.  Skip callbacks that arrive too soon
+    // after the last processed one to save ~180 atan2+sqrt calls/sec.
+    const int64_t now_ns = now().nanoseconds();
+    if ((now_ns - last_imu_process_ns_) < imu_min_interval_ns_) {
+      return;
+    }
+    last_imu_process_ns_ = now_ns;
+
     // Tilt from gravity vector.
     // Assumes slow motion so linear_acceleration ≈ gravity.
     const double ax = msg->linear_acceleration.x;
@@ -237,6 +251,10 @@ private:
   bool           tilt_fault_        = false;
   bool           proximity_fault_   = false;
   rclcpp::Time   last_estop_time_;
+
+  // IMU callback throttle (default 20 Hz — skip ~180 of ~200 Hz callbacks)
+  int64_t        imu_min_interval_ns_ = 0;
+  int64_t        last_imu_process_ns_ = 0;
 
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr         estop_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr       imu_sub_;

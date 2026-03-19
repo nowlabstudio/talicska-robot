@@ -30,4 +30,6 @@ CMD ["/bin/bash", "-c", \
         -p address:=0.0.0.0 \
         -p tls:=false \
         -p send_buffer_limit:=10000000 \
-        -p asset_uri_allowlist:=\"['^package://.*']\""]
+        -p asset_uri_allowlist:=\"['^package://.*']\" \
+        -p 'qos_overrides./scan.subscription.reliability:=best_effort' \
+        -p 'qos_overrides./scan.subscription.depth:=1'"]

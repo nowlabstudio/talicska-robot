@@ -23,6 +23,7 @@ services:
     container_name: microros_agent
     image: microros/micro-ros-agent:jazzy
     network_mode: host
+    ipc: host
     restart: unless-stopped
     command: udp4 -p ${MICROROS_AGENT_PORT:-8888}
 
@@ -32,6 +33,7 @@ services:
       context: ../..
       dockerfile: robot/talicska-robot/Dockerfile
     network_mode: host
+    ipc: host
     restart: unless-stopped
     depends_on:
       - microros_agent

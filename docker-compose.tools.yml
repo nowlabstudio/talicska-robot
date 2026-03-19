@@ -23,6 +23,7 @@ services:
       dockerfile: Dockerfile.foxglove
     container_name: foxglove_bridge
     network_mode: host
+    ipc: host
     restart: unless-stopped
     environment:
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
