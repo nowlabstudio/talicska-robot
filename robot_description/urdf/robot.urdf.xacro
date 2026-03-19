@@ -51,6 +51,11 @@
   <xacro:arg name="encoder_runaway_limit"     default="5"/>
   <xacro:arg name="encoder_comm_fail_limit"   default="10"/>
   <xacro:arg name="encoder_max_speed_rad_s"   default="30.0"/>
+  <!-- QPPS: Motion Studio mért encoder counts/sec a mechanikai maximumon.
+       SetM1PID/SetM2PID PID referencia sebesség. Újrakalibráláskor frissítendő.
+       NE számold ki encoder_counts_per_rev * encoder_max_speed_rad_s / 2π-ből
+       (az ~336k lenne, mért érték ~230k — motorkarakter és slip eltérés miatt). -->
+  <xacro:arg name="qpps"                     default="230000"/>
   <xacro:arg name="invert_left_motor"        default="true"/>
   <xacro:arg name="invert_right_motor"       default="true"/>
 
@@ -345,6 +350,7 @@
       <param name="encoder_runaway_limit">$(arg encoder_runaway_limit)</param>
       <param name="encoder_comm_fail_limit">$(arg encoder_comm_fail_limit)</param>
       <param name="encoder_max_speed_rad_s">$(arg encoder_max_speed_rad_s)</param>
+      <param name="qpps">$(arg qpps)</param>
 
       <param name="invert_left_motor">$(arg invert_left_motor)</param>
       <param name="invert_right_motor">$(arg invert_right_motor)</param>

@@ -45,10 +45,11 @@ services:
     volumes:
       - /dev:/dev
       - ./cyclonedds.xml:/root/talicska-robot/cyclonedds.xml:ro
+      # Globális robot paraméter konfig — rebuild NEM kell, csak docker compose up -d robot
+      - ./config:/config:ro
       # Config + launch override — rebuild NEM kell, csak docker compose restart robot
       - ./robot_bringup/config/slam_params.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/slam_params.yaml:ro
       - ./robot_bringup/config/nav2_params.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/nav2_params.yaml:ro
-      - ./robot_bringup/config/ekf.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/ekf.yaml:ro
       - ./robot_bringup/launch/navigation.launch.py:/root/talicska-ws/install/robot_bringup/share/robot_bringup/launch/navigation.launch.py:ro
       - ./robot_bringup/config/controllers.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/controllers.yaml:ro
       - ./robot_teleop/config/twist_mux.yaml:/root/talicska-ws/install/robot_teleop/share/robot_teleop/config/twist_mux.yaml:ro
@@ -56,16 +57,7 @@ services:
       - ./robot_description/meshes/:/root/talicska-ws/install/robot_description/share/robot_description/meshes/:ro
       # /data/maps: perzisztens térképek (host gépen tárolt)
       - /data/maps:/data/maps
-    # Safety limits és stack selector a .env-ből jönnek — rebuild NEM kell, csak restart
+    # Stack selector a .env-ből — minden más param /config/robot_params.yaml-ból jön
     command: >
       ros2 launch robot_bringup robot.launch.py
-      tcp_host:=${ROBOCLAW_HOST:-10.0.10.24}
       use_nav:=${USE_NAV:-false}
-      proximity_distance_m:=${PROXIMITY_DISTANCE_M:-0.3}
-      estop_timeout_s:=${ESTOP_TIMEOUT_S:-2.0}
-      tilt_roll_limit_deg:=${TILT_ROLL_LIMIT_DEG:-25.0}
-      tilt_pitch_limit_deg:=${TILT_PITCH_LIMIT_DEG:-20.0}
-      check_motion_enabled:=${CHECK_MOTION_ENABLED:-true}
-      check_tilt_enabled:=${CHECK_TILT_ENABLED:-true}
-      check_estop_enabled:=${CHECK_ESTOP_ENABLED:-true}
-      tilt_timeout_s:=${TILT_TIMEOUT_S:-30.0}

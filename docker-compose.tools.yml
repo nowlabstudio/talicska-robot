@@ -21,6 +21,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.foxglove
+      network: host
     container_name: foxglove_bridge
     network_mode: host
     ipc: host
@@ -31,6 +32,8 @@ services:
       - CYCLONEDDS_URI=file:///cyclonedds.xml
     volumes:
       - ./cyclonedds.xml:/cyclonedds.xml:ro
+      # Globális robot paraméter konfig — foxglove_bridge params-file forrása
+      - ./config:/config:ro
       # robot_description package mount — package:// URL feloldáshoz
       - ./robot_description/:/opt/ros/jazzy/share/robot_description/:ro
 

@@ -25,11 +25,4 @@ RUN mkdir -p /opt/ros/jazzy/share/ament_index/resource_index/packages && \
 CMD ["/bin/bash", "-c", \
      "source /opt/ros/jazzy/setup.bash && \
       ros2 run foxglove_bridge foxglove_bridge \
-        --ros-args \
-        -p port:=8765 \
-        -p address:=0.0.0.0 \
-        -p tls:=false \
-        -p send_buffer_limit:=10000000 \
-        -p asset_uri_allowlist:=\"['^package://.*']\" \
-        -p 'qos_overrides./scan.subscription.reliability:=best_effort' \
-        -p 'qos_overrides./scan.subscription.depth:=1'"]
+        --ros-args --params-file /config/robot_params.yaml"]

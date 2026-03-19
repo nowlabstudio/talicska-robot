@@ -8,12 +8,13 @@ Launches the full stack in dependency order:
   4. safety.launch.py     — Safety Supervisor            (+4 s)
   5. navigation.launch.py — SLAM Toolbox + Nav2          (+6 s)
 
-Arguments are passed through to the relevant sub-launches.
+All node parameters come from params_file (default: /config/robot_params.yaml).
+Docker Volume ./config:/config:ro mounts the file — no rebuild needed on change.
 
 Usage:
   ros2 launch robot_bringup robot.launch.py
   ros2 launch robot_bringup robot.launch.py use_slam:=false map_file:=/data/maps/map.yaml
-  ros2 launch robot_bringup robot.launch.py proximity_distance_m:=0.0
+  ros2 launch robot_bringup robot.launch.py params_file:=/config/robot_params.yaml
 """
 
 from launch import LaunchDescription
@@ -29,9 +30,9 @@ def generate_launch_description():
     pkg = FindPackageShare("robot_bringup")
 
     # ------------------------------------------------------------------ args --
-    tcp_host_arg = DeclareLaunchArgument(
-        "tcp_host", default_value="192.168.68.60",
-        description="RoboClaw TCP host (USR-K6)")
+    params_file_arg = DeclareLaunchArgument(
+        "params_file", default_value="/config/robot_params.yaml",
+        description="Global robot params YAML (volume-mounted from ./config/)")
 
     use_nav_arg = DeclareLaunchArgument(
         "use_nav", default_value="true",
@@ -46,49 +47,14 @@ def generate_launch_description():
         default_value="/data/maps/talicska_map.yaml",
         description="Saved map YAML (use_slam:=false only)")
 
-    serial_port_arg = DeclareLaunchArgument(
-        "serial_port", default_value="/dev/ttyUSB0",
-        description="RPLidar serial port")
-
-    # Safety params — all overridable via .env without rebuild
-    estop_timeout_arg = DeclareLaunchArgument(
-        "estop_timeout_s", default_value="2.0",
-        description="Seconds without E-Stop message before watchdog fault")
-
-    tilt_roll_arg = DeclareLaunchArgument(
-        "tilt_roll_limit_deg", default_value="25.0",
-        description="Roll angle limit (degrees) for tilt fault")
-
-    tilt_pitch_arg = DeclareLaunchArgument(
-        "tilt_pitch_limit_deg", default_value="20.0",
-        description="Pitch angle limit (degrees) for tilt fault")
-
-    proximity_distance_arg = DeclareLaunchArgument(
-        "proximity_distance_m", default_value="0.3",
-        description="Front proximity stop distance (m). Set 0.0 to disable.")
-
-    check_motion_arg = DeclareLaunchArgument(
-        "check_motion_enabled", default_value="true",
-        description="Startup check: robot stationary before arming")
-
-    check_tilt_arg = DeclareLaunchArgument(
-        "check_tilt_enabled", default_value="true",
-        description="Startup check: IMU tilt within limits before arming")
-
-    check_estop_arg = DeclareLaunchArgument(
-        "check_estop_enabled", default_value="true",
-        description="Startup check: E-Stop bridge online and not active before arming")
-
-    tilt_timeout_arg = DeclareLaunchArgument(
-        "tilt_timeout_s", default_value="30.0",
-        description="Startup tilt check: max wait for IMU topic (RealSense may be slow)")
+    params_file = LaunchConfiguration("params_file")
 
     # -------------------------------------------------------------- hardware --
     hardware = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([pkg, "launch", "hardware.launch.py"])),
         launch_arguments={
-            "tcp_host": LaunchConfiguration("tcp_host"),
+            "params_file": params_file,
         }.items(),
     )
 
@@ -101,6 +67,9 @@ def generate_launch_description():
                     PathJoinSubstitution([
                         FindPackageShare("robot_teleop"), "launch", "teleop.launch.py"
                     ])),
+                launch_arguments={
+                    "params_file": params_file,
+                }.items(),
             )
         ],
     )
@@ -114,7 +83,7 @@ def generate_launch_description():
                 PythonLaunchDescriptionSource(
                     PathJoinSubstitution([pkg, "launch", "sensors.launch.py"])),
                 launch_arguments={
-                    "serial_port": LaunchConfiguration("serial_port"),
+                    "params_file": params_file,
                 }.items(),
                 condition=IfCondition(LaunchConfiguration("use_nav")),
             )
@@ -131,14 +100,7 @@ def generate_launch_description():
                         FindPackageShare("robot_safety"), "launch", "safety.launch.py"
                     ])),
                 launch_arguments={
-                    "estop_timeout_s":       LaunchConfiguration("estop_timeout_s"),
-                    "tilt_roll_limit_deg":   LaunchConfiguration("tilt_roll_limit_deg"),
-                    "tilt_pitch_limit_deg":  LaunchConfiguration("tilt_pitch_limit_deg"),
-                    "proximity_distance_m":  LaunchConfiguration("proximity_distance_m"),
-                    "check_motion_enabled":  LaunchConfiguration("check_motion_enabled"),
-                    "check_tilt_enabled":    LaunchConfiguration("check_tilt_enabled"),
-                    "check_estop_enabled":   LaunchConfiguration("check_estop_enabled"),
-                    "tilt_timeout_s":        LaunchConfiguration("tilt_timeout_s"),
+                    "params_file": params_file,
                 }.items(),
             )
         ],
@@ -153,8 +115,9 @@ def generate_launch_description():
                 PythonLaunchDescriptionSource(
                     PathJoinSubstitution([pkg, "launch", "navigation.launch.py"])),
                 launch_arguments={
-                    "use_slam": LaunchConfiguration("use_slam"),
-                    "map_file": LaunchConfiguration("map_file"),
+                    "use_slam":          LaunchConfiguration("use_slam"),
+                    "map_file":          LaunchConfiguration("map_file"),
+                    "robot_params_file": params_file,   # NEM "params_file"!
                 }.items(),
                 condition=IfCondition(LaunchConfiguration("use_nav")),
             )
@@ -162,19 +125,10 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        tcp_host_arg,
+        params_file_arg,
         use_nav_arg,
         use_slam_arg,
         map_file_arg,
-        serial_port_arg,
-        estop_timeout_arg,
-        tilt_roll_arg,
-        tilt_pitch_arg,
-        proximity_distance_arg,
-        check_motion_arg,
-        check_tilt_arg,
-        check_estop_arg,
-        tilt_timeout_arg,
         hardware,
         teleop,
         sensors,

@@ -1,0 +1,501 @@
+# =============================================================================
+# robot_params.yaml — Talicska globális robot konfiguráció
+# =============================================================================
+#
+# STRUKTÚRA:
+#   _profiles_:    profil-specifikus felülírások (NAVIGATION / DOCKING / FOLLOW)
+#   node szekciók: ROS2-kompatibilis alap paraméterek (node_name/ros__parameters/)
+#
+# BETÖLTÉS:
+#   sensors.launch.py + navigation.launch.py OpaqueFunction-nel olvassa:
+#     1. Betölti a node alap paramétereit
+#     2. A _profiles_[ROBOT_MODE] szekció értékeivel felülírja
+#     3. A merged dict-et adja át a Node() parameters= listájának
+#   safety.launch.py + teleop.launch.py: parameters=[params_file] — ROS2 a
+#     node nevére illő szekciót olvassa (node_name/ros__parameters/).
+#   hardware.launch.py: parameters=[controllers_yaml, params_file] — a
+#     robot_params.yaml értékei felülírják a controllers.yaml értékeit.
+#
+# PROFIL VÁLTÁS:
+#   .env: ROBOT_MODE=NAVIGATION  →  docker compose up -d (Compose újraolvassa az .env-t)
+#
+# KÖTET:
+#   docker-compose.yml: ./config:/config:ro
+#   Konténerben: /config/robot_params.yaml
+#
+# ROS2 KOMPATIBILITÁS:
+#   Minden node-szekció az elvártat követi: node_name/ros__parameters/param: érték
+#   A _profiles_: szekciót a ROS2 nem olvassa (ismeretlen kulcs = figyelmen kívül hagyja).
+#
+# =============================================================================
+
+
+# ── Profil-specifikus felülírások ─────────────────────────────────────────────
+# Csak azokat a paramétereket tartalmazza, amelyek profilonként ELTÉRNEK.
+# A launch fájlok mélyen mergelik (deep-merge) a node alap paramétereivel.
+# Eredmény: base[node][ros__parameters] + profile_override[node][ros__parameters]
+
+_profiles_:
+
+  # ── NAVIGATION — Normál autonóm navigáció ──────────────────────────────────
+  # RPLidar: Sensitivity mód (nagy pontfelhő sűrűség), 10 Hz
+  # Nav2: 0.5 m/s, teljes costmap, SLAM aktív
+  # RealSense D435i: 640x480x30, IMU kikapcsolva (kamera frame orientáció fix backlogban)
+  NAVIGATION:
+    rplidar_node:
+      ros__parameters:
+        scan_mode:      Sensitivity
+        scan_frequency: 10.0
+
+    realsense2_camera_node:
+      ros__parameters:
+        # 640x480x30 — teljes felbontás, 30 Hz (navigációhoz elegendő)
+        "rgb_camera.color_profile":   "640x480x30"
+        "depth_module.depth_profile": "640x480x30"
+        # IMU: kikapcsolva — kamera fizikai orientációja nem egyezik base_link-kel
+        # (backlog: "IMU tilt check — RealSense kamera frame orientáció")
+        enable_gyro:          false
+        enable_accel:         false
+        # Sync: IMU nélkül sync felesleges és extra latenciát okoz
+        enable_sync:          false
+        # Pointcloud: ki — Nav2 costmap LaserScan-ból (rplidar) épül NAVIGATION módban
+        "pointcloud.enable":  false
+
+    controller_server:
+      ros__parameters:
+        FollowPath:
+          desired_linear_vel:           0.5
+          min_approach_linear_velocity: 0.1
+
+    velocity_smoother:
+      ros__parameters:
+        max_velocity: [0.5, 0.0, 1.5]
+        min_velocity: [-0.2, 0.0, -1.5]
+
+  # ── DOCKING — Célba állás / pontos megközelítés ────────────────────────────
+  # RPLidar: Standard mód, 5 Hz (energiatakarékos közelítésnél)
+  # Nav2: 0.1 m/s (lassú, pontos)
+  # RealSense D435i: 424x240x6 (Audit #10 fix: alacsony CPU terhelés)
+  #   IMU: letiltva (Motion Module hw error — Audit #7)
+  #   Sync: letiltva (IMU nélkül a sync blokkolja a depth streamet)
+  #   Pointcloud: BE — dockoló célpont 3D detektáláshoz
+  DOCKING:
+    rplidar_node:
+      ros__parameters:
+        scan_mode:      Standard
+        scan_frequency: 5.0
+
+    realsense2_camera_node:
+      ros__parameters:
+        # 424x240x6 — alacsony felbontás, 6 Hz (Audit #10: no sync, no IMU)
+        "rgb_camera.color_profile":   "424x240x6"
+        "depth_module.depth_profile": "424x240x6"
+        # IMU: letiltva (Motion Module hardware hiba — Audit #7)
+        enable_gyro:          false
+        enable_accel:         false
+        # Sync: letiltva — IMU nélkül a sync blokkolja a depth stream frameket
+        enable_sync:          false
+        # Pointcloud: BE — dockoló célpont 3D detektáláshoz szükséges
+        "pointcloud.enable":  true
+
+    controller_server:
+      ros__parameters:
+        FollowPath:
+          desired_linear_vel:           0.1
+          min_approach_linear_velocity: 0.05
+
+    velocity_smoother:
+      ros__parameters:
+        max_velocity: [0.1, 0.0, 0.5]
+        min_velocity: [-0.05, 0.0, -0.5]
+
+    # RoboClaw — szigorúbb encoder stuck detekció dokkoláshoz
+    # encoder_stuck_limit: 20 (default: 50) — korábbi védelmi küszöb, biztonságosabb
+    # közelítési manővereknél (akadályra ütközéskor gyorsabban hibát jelez)
+    roboclaw_hardware:
+      encoder_stuck_limit: 20
+
+  # ── FOLLOW — Tárgykövetés (PLACEHOLDER) ───────────────────────────────────
+  # ZED 2i kamera: még nincs implementálva — minden érték PLACEHOLDER.
+  # RealSense NEM indul FOLLOW módban (a ZED veszi át a szerepét).
+  # RPLidar és Nav2 sebességek: NAVIGATION-nal azonos (gyors követés).
+  # Backlog: "ZED kamera integráció" — robot_architecture.md tervek szerint.
+  FOLLOW:
+    rplidar_node:
+      ros__parameters:
+        scan_mode:      Sensitivity
+        scan_frequency: 10.0
+
+    # ZED 2i — PLACEHOLDER paraméterek
+    # ZED ROS2 wrapper (zed_ros2_wrapper) param formátum: dotted keys
+    # A ZED natív felbontásai: HD2K/HD1080/HD720/VGA — 640x480 nem pontos,
+    # VGA (672×376) a legközelebbi natív mód; a spec szerinti 640x480x30 finomhangolást igényel.
+    zed_node:
+      ros__parameters:
+        "general.camera_resolution": 3    # 3=VGA (672×376) — közelítő, PLACEHOLDER
+        "general.grab_frame_rate":   30
+        "general.self_calib":        true
+        "depth.depth_mode":          1    # 1=PERFORMANCE (alacsonyabb CPU overhead)
+        "pos_tracking.set_as_static": false
+
+    controller_server:
+      ros__parameters:
+        FollowPath:
+          desired_linear_vel:           0.5
+          min_approach_linear_velocity: 0.1
+
+    velocity_smoother:
+      ros__parameters:
+        max_velocity: [0.5, 0.0, 1.5]
+        min_velocity: [-0.2, 0.0, -1.5]
+
+
+# =============================================================================
+# NODE ALAP KONFIGURÁCIÓK
+# ROS2-kompatibilis formátum: node_name/ros__parameters/param_name: érték
+# Közvetlenül használható parameters=[yaml_path] formátumban launch fájlban.
+# A _profiles_ szekció értékei FELÜLÍRJÁK ezeket futásidőben.
+# =============================================================================
+
+# ── RPLidar A2M12 ─────────────────────────────────────────────────────────────
+rplidar_node:
+  ros__parameters:
+    serial_port:      /dev/ttyUSB0       # docker-compose.yml: /dev/rplidar → /dev/ttyUSB0
+    serial_baudrate:  256000              # A2M12: 256 kbaud (M8: 115200)
+    frame_id:         lidar_link
+    inverted:         false
+    angle_compensate: true
+    scan_mode:        Sensitivity         # NAVIGATION default; DOCKING: Standard
+    scan_frequency:   10.0               # NAVIGATION default; DOCKING: 5.0
+    # QoS override: BEST_EFFORT publisher
+    # Audit #4: RELIABLE→BEST_EFFORT mismatch extra CycloneDDS buffert okozott.
+    # A forrás BEST_EFFORT-ra állítása szünteti meg a mismatcht (slam_toolbox, costmap).
+    qos_overrides./scan.publisher.reliability: best_effort
+    qos_overrides./scan.publisher.history:     keep_last
+    qos_overrides./scan.publisher.depth:       1
+
+# ── ros2_control: controller_manager ─────────────────────────────────────────
+# MEGJEGYZÉS: A ros2_control_node controllers.yaml + robot_params.yaml-t tölt
+# egyszerre (parameters=[controllers_yaml, params_file]) — ez a szekció
+# felülírja a controllers.yaml megfelelő értékeit build nélkül.
+controller_manager:
+  ros__parameters:
+    # 50 Hz — RoboClaw TCP round-trip ~7-8ms (GetEncoders) + ~3ms (1 rotating diag slot)
+    # = ~11ms per cycle. Fits 20ms budget (50Hz) comfortably; overflows at 100Hz because
+    # the USR-K6 serial bridge latency alone consumes most of the 10ms budget.
+    update_rate: 50
+
+# ── ros2_control: diff_drive_controller ──────────────────────────────────────
+# KRITIKUS fizikai paraméterek: wheel_separation és wheel_radius határozza meg
+# az odometria pontosságát. Hibás értékek → helytelen TF → Nav2 lokalizációs hiba.
+# Forrás: controllers.yaml (volume-mountolva és itt is felülírható).
+diff_drive_controller:
+  ros__parameters:
+    # Rear wheels are driven by RoboClaw (front wheels are mechanically linked).
+    left_wheel_names:  [rear_left_wheel_joint]
+    right_wheel_names: [rear_right_wheel_joint]
+
+    # FONTOS: wheel_separation = 700mm tengelytáv (közepcenter → közepcenter).
+    # rc_teleop_node-ban ugyanezt a 0.7 értéket kell használni!
+    # Backlog BUG: teleop.launch.py-ban 0.8 volt (javítva rc_teleop_node szekcióban).
+    wheel_separation: 0.7    # 700 mm track width (centre-centre)
+    wheel_radius:     0.19   # 380 mm kerék átmérő → 190 mm sugár
+
+    # Velocity limits — nested format required in Jazzy diff_drive_controller 4.x.
+    # max_velocity matches ~14 km/h = 3.89 m/s (physical max in RC mode).
+    # Nav2 is separately limited to 0.5 m/s in _profiles_/NAVIGATION.
+    linear:
+      x:
+        has_velocity_limits:    true
+        has_acceleration_limits: false
+        max_velocity:  3.89
+        min_velocity: -3.89
+    angular:
+      z:
+        has_velocity_limits:    true
+        has_acceleration_limits: false
+        # max = 2 * max_wheel_speed / wheel_separation = 2 * 3.89 / 0.7 = 11.11
+        max_velocity:  11.11
+        min_velocity: -11.11
+
+    publish_rate: 50.0
+
+    # open_loop: false — enkóderek bekötve és kalibrálva (Motion Studio).
+    # Closed-loop: diff_drive_controller encoder feedbacket használ odometriához.
+    open_loop: false
+
+    # Safety: 500ms üres cmd_vel → motorstop.
+    cmd_vel_timeout: 0.5
+
+    odom_frame_id: odom
+    base_frame_id: base_link
+    # EKF kikapcsolva (IMU nincs) → controller publikálja az odom TF-et.
+    # Ha EKF visszakapcsol (IMU fix után): false-ra állítani → különben dupla TF!
+    enable_odom_tf: true
+
+    # Odometria kovariancia (alacsony: zárt hurkú enkóder alapú odometria)
+    pose_covariance_diagonal:  [0.001, 0.001, 0.001, 0.001, 0.001, 0.01]
+    twist_covariance_diagonal: [0.001, 0.001, 0.001, 0.001, 0.001, 0.01]
+
+# ── robot_localization EKF ─────────────────────────────────────────────────────
+# Fuses /odom (diff_drive) + /camera/camera/imu (RealSense D435i — jelenleg ki)
+# Publishes /odometry/filtered és odom→base_link TF (ha publish_tf: true)
+# MEGJEGYZÉS: publish_tf most false — diff_drive_controller publikálja a TF-et.
+# Ha IMU visszakapcsol: publish_tf: true + diff_drive_controller enable_odom_tf: false
+ekf_filter_node:
+  ros__parameters:
+    frequency:      50.0
+    sensor_timeout: 0.1
+    two_d_mode:     true
+    # KIKAPCSOLVA: egyetlen szenzor (wheel odom) → EKF random walk driftet okozna.
+    # IMU visszakapcsolásakor: true-ra + controllers.yaml enable_odom_tf: false!
+    publish_tf: false
+    map_frame:       map
+    odom_frame:      odom
+    base_link_frame: base_link
+    world_frame:     odom
+
+    # Wheel odometry from diff_drive_controller
+    odom0: /diff_drive_controller/odom
+    odom0_config:
+      [true,  true,  false,
+       false, false, true,
+       true,  true,  false,
+       false, false, true,
+       false, false, false]
+    odom0_queue_size: 10
+    odom0_differential: false
+
+    # RealSense D435i IMU — KIKAPCSOLVA
+    # A kamera fizikai orientációja nem egyezik a robot base_link frame-jével.
+    # Visszakapcsolás: backlog → "IMU tilt check — RealSense kamera frame orientáció"
+    #
+    # imu0: /camera/camera/imu
+    # imu0_config:
+    #   [false, false, false,
+    #    true,  true,  true,
+    #    false, false, false,
+    #    true,  true,  true,
+    #    true,  true,  false]
+    # imu0_queue_size: 20
+    # imu0_differential: false
+    # imu0_relative: false
+    # imu0_remove_gravitational_acceleration: true
+
+    # Process noise covariance — 15×15 mátrix (flat list, row-major)
+    # Állapotvektor: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    # Alacsony értékek: egyetlen szenzor (wheel odom), IMU kikapcsolva.
+    # IMU visszakapcsolásakor növelni kell (0.01-0.05 tartomány).
+    process_noise_covariance:
+      [0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001,  0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.001,  0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.001,  0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.001,  0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.001,  0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.001,  0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.001, 0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.001, 0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.001]
+
+    # Initial estimate covariance — 15×15 mátrix (flat list, row-major)
+    # Nagy kezdeti bizonytalanság: az EKF az első mérések alapján konvergál.
+    # Mindent 1.0-ra állítva (identity * 1.0) — megfelelő kiindulópont odom-only módhoz.
+    initial_estimate_covariance:
+      [1.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  1.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  1.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  1.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  1.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  1.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1.0,  0.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1.0,  0.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1.0,  0.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1.0,  0.0,
+       0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  1.0]
+
+# ── Nav2 Controller (sebesség) ────────────────────────────────────────────────
+# MEGJEGYZÉS: A teljes Nav2 konfig a nav2_params.yaml-ban van (volume-mountolva).
+# Ez a szekció CSAK a profil-specifikus sebességeket tartalmazza.
+# navigation.launch.py: parameters=[nav2_params_file, robot_params_file]
+# → a robot_params_file controller_server szekciója felülírja a nav2_params-t.
+controller_server:
+  ros__parameters:
+    FollowPath:
+      desired_linear_vel:           0.5   # NAVIGATION default (DOCKING: 0.1)
+      min_approach_linear_velocity: 0.1
+
+velocity_smoother:
+  ros__parameters:
+    max_velocity: [0.5, 0.0, 1.5]         # NAVIGATION default (DOCKING: [0.1, 0.0, 0.5])
+    min_velocity: [-0.2, 0.0, -1.5]
+
+# ── RC Teleop ─────────────────────────────────────────────────────────────────
+# KRITIKUS: wheel_separation KÖTELEZŐEN azonos a diff_drive_controller értékével!
+# BUG FIX: teleop.launch.py-ban 0.8 volt hardcode-olva → 0.7-re javítva (valós mért 700mm)
+# Hibás értéknél: az RC kimeneti sebességek és az odometria eltér → ghost drift Nav2-ben.
+rc_teleop_node:
+  ros__parameters:
+    # max_linear_vel: Nav2 8 km/h = 2.22 m/s limitjével megegyező (RC módban is védelem)
+    max_linear_vel:    2.22
+    # JAVÍTVA: 0.8 → 0.7 (controllers.yaml diff_drive_controller wheel_separation-nal egyezik)
+    wheel_separation:  0.7
+    rc_mode_threshold: 0.5    # RC mode kanal értéke felett RC módba vált
+    publish_rate_hz:   50.0   # Matches diff_drive_controller 50 Hz update rate
+    # deadzone: ez alatti joystick értékeket nullának tekinti (mechanikus drift szűrés)
+    deadzone:          0.05
+    # rc_mode_invert: false = normál (előre = pozitív); true = megfordított RC csatorna
+    rc_mode_invert:    false
+
+# ── Winch Node ────────────────────────────────────────────────────────────────
+winch_node:
+  ros__parameters:
+    winch_threshold: 0.5    # RC csatorna küszöb a csörlő aktiválásához
+    update_rate_hz:  50.0   # Matches RC teleop publish rate
+
+# ── Safety Supervisor ─────────────────────────────────────────────────────────
+# Futásidőben folyamatosan ellenőrzi a biztonságot.
+# Korábbi .env változók: PROXIMITY_DISTANCE_M, ESTOP_TIMEOUT_S, stb.
+# Módosítás után: docker compose up -d robot (nem csak restart)
+safety_supervisor:
+  ros__parameters:
+    estop_timeout_s:      2.0
+    # TILT: 90° = kikapcsolva
+    # Éles robot: 25.0/20.0 — csak a kamera→base_link transzformáció fix után!
+    # Backlog: "IMU tilt check — RealSense kamera frame orientáció"
+    tilt_roll_limit_deg:  90.0
+    tilt_pitch_limit_deg: 90.0
+    # PROXIMITY: 0.0 = kikapcsolva
+    # Visszakapcsoláshoz előfeltétel: LiDAR szögmaszk (alkatrészek kitakarása)
+    # Backlog: "LiDAR szögmaszk — robot saját alkatrészeinek kitakarása"
+    proximity_distance_m: 0.0
+    proximity_angle_deg:  30.0
+    # watchdog_rate_hz: Hz-ben ellenőrzi az E-Stop üzenet frissességét
+    watchdog_rate_hz:     20.0
+    # imu_process_rate_hz: IMU adat feldolgozási ráta a tilt check-hez
+    # Forrás default (safety_supervisor.cpp): 20.0 — megőrzött
+    imu_process_rate_hz:  20.0
+
+# ── Startup Supervisor ────────────────────────────────────────────────────────
+# Induláskor egyszer ellenőriz → FAULT ha nem teljesül → container restart oldja fel.
+# Korábbi .env változók: CHECK_MOTION_ENABLED, CHECK_TILT_ENABLED, stb.
+startup_supervisor:
+  ros__parameters:
+    # CHECK_TILT: false — kamera frame nem egyezik base_link-kel (90° roll)
+    # CHECK_MOTION: true — robot mozdulatlanul áll indítás előtt
+    # CHECK_ESTOP: true — E-Stop bridge online és nem aktív
+    check_motion_enabled:  true
+    check_tilt_enabled:    false
+    check_estop_enabled:   true
+    tilt_roll_limit_deg:   90.0
+    tilt_pitch_limit_deg:  90.0
+    motion_stable_s:       2.0
+    motion_timeout_s:      30.0
+    # TILT_TIMEOUT: 30s — RealSense lassan indul (20-30s)
+    tilt_timeout_s:        30.0
+    estop_timeout_s:       30.0
+    # motion thresholds: ez alatti értéket "áll" státusznak tekinti
+    motion_linear_threshold:  0.05   # m/s
+    motion_angular_threshold: 0.05   # rad/s
+    # tick_rate_hz: állapotgép frissítési ráta indulás közben
+    tick_rate_hz:          10.0
+
+# ── RoboClaw Hardware Interface ────────────────────────────────────────────────
+# NEM ros__parameters blokk — hardware.launch.py OpaqueFunction olvassa és
+# xacro parancssort épít belőle. Az URDF robot.urdf.xacro <xacro:arg> nevekkel
+# kell egyezzenek. wheel_radius/wheel_separation KIHAGYVA (xacro:property, nem arg).
+roboclaw_hardware:
+  tcp_host:                "10.0.10.24"   # USR-K6 Ethernet-Serial bridge
+  tcp_port:                8234
+  socket_timeout:          0.05
+  address:                 "0x80"         # decimal: 128
+  encoder_counts_per_rev:  70300
+  gear_ratio:              1.0            # TODO: kalibrálás szükséges
+  motion_strategy:         "speed_accel"
+  default_acceleration:    15000
+  duty_accel_rate:         50000
+  duty_decel_rate:         50000
+  duty_max_rad_s:          20.5
+  buffer_depth:            4
+  encoder_stuck_limit:     50
+  encoder_runaway_limit:   5
+  encoder_comm_fail_limit: 10
+  encoder_max_speed_rad_s: 30.0
+  # QPPS: Motion Studio által mért encoder counts/sec a mechanikai maximumon.
+  # SetM1PID/SetM2PID referencia sebesség (PID skálázás alapja).
+  # NE számold ki encoder_counts_per_rev × encoder_max_speed_rad_s / 2π-ből!
+  # (az ~336k lenne — de a mért érték ~230k; a kettő eltérése a motorkarakteres
+  # és slip miatt van). Enkóder újrakalibrálás után ezt a mért értéket frissítsd.
+  #
+  # TODO (enkóder újrakalibrálás után):
+  #   1. Motion Studio → Auto-Tune futtatása mindkét motorra (M1, M2)
+  #      → rögzíti a QPPS értéket az RoboClaw EEPROM-ba
+  #   2. Motion Studio → M1/M2 Velocity Settings oldalon leolvasni az új QPPS-t
+  #      (a "QPPS" mezőben jelenik meg az auto-tune után)
+  #   3. Ezt a számot ide írni: qpps: <új_érték>
+  #   4. Egyszerre frissíteni encoder_counts_per_rev-et is, ha az is változott
+  #      (az auto-tune a CPR-t is méri — a két paraméter összetartozik!)
+  #   5. docker compose up -d robot  (build nem kell, volume-ból frissül)
+  #   6. Ellenőrzés: docker logs robot 2>&1 | grep -i qpps
+  #      (a hardware plugin logolja a kapott értéket on_configure-ban)
+  qpps:                    230000
+  invert_left_motor:       true
+  invert_right_motor:      true
+  auto_home_on_startup:    false
+  position_limits_enabled: false
+
+# ── RealSense D435i — Alap konfiguráció (NAVIGATION default) ────────────────
+# Külön Isaac ROS Docker stackben fut — ez jövőbeli integráció előkészítése.
+# Profile overrides: _profiles_/NAVIGATION és _profiles_/DOCKING már megvan.
+realsense2_camera_node:
+  ros__parameters:
+    "rgb_camera.color_profile":   "640x480x30"
+    "depth_module.depth_profile": "640x480x30"
+    enable_gyro:        false
+    enable_accel:       false
+    enable_sync:        false
+    "pointcloud.enable": false
+
+# ── Foxglove Bridge ────────────────────────────────────────────────────────────
+# Dockerfile.foxglove CMD: ros2 run foxglove_bridge foxglove_bridge
+#   --ros-args --params-file /config/robot_params.yaml
+# Node neve: foxglove_bridge (executable == node name)
+foxglove_bridge:
+  ros__parameters:
+    port:              8765
+    address:           "0.0.0.0"
+    tls:               false
+    send_buffer_limit: 10000000
+    asset_uri_allowlist: ["^package://.*"]
+    # /scan: RPLidar BEST_EFFORT publisher-rel egyeznie kell
+    "qos_overrides./scan.subscription.reliability": best_effort
+    "qos_overrides./scan.subscription.depth":       1
+    # RealSense kamera streamek: Tailscale VPN-en stabil streameléshez BEST_EFFORT kell
+    # (RELIABLE retry overhead Tailscale WireGuard tunnelen késést okoz)
+    "qos_overrides./camera/camera/color/image_raw.subscription.reliability":    best_effort
+    "qos_overrides./camera/camera/color/image_raw.subscription.depth":          1
+    "qos_overrides./camera/camera/depth/color/points.subscription.reliability": best_effort
+    "qos_overrides./camera/camera/depth/color/points.subscription.depth":       1
+
+# ── Micro-ROS Agent ────────────────────────────────────────────────────────────
+# NEM ROS2 node — docker-compose.yml command argumentumok forrása.
+# A microros/micro-ros-agent Docker image CLI argokat vár, nem params fájlt.
+# Ez a szekció dokumentációs célú; jövőbeli Makefile/script olvashatja.
+# Jelenlegi docker-compose.yml: udp4 -p ${MICROROS_AGENT_PORT:-8888} (ENV-ből)
+microros_agent:
+  transport:     udp4
+  port:          8888
+  agent_ip:      "10.0.10.1"    # Jetson eth0 (robot LAN interface)
+  # RP2040 bridge IP-k:
+  #   RC bridge:    10.0.10.22
+  #   E-Stop:       10.0.10.23
+  #   Pedal bridge: 10.0.10.21

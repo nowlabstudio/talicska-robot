@@ -12,88 +12,61 @@ scan_frequency param controls:
      publish was less than 1/scan_frequency seconds ago.  grabScanDataHq()
      still runs every motor revolution to keep the HW buffer drained.
      Result: zero unnecessary DDS serialization.
+
+OpaqueFunction: reads robot_params.yaml, merges ROBOT_MODE profile override
+for rplidar_node (scan_mode, scan_frequency).
+
+EKF consolidation: robot_params.yaml contains all ekf_filter_node params —
+ekf.yaml is NOT needed (single source of truth).
 """
 
+import os
+import yaml
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
+
+
+def launch_setup(context, *args, **kwargs):
+    params_file = LaunchConfiguration("params_file").perform(context)
+    robot_mode  = os.environ.get("ROBOT_MODE", "NAVIGATION")
+
+    with open(params_file) as f:
+        all_params = yaml.safe_load(f)
+
+    rplidar_base = all_params.get("rplidar_node", {}).get("ros__parameters", {})
+    rplidar_override = (all_params.get("_profiles_", {})
+                                  .get(robot_mode, {})
+                                  .get("rplidar_node", {})
+                                  .get("ros__parameters", {}))
+    rplidar_params = {**rplidar_base, **rplidar_override}
+
+    rplidar = Node(
+        package="rplidar_ros",
+        executable="rplidar_node",
+        name="rplidar_node",
+        parameters=[rplidar_params],
+        output="screen",
+    )
+
+    # EKF consolidation: robot_params.yaml tartalmazza az összes EKF paramétert
+    # (process_noise_covariance, initial_estimate_covariance, odom0_config, IMU kommentálva)
+    # ekf.yaml NEM szükséges — single source of truth a globális YAML
+    ekf = Node(
+        package="robot_localization",
+        executable="ekf_node",
+        name="ekf_filter_node",
+        parameters=[params_file],
+        output="screen",
+    )
+
+    return [rplidar, ekf]
 
 
 def generate_launch_description():
-    serial_port_arg = DeclareLaunchArgument(
-        'serial_port',
-        default_value='/dev/ttyUSB0',
-        description='RPLidar A2 serial device',
-    )
-    serial_baudrate_arg = DeclareLaunchArgument(
-        'serial_baudrate',
-        default_value='256000',
-        description='RPLidar A2M12 serial baudrate (256000 for M12, 115200 for M8)',
-    )
-
-    # ── RPLidar A2M12 ─────────────────────────────────────────────────────
-    # Publishes /scan (sensor_msgs/LaserScan) at 10 Hz, frame: lidar_link.
-    # lidar_link TF is provided by robot_state_publisher (fixed joint in URDF).
-    #
-    # Sensitivity mode: max sample rate (~8-12 KHz) for dense point clouds.
-    # angle_compensate=true: interpolates raw points to evenly-spaced output.
-    #   Output density = 360 × floor(samples_per_rev / 360 + 1) points/scan.
-    #   With Sensitivity @ scan_frequency=10: ~1440 pts/scan (vs 720 in Standard).
-    #
-    # scan_frequency=10.0: controls both the angle_compensate density calculation
-    #   AND the internal publish throttle (patched driver).  Actual motor speed
-    #   is ~13.5 Hz (PWM=600, hardcoded for A-series); excess scans are grabbed
-    #   from the HW buffer but not published — zero wasted serialization.
-    #
-    # NOTE: If 'Sensitivity' mode is not available on this A2M12 firmware,
-    #   the driver will log all supported modes and fail. Try 'Boost' instead.
-    rplidar = Node(
-        package='rplidar_ros',
-        executable='rplidar_node',
-        name='rplidar_node',
-        parameters=[{
-            'serial_port':      LaunchConfiguration('serial_port'),
-            'serial_baudrate':  LaunchConfiguration('serial_baudrate'),
-            'frame_id':         'lidar_link',
-            'inverted':         False,
-            'angle_compensate': True,
-            'scan_mode':        'Sensitivity',
-            'scan_frequency':   10.0,
-            # ── QoS override: BEST_EFFORT publisher ──────────────────────────
-            # Audit #4: a RELIABLE publisher → BEST_EFFORT subscriber mismatch
-            # (slam_toolbox, costmapok) extra CycloneDDS buffert és overhead-et
-            # okozott. Ha a forrás is BEST_EFFORT, a mismatch megszűnik.
-            # safety_supervisor és foxglove_bridge szintén BEST_EFFORT-ra vált
-            # (ők a publisher QoS-hoz igazodnak automatikusan).
-            # Ha rplidar_ros nem támogatja a qos_overrides paramétert (régebbi
-            # build), ez a bejegyzés figyelmen kívül marad — nem okoz hibát.
-            'qos_overrides./scan.publisher.reliability': 'best_effort',
-            'qos_overrides./scan.publisher.history':     'keep_last',
-            'qos_overrides./scan.publisher.depth':       1,
-        }],
-        output='screen',
-    )
-
-    # ── robot_localization EKF ────────────────────────────────────────────
-    # Fuses /odom (diff_drive) + /camera/camera/imu (RealSense D435i)
-    # Publishes /odometry/filtered and odom → base_link TF
-    ekf = Node(
-        package='robot_localization',
-        executable='ekf_node',
-        name='ekf_filter_node',
-        parameters=[
-            PathJoinSubstitution([
-                FindPackageShare('robot_bringup'), 'config', 'ekf.yaml'
-            ])
-        ],
-        output='screen',
-    )
-
     return LaunchDescription([
-        serial_port_arg,
-        serial_baudrate_arg,
-        rplidar,
-        ekf,
+        DeclareLaunchArgument(
+            "params_file", default_value="/config/robot_params.yaml"),
+        OpaqueFunction(function=launch_setup),
     ])
