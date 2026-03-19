@@ -31,7 +31,7 @@ def launch_setup(context, *args, **kwargs):
     hw_base     = all_params.get("roboclaw_hardware", {})
     hw_override = (all_params.get("_profiles_", {})
                              .get(robot_mode, {})
-                             .get("roboclaw_hardware", {}))
+                             .get("roboclaw_hardware", {}))  # plain dict, no ros__parameters
     hw = {**hw_base, **hw_override}  # override wins (DOCKING: encoder_stuck_limit=20)
 
     urdf_path = os.path.join(
@@ -75,10 +75,20 @@ def launch_setup(context, *args, **kwargs):
     controllers_yaml = os.path.join(
         get_package_share_directory("robot_bringup"), "config", "controllers.yaml")
 
+    # controller_manager és diff_drive_controller paramétereket dict-ként adjuk át,
+    # NEM a teljes robot_params.yaml fájlként — az RCL parser crashel a _profiles_
+    # nested ros__parameters struktura miatt (Cannot have a value before ros__parameters).
+    cm_params = all_params.get("controller_manager",    {}).get("ros__parameters", {})
+    dd_params = all_params.get("diff_drive_controller", {}).get("ros__parameters", {})
+
     controller_manager = Node(
         package="controller_manager",
         executable="ros2_control_node",
-        parameters=[controllers_yaml, params_file],  # robot_params.yaml felülír
+        parameters=[
+            controllers_yaml,
+            {"controller_manager":    {"ros__parameters": cm_params}},
+            {"diff_drive_controller": {"ros__parameters": dd_params}},
+        ],
         output="screen")
 
     jsb_spawner = Node(

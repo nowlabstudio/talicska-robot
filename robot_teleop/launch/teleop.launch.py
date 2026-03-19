@@ -1,36 +1,34 @@
 """
 teleop.launch.py — RC teleop + twist_mux
 
-Launches:
-  - rc_teleop_node: /robot/motor_left + /robot/motor_right → /cmd_vel_rc (RC mode)
-  - winch_node:     winch control via RC channel
-  - twist_mux:      /cmd_vel_rc (prio 20) + /cmd_vel_nav2 (prio 10) → /cmd_vel_raw
-
-/cmd_vel_raw is consumed by safety_supervisor → /cmd_vel → diff_drive_controller.
-
-Must start before navigation.launch.py so twist_mux is ready when Nav2 comes up.
-
-All parameters are loaded from params_file (default: /config/robot_params.yaml).
+OpaqueFunction: extracts only rc_teleop_node and winch_node ros__parameters
+dicts from robot_params.yaml — does NOT pass the full file to RCL.
+twist_mux uses its own twist_mux.yaml (not robot_params.yaml).
 """
 
+import yaml
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
-def generate_launch_description():
-    params_file_arg = DeclareLaunchArgument(
-        "params_file", default_value="/config/robot_params.yaml")
-    params_file = LaunchConfiguration("params_file")
+def launch_setup(context, *args, **kwargs):
+    params_file = LaunchConfiguration("params_file").perform(context)
+
+    with open(params_file) as f:
+        all_params = yaml.safe_load(f)
+
+    teleop_params = all_params.get("rc_teleop_node", {}).get("ros__parameters", {})
+    winch_params  = all_params.get("winch_node",     {}).get("ros__parameters", {})
 
     rc_teleop = Node(
         package="robot_teleop",
         executable="rc_teleop_node",
         name="rc_teleop_node",
         output="screen",
-        parameters=[params_file],
+        parameters=[teleop_params],
     )
 
     twist_mux = Node(
@@ -51,7 +49,15 @@ def generate_launch_description():
         executable="winch_node",
         name="winch_node",
         output="screen",
-        parameters=[params_file],
+        parameters=[winch_params],
     )
 
-    return LaunchDescription([params_file_arg, rc_teleop, twist_mux, winch])
+    return [rc_teleop, twist_mux, winch]
+
+
+def generate_launch_description():
+    return LaunchDescription([
+        DeclareLaunchArgument(
+            "params_file", default_value="/config/robot_params.yaml"),
+        OpaqueFunction(function=launch_setup),
+    ])

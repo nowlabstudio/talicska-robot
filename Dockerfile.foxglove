@@ -22,7 +22,16 @@ RUN mkdir -p /opt/ros/jazzy/share/ament_index/resource_index/packages && \
     touch /opt/ros/jazzy/share/ament_index/resource_index/packages/robot_description && \
     mkdir -p /opt/ros/jazzy/share/robot_description
 
+# A teljes robot_params.yaml nem adható át direkt --params-file-ként:
+# az RCL parser a _profiles_ nested struktúráján crashel.
+# Megoldás: Python kiszedi a foxglove_bridge szekciót egy temp YAML-ba,
+# és csak azt adja át. A /tmp fájl a container életciklusán belül él.
 CMD ["/bin/bash", "-c", \
      "source /opt/ros/jazzy/setup.bash && \
+      python3 -c \"\
+import yaml, sys; \
+d = yaml.safe_load(open('/config/robot_params.yaml')); \
+yaml.dump({'foxglove_bridge': d['foxglove_bridge']}, open('/tmp/foxglove_params.yaml','w')); \
+\" && \
       ros2 run foxglove_bridge foxglove_bridge \
-        --ros-args --params-file /config/robot_params.yaml"]
+        --ros-args --params-file /tmp/foxglove_params.yaml"]

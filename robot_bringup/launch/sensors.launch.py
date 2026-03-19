@@ -38,8 +38,7 @@ def launch_setup(context, *args, **kwargs):
     rplidar_base = all_params.get("rplidar_node", {}).get("ros__parameters", {})
     rplidar_override = (all_params.get("_profiles_", {})
                                   .get(robot_mode, {})
-                                  .get("rplidar_node", {})
-                                  .get("ros__parameters", {}))
+                                  .get("rplidar_node", {}))
     rplidar_params = {**rplidar_base, **rplidar_override}
 
     rplidar = Node(
@@ -50,14 +49,15 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
     )
 
-    # EKF consolidation: robot_params.yaml tartalmazza az összes EKF paramétert
-    # (process_noise_covariance, initial_estimate_covariance, odom0_config, IMU kommentálva)
-    # ekf.yaml NEM szükséges — single source of truth a globális YAML
+    # EKF consolidation: robot_params.yaml tartalmazza az összes EKF paramétert.
+    # Dict-ként adjuk át (nem file path) — az RCL parser nem tolerálja a teljes
+    # robot_params.yaml-t (_profiles_ nested ros__parameters miatt crashel).
+    ekf_params = all_params.get("ekf_filter_node", {}).get("ros__parameters", {})
     ekf = Node(
         package="robot_localization",
         executable="ekf_node",
         name="ekf_filter_node",
-        parameters=[params_file],
+        parameters=[ekf_params],
         output="screen",
     )
 

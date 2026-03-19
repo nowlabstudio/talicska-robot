@@ -39,11 +39,9 @@ def launch_setup(context, *args, **kwargs):
         rp = yaml.safe_load(f)
 
     def get_merged(node_name):
-        base = rp.get(node_name, {}).get("ros__parameters", {})
-        override = (rp.get("_profiles_", {})
-                      .get(robot_mode, {})
-                      .get(node_name, {})
-                      .get("ros__parameters", {}))
+        base     = rp.get(node_name, {}).get("ros__parameters", {})
+        override = rp.get("_profiles_", {}).get(robot_mode, {}).get(node_name, {})
+        # _profiles_ alatti értékek plain dict-ek (nincs ros__parameters szint)
         return {**base, **override}
 
     controller_merged = get_merged("controller_server")

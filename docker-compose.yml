@@ -50,7 +50,12 @@ services:
       # Config + launch override — rebuild NEM kell, csak docker compose restart robot
       - ./robot_bringup/config/slam_params.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/slam_params.yaml:ro
       - ./robot_bringup/config/nav2_params.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/nav2_params.yaml:ro
+      - ./robot_bringup/launch/robot.launch.py:/root/talicska-ws/install/robot_bringup/share/robot_bringup/launch/robot.launch.py:ro
+      - ./robot_bringup/launch/hardware.launch.py:/root/talicska-ws/install/robot_bringup/share/robot_bringup/launch/hardware.launch.py:ro
+      - ./robot_bringup/launch/sensors.launch.py:/root/talicska-ws/install/robot_bringup/share/robot_bringup/launch/sensors.launch.py:ro
       - ./robot_bringup/launch/navigation.launch.py:/root/talicska-ws/install/robot_bringup/share/robot_bringup/launch/navigation.launch.py:ro
+      - ./robot_safety/launch/safety.launch.py:/root/talicska-ws/install/robot_safety/share/robot_safety/launch/safety.launch.py:ro
+      - ./robot_teleop/launch/teleop.launch.py:/root/talicska-ws/install/robot_teleop/share/robot_teleop/launch/teleop.launch.py:ro
       - ./robot_bringup/config/controllers.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/controllers.yaml:ro
       - ./robot_teleop/config/twist_mux.yaml:/root/talicska-ws/install/robot_teleop/share/robot_teleop/config/twist_mux.yaml:ro
       - ./robot_description/urdf/robot.urdf.xacro:/root/talicska-ws/install/robot_description/share/robot_description/urdf/robot.urdf.xacro:ro
