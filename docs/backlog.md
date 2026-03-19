@@ -8,11 +8,13 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 - **`talicska` CLI — system PATH-ra tenni a robot parancsokat** — Cél: `talicska up`, `talicska down`, `talicska check`, `talicska logs` stb. bárhonnan futtatható legyen, ne kelljen `cd`-vel a repo mappába navigálni. Megoldás: wrapper script (`/usr/local/bin/talicska` vagy `~/.local/bin/talicska`) ami a Makefile target-eket hívja a megfelelő munkakönyvtárból. Az `install.sh` telepíti. Tartalmazza az összes kritikus parancsot: up, down, check, rc-up, logs, topics, nodes, realsense-up, realsense-logs, stb.
 
-- **`robot_config.yaml` dedikált operator toggle fájl** — volume-mountolva, rebuild nélkül szerkeszthető. Tartalmaz: `open_loop`, safety limits, Nav2 be/ki, RC-only mód, stb. A launch fájl betölti és továbbaadja a megfelelő node-oknak. Tervezést igényel (launch fájl architektúra).
+- **~~`robot_config.yaml` dedikált operator toggle fájl~~** — ✅ **KÉSZ (2026-03-19):** `config/robot_params.yaml` implementálva. Docker Volume `./config:/config:ro`, OpaqueFunction-alapú betöltés minden node-nál, `ROBOT_MODE` alapú profil rendszer (`_profiles_/NAVIGATION|DOCKING|FOLLOW`). `docker compose up -d` elegendő paraméter változtatáshoz, build nem kell.
 
-- **`controllers.yaml` + URDF volume-mount** — jelenleg COPY-val kerülnek az image-be, rebuild nélküli módosításhoz volume-mountolni kellene (mint a `cyclonedds.xml`). `docker compose restart robot` elegendő lenne. Azonnali win, kevés munka.
+- **~~`controllers.yaml` + URDF volume-mount~~** — ✅ **KÉSZ (2026-03-19):** Összes konfig és launch fájl volume-mountolva a `docker-compose.yml`-ben. `docker compose up -d robot` elegendő.
 
-- **Motor irány + M1/M2 mapping paraméterek a hardware plugin-ban** — jelenleg nincs `invert_left`/`invert_right` URDF param. Egyszer megírni a plugin-ba (rebuild), utána URDF xacro arg-ként terepen állítható. 4 motoros konfignál fontosabb lesz (melyik M1, melyik M2, melyik controller). Az URDF volume-mounttal együtt csinálandó.
+- **~~Motor irány + M1/M2 mapping paraméterek~~** — ✅ **KÉSZ (2026-03-19):** `invert_left_motor`/`invert_right_motor` URDF xacro argok, `config/robot_params.yaml` `roboclaw_hardware` szekciójából olvasva, build nélkül módosítható.
+
+- **RoboClaw velocity PID (SetM1PID/SetM2PID) — QPPS és PID gains YAML-ból** — A `roboclaw_hardware.cpp` `configure_servo_parameters()` jelenleg stub. A `qpps` paraméter be van kötve az URDF-be és a YAML-ba (2026-03-19), de a plugin nem hívja `SetM1PID`/`SetM2PID`-et. Implementálni kellene: `on_configure`-ban olvassa a YAML-ból a `qpps` + PID gains értékeket és elküldi a RoboClaw-nak. Enkóder újrakalibrálás után ez teszi aktívvá a mért QPPS értéket. Érintett fájl: `ROS2_RoboClaw/src/roboclaw_hardware.cpp`.
 
 ## URDF / Vizualizáció
 

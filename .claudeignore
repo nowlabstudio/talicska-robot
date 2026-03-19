@@ -1,0 +1,19 @@
+# Build és ideiglenes fájlok (ezek eszik a legtöbb kreditet)
+build/
+install/
+log/
+**/__pycache__/
+*.pyc
+*.o
+*.a
+*.so
+
+# Git és Docker
+.git/
+.docker/
+
+# Nagy adatfájlok és logok
+*.bag
+*.mcap
+*.log
+*.txt

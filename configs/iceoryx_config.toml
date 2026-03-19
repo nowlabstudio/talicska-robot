@@ -1,0 +1,66 @@
+# Iceoryx RouDi memory pool configuration — Talicska robot
+#
+# Context:
+#   CycloneDDS rmw_cyclonedds_cpp KEEP_LAST(100) QoS caused
+#   "TOO_MANY_CHUNKS_HELD_IN_PARALLEL" errors with the built-in config
+#   (default capacity = 1). This config provides enough chunks for all
+#   ROS2 message types used by the robot stack.
+#
+# Note on max_chunks_held_per_subscriber:
+#   iceoryx 2.0.6 TOML parser only reads segment/mempool/size/count.
+#   This key is included for documentation/forward-compatibility.
+#   Actual chunk availability is governed by the mempool counts below.
+#
+# max_chunks_held_per_subscriber = 128
+#
+# Memory usage estimate:
+#   10000 × 128B   =   1.28 MB  (parameter_events, Bool, Float32)
+#    5000 × 512B   =   2.56 MB  (IMU, Twist, std_msgs/Header)
+#    2000 × 2KB    =   4.10 MB  (Odometry, JointState, TFMessage small)
+#     500 × 8KB    =   4.10 MB  (TFMessage large, nav_msgs/Path)
+#     100 × 32KB   =   3.28 MB  (LaserScan RPLidar A2 ~1440 pts)
+#      20 × 256KB  =   5.24 MB  (PointCloud2 small)
+#      10 × 1MB    =  10.49 MB  (camera Image, PointCloud2 large)
+#   Total: ~31 MB  (vs ~216 MB built-in default)
+
+[general]
+version = 1
+
+[[segment]]
+
+# ── Tiny: parameter_events, Bool, Float32, std_msgs/Empty ─────────────────
+# KEEP_LAST(100) × ~20 topics × 5 subscribers = 10000 chunks needed
+[[segment.mempool]]
+size = 128
+count = 10000
+
+# ── Small: IMU (raw), Twist, geometry_msgs/Vector3Stamped ─────────────────
+[[segment.mempool]]
+size = 512
+count = 5000
+
+# ── Medium: Odometry, JointState, TFMessage (2-4 transforms) ──────────────
+[[segment.mempool]]
+size = 2048
+count = 2000
+
+# ── Large-medium: TFMessage (full tree), nav_msgs/Path ────────────────────
+[[segment.mempool]]
+size = 8192
+count = 500
+
+# ── LaserScan: RPLidar A2 Sensitivity @ 1440 pts                          ──
+# 1440 × 4B (range) + 1440 × 4B (intensity) + header ≈ 12KB → padded 32KB
+[[segment.mempool]]
+size = 32768
+count = 100
+
+# ── PointCloud2 small / compressed images ─────────────────────────────────
+[[segment.mempool]]
+size = 262144
+count = 20
+
+# ── Full camera images: RealSense D435i 640×480 RGB ─────────────────────
+[[segment.mempool]]
+size = 1048576
+count = 10
