@@ -352,6 +352,7 @@ private:
        << "\"check_estop\":"       << (check_estop_  ? "true" : "false") << ","
        << "\"estop\":"             << (estop_active_       ? "true" : "false") << ","
        << "\"estop_online\":"      << (estop_received_     ? "true" : "false") << ","
+       << "\"imu_ok\":"            << (imu_received_       ? "true" : "false") << ","
        << "\"tilt_roll\":"         << fmt(rad2deg(imu_roll_)) << ","
        << "\"tilt_pitch\":"        << fmt(rad2deg(imu_pitch_)) << ","
        << "\"odom_linear\":"       << fmt(odom_linear_) << ","
