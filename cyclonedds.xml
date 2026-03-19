@@ -1,29 +1,25 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!--
   CycloneDDS configuration for Talicska robot (Jetson Orin Nano)
+  Transport: UDP loopback (lo) + UDP unicast (enP1p1s0)
 
-  Goals:
-  - Bind to loopback (lo) FIRST — intra-host DDS traffic (konténer ↔ konténer)
-    a loopbacken megy, nem a fizikai NIC-en → recvMC thread CPU csökken.
-  - Bind to lab LAN NIC (enP1p1s0) SECOND — cross-host discovery + Foxglove.
-  - SharedMemory (iceoryx) — zero-copy transport intra-host üzenetekhez.
-    Előfeltétel: iox-roudi daemon fut (ros_entrypoint.sh indítja).
-  - Cap historical data (WHC) and receiver buffers for 8 GB Jetson RAM.
-  - Keep discovery local (no multicast beyond lab subnet).
+  - lo ELSŐ: intra-host DDS forgalom (konténer ↔ konténer) a loopbacken megy,
+    nem a fizikai NIC-en → recvMC thread CPU overhead elmarad.
+  - enP1p1s0 MÁSODIK: cross-host discovery + Foxglove (dev laptop, lab LAN).
+  - MaxMessageSize: 65500B — RPLidar A2 scan message elfér egy UDP datagramban.
+  - Discovery lab subnettre korlátozva (ParticipantIndex auto, max 32).
 
   Network layout:
     Jetson ETH0 (eth0): 10.0.10.1/24  — robot internal (RP2040s, RoboClaw)
     Jetson ETH1 (eth1): 192.168.68.x  — lab LAN (dev laptop, internet)
     lo:                 127.0.0.1      — intra-host DDS (konténerek közt)
 
-  DDS transport prioritás (ipc: host + lo első):
-    1. SharedMemory (iceoryx) — zero-copy, ha mindkét endpoint ugyanazon a gépen
-    2. UDP loopback (lo)      — intra-host fallback, nincs fizikai NIC overhead
-    3. UDP unicast (enP1p1s0) — cross-host (dev laptop, Foxglove)
+  Audit eredmény (2026-03-19):
+    CPU: ~130% (recvUC thread, stabil)  RAM: ~325 MiB  /scan delay: 76 ms stabil
 
   Usage:
     export CYCLONEDDS_URI=file:///path/to/cyclonedds.xml
-    or set via docker-compose env_file
+    (docker-compose .env-ből kerül beállításra)
 
   Tune NetworkInterfaceAddress if NIC name differs:
     ip -br addr show | grep 192.168.68
@@ -41,17 +37,6 @@
       <AllowMulticast>true</AllowMulticast>
       <MaxMessageSize>65500B</MaxMessageSize>
     </General>
-
-    <!-- SharedMemory (iceoryx) — KÉSŐBB AKTIVÁLANDÓ, rebuild után.
-         A <Enable>true</Enable> flag kötelező iox-roudi daemontelt vár.
-         Ha RouDi nem fut, az összes node crash-el (IPC_INTERFACE__REG_ROUDI_NOT_AVAILABLE).
-         Aktiválás lépései:
-           1. docker-compose.yml: robot service command elé iox-roudi indítás
-              VAGY ros_entrypoint.sh-ban iox-roudi & + sleep 0.5 (már megírva)
-           2. make build (kép újraépítése az új entrypoint-tal)
-           3. make up
-         Addig: UDP loopbacken megy az intra-host forgalom (lo interfész). -->
-    <!-- <SharedMemory><Enable>true</Enable></SharedMemory> -->
 
     <Discovery>
       <!-- Restrict discovery to lab subnet -->

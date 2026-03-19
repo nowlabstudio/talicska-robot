@@ -32,6 +32,7 @@ services:
     build:
       context: ../..
       dockerfile: robot/talicska-robot/Dockerfile
+      network: host
     network_mode: host
     ipc: host
     restart: unless-stopped

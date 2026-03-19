@@ -366,3 +366,157 @@ Rebuild után életbe lép:
 3. **rplidar BEST_EFFORT QoS** → mismatch megszűnik, costmap puffer csökken
 
 → **Audit #6** a rebuild utáni állapotra tervezett.
+
+---
+
+## Audit #6 — SharedMemory kísérlet és döntés (2026-03-19)
+
+### Kontextus
+
+Audit #5 után a következő lépés a **CycloneDDS iceoryx SharedMemory (SHM)** transport aktiválása volt a zero-copy intra-host üzenettovábbítás érdekében. Az audit célja: megvizsgálni, hogy az SHM valódi CPU csökkentést hoz-e, és stabilan üzemel-e.
+
+### Elvégzett módosítások (Audit #5 → #6)
+
+| # | Módosítás | Fájl |
+|---|-----------|------|
+| 1 | `network: host` a Docker build szekcióba | docker-compose.yml |
+| 2 | `iox-roudi -c /etc/iceoryx/iceoryx_config.toml -l warning` az entrypoint-ban | scripts/ros_entrypoint.sh |
+| 3 | Custom iceoryx mempool konfig | configs/iceoryx_config.toml |
+| 4 | `iceoryx_config.toml` volume mount | docker-compose.yml |
+| 5 | `<SharedMemory><Enable>true</Enable>` | cyclonedds.xml |
+
+### Build problémák és javítások
+
+| Probléma | Javítás |
+|----------|---------|
+| `docker compose build` DNS fail (`apt-get update`) | `network: host` a build szekcióba → host DNS használata build során |
+| `iox-roudi -l warn` → `error: invalid log level` | `-l warn` → `-l warning` (valid opció) |
+| Rebuild cache: csak entrypoint réteg változott → gyors | CACHED layers, csak 3 réteg újraépítve |
+
+### SHM kísérletek — Eredmények
+
+#### Kísérlet #6a — iox-roudi egyéni config nélkül (SIKERTELEN)
+
+**Root cause:** iox-roudi default config `ChunkHistoryCapacity = 1`, de CycloneDDS KEEP_LAST(100) QoS 100 chunk historyt kér.
+
+**Tünetek:**
+```
+[Warning]: Chunk history request exceeds history capacity! Request is 100. Capacity is 1.
+ekf_node: iceoryx subscriber - TOO_MANY_CHUNKS_HELD_IN_PARALLEL - could not take sample
+slam_toolbox: Message Filter dropping message: frame 'lidar_link': queue is full
+```
+`/tf` nem kapott adatot — a SLAM nem tudta feldolgozni a scaneket, mert az `odom → base_link` TF kiesett.
+
+#### Kísérlet #6b — Custom iceoryx_config.toml (RÉSZBEN SIKERES)
+
+Custom mempool config (10000×128B, 5000×512B, 2000×2KB, stb.):
+- `TOO_MANY_CHUNKS_HELD_IN_PARALLEL` száma csökkent, de nem szűnt meg teljesen
+- CPU: **~98%** (látszólag jobb mint 130%, de megtévesztő)
+- RAM: **483 MiB**
+
+**Kritikus megállapítás:** Az `iceoryx 2.0.6 TOML parser` csak `general/version`, `segment/mempool/size/count` kulcsokat ismer. A `max_chunks_held_per_subscriber` parameter **nem támogatott** a TOML-ban — compile-time konstans.
+
+#### TRANSIENT_LOCAL + SHM inkompatibilitás (BLOKKOLÓ)
+
+**Gyökérok:** Az iceoryx SHM transport **VOLATILE-only**. A `/tf_static` topic `TRANSIENT_LOCAL` QoS-t használ (egyszer publikál, late-joining subscriber-ek is megkapják a historyt).
+
+**Következmény:** `robot_state_publisher` az indulásnál egyszer publikálja a `base_link → lidar_link` statikus transzformációt SHM-en keresztül. A later-induló node-ok (slam_toolbox, nav2) TF listener-ei nem kapják meg a historyt — az SHM nem ismeri a TRANSIENT_LOCAL re-delivery mechanizmust.
+
+**Bizonyíték:**
+```
+ros2 topic echo /tf_static → csak camera frames, lidar_link HIÁNYZIK
+ros2 run tf2_ros tf2_echo odom lidar_link → "frame does not exist"
+```
+A camera frames azért működtek, mert a `ros2_realsense` konténer más processz → UDP fallback → TRANSIENT_LOCAL history működik.
+
+### Stabilitási tesztek (UDP loopback, SHM kikapcsolva)
+
+Az SHM-et kikapcsoltuk, az iox-roudi-t eltávolítottuk az entrypoint-ból.
+
+#### Fázis 1 — TF fa integritás (tf2_monitor, ~5 perc)
+
+| Frame | Average Delay | Értékelés |
+|-------|--------------|-----------|
+| base_link | 0.0017s | ✅ Kiváló (live, ~50Hz) |
+| odom | -0.047s | ✅ OK (enyhe clock offset) |
+| lidar_link | 111s | ✅ NORMAL (static frame, egyszer publikált) |
+| front_*_wheel | 0.003s | ✅ Kiváló |
+| camera_* frames | 26991s | ✅ Normal (very old static TF, published at boot) |
+
+**MISSING frame-ek:** 0 ✅
+
+#### Fázis 2 — CPU/RAM stabilitás (5×30s minta)
+
+| t | CPU | RAM | Értékelés |
+|---|-----|-----|-----------|
+| +30s | 132.6% | 459.8 MiB | ✅ |
+| +60s | 127.7% | 460.0 MiB | ✅ |
+| +90s | 140.4% | 463.4 MiB | ✅ |
+| +120s | 133.0% | 466.8 MiB | ✅ |
+| +150s | 143.2% | 470.5 MiB | ✅ (SLAM térkép növekedés) |
+
+RAM növekedés: +10.7 MiB / 2.5 perc = SLAM occupancy grid bővülés (normális, nem leak).
+
+#### Fázis 3 — /scan latency
+
+| Metrika | Érték | Limit | Értékelés |
+|---------|-------|-------|-----------|
+| Average delay | **76ms** | 148ms | ✅ |
+| Min | 64ms | — | ✅ |
+| Max | 84ms | — | ✅ |
+| Trend | STABIL | — | ✅ Nem nő |
+
+#### Fázis 4 — Restart megbízhatóság
+
+| Ellenőrzés | Eredmény |
+|------------|----------|
+| docker compose restart robot | ✅ Auto-recovery, kézi beavatkozás nélkül |
+| lidar_link tf_static restart után | ✅ Megjelent 45s-en belül |
+| Árva SHM szegmensek (/dev/shm) | ✅ Nincs orphan (iox-roudi IPC unlink on exit) |
+| CPU restart után | 141% ✅ |
+| RAM restart után | 400 MiB ✅ |
+
+### Döntés — SHM végleges sorsa
+
+**DÖNTÉS: Audit #5 (UDP loopback, SHM OFF) = VÉGLEGES konfiguráció.**
+
+| Kritérium | SHM-mel | SHM nélkül | Döntés |
+|-----------|---------|------------|--------|
+| RAM < 450 MiB | ❌ 483 MiB | ✅ 325-400 MiB | SHM KIZÁRVA |
+| /tf_static integritás | ❌ lidar_link kiesik | ✅ Stabil | SHM KIZÁRVA |
+| CPU stabilitás | ~98% (de SLAM broken!) | 130-143% | UDP loopback ✅ |
+| Restart auto-recovery | ✅ | ✅ | Tie |
+| Komplexitás | Magas (TOML, rebuild, daemon) | Alacsony | UDP loopback ✅ |
+
+**Iceoryx SHM alapvető korlátai (2.0.6):**
+1. TRANSIENT_LOCAL topic-ok nem támogatottak → /tf_static kiesés
+2. `max_chunks_held_per_subscriber` nem konfigurálható TOML-ból (compile-time)
+3. `ChunkHistoryCapacity` = 1 default → KEEP_LAST(100) QoS konfliktus
+
+**SHM újra-aktiváláshoz szükséges feltételek** (backlog):
+- CycloneDDS per-topic transport exclusion (TRANSIENT_LOCAL → mindig UDP)
+- Vagy iceoryx TRANSIENT_LOCAL durability support
+- Részletek: docs/backlog.md
+
+### Végleges konfiguráció (post Audit #6)
+
+| Beállítás | Érték |
+|-----------|-------|
+| CycloneDDS transport | UDP loopback (lo) + UDP unicast (enP1p1s0) |
+| SharedMemory | KIKAPCSOLVA |
+| iox-roudi | Nem indul (eltávolítva entrypoint-ból) |
+| Loopback multicast | false (lo nem multicast-képes → recvUC) |
+| recvMC szálak | 0 (eliminálva) |
+| /scan QoS | BEST_EFFORT, depth=1 (rplidar publisher) |
+| SLAM TF | 20Hz (transform_publish_period: 0.05) |
+
+### Összesített haladás (Audit #1 → #6)
+
+| Metrika | Baseline #1 | Végleges #6 | Δ |
+|---------|-------------|-------------|---|
+| robot CPU | 126% (Nav2 OFF) | **~135%** (Nav2 ON) | ✅ Nav2-vel is < baseline |
+| robot RAM | ~470 MiB | **~325 MiB** | **-145 MiB ✓** |
+| recvMC CPU | ~58% | **0%** | **eliminálva ✓** |
+| /scan delay | — | **76ms** (stabil) | ✅ |
+| TF integritás | — | **100% ✓** | ✅ |
+| Restart recovery | — | **automatikus ✓** | ✅ |

@@ -44,6 +44,10 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 - **Controller manager execution jitter / high mean error** — 2026-03-16, Foxglove diagnostics. `diff_drive_controller` avg exec time: 138μs, `joint_state_broadcaster` avg: 165μs. A `RoboClawSystem` hardware interface `read_cycle` avg: 5567μs (5.5ms — USR-K6 TCP latencia), `write_cycle` avg: 82.64μs. A jitter a TCP round-trip variabilitásából ered. 50Hz-en elfogadható (20ms budget, ~6ms read = bőven belefér), de a Foxglove diagnosztika warningot jelez. A K6 csere (backlog: Infrastruktúra) csökkenti.
 
+## DDS / Transport
+
+- **iceoryx SHM zero-copy transport — jövőbeli opció** — Audit #6 (2026-03-19) során tesztelve, de visszavonva. Az iceoryx 2.0.6 SHM VOLATILE-only: `TRANSIENT_LOCAL` QoS topic-ok (pl. `/tf_static`) nem kapnak history-t late-joining subscriber-eken keresztül. Következmény: `robot_state_publisher` által publikált `lidar_link` frame elvész SLAM/Nav2 induláskor → TF lookup fail → SLAM nem dolgoz fel scan-eket. RAM overhead: +98 MiB (iox-roudi daemon). **Újraaktiválás feltételei:** (1) per-topic SHM exclusion (iceoryx 2.x-ben nincs natívan, CycloneDDS config extension kell), vagy (2) iceoryx TRANSIENT_LOCAL support (upstream fejlesztés). Érintett fájlok: `cyclonedds.xml`, `scripts/ros_entrypoint.sh`. Backlog kontextus: `docs/systemstatus.md` Audit #6 szekció.
+
 ## Biztonság / Robustness
 
 - **Pre-start logika (`scripts/prestart.sh`)** — RoboClaw TCP + bridge ping ellenőrzés indítás előtt, timeout+retry, exit 1 ha nem jön fel. Docker restart policy újrapróbálja.
