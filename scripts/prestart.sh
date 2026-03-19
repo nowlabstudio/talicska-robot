@@ -68,7 +68,7 @@ RTK_GPS_DEV="${RTK_GPS_DEV:-}"
 
 # RealSense D435i USB vendor:product azonosítója
 REALSENSE_USB_ID="8086:0b3a"
-RPLIDAR_DEV="/dev/ttyUSB0"
+RPLIDAR_DEV="/dev/rplidar"     # persistent udev symlink (99-rplidar.rules)
 
 # ── Ellenőrzési függvények ────────────────────────────────────────────────────
 check_tcp() {
@@ -114,7 +114,7 @@ declare -a CHECKS=(
   "rc_bridge|required|ping|${RC_BRIDGE_IP}||RC bridge (RP2040, /robot/motor_left+right)|RP2040 tápellátva és bekötve SW1-re? IP: ${RC_BRIDGE_IP} — SW1 port: 2"
 
   # ── Szenzorok (full stack) ─────────────────────────────────────────────────
-  "rplidar|required_nav|dev|${RPLIDAR_DEV}||RPLidar A2 (/dev/ttyUSB0)|USB kábel bekötve? udev rule OK? — tesztelés: ls -la /dev/ttyUSB0"
+  "rplidar|required_nav|dev|${RPLIDAR_DEV}||RPLidar A2 (/dev/rplidar → ttyUSB*)|USB kábel bekötve? udev rule OK? — tesztelés: ls -la /dev/rplidar"
   "realsense|required_nav|usb|${REALSENSE_USB_ID}||RealSense D435i (USB ${REALSENSE_USB_ID})|USB3 kábel bekötve? — tesztelés: lsusb | grep ${REALSENSE_USB_ID}"
 
   # ── Opcionális eszközök ────────────────────────────────────────────────────

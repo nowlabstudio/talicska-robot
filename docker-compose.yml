@@ -40,7 +40,7 @@ services:
     env_file: .env
     devices:
       - /dev/bus/usb:/dev/bus/usb
-      - /dev/ttyUSB0:/dev/ttyUSB0   # RPLidar A2
+      - /dev/rplidar:/dev/ttyUSB0   # RPLidar A2 — persistent udev symlink (99-rplidar.rules)
     volumes:
       - /dev:/dev
       - ./cyclonedds.xml:/root/talicska-robot/cyclonedds.xml:ro
