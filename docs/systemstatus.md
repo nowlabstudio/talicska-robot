@@ -196,3 +196,96 @@
 
 1. **costmap /scan depth:1** — a `qos_overrides` YAML mechanizmus nem működik Nav2 costmap2d-ben; alternatív megközelítés szükséges (nincs közvetlen Nav2 paraméter a subscription depth-hez → alacsony prioritás, az audit szerint csak -1.4 MB)
 2. **foxglove_bridge /scan QoS** — dinamikus subscription nem veszi át az override-ot; megoldás: foxglove_bridge forráskód módosítása vagy topic_whitelist + launch-idejű QoS konfig → alacsony prioritás
+
+---
+
+## Audit #4 — CPU profiling, /tf Hz, QoS mismatch, Shared Memory (2026-03-19)
+
+**Kontextus:** Az előző optimalizálások után RAM 379–388 MiB-ra csökkent (✓), de CPU 125% → 172%-ra nőtt (⚠️). Ez az audit a CPU spike okát keresi.
+
+### Docker stats
+
+| Konténer        | CPU (Audit #3) | CPU (most) | RAM (Audit #3) | RAM (most) | Δ RAM      |
+|-----------------|----------------|------------|----------------|------------|------------|
+| robot           | 125.3%         | **172.4%** | 424 MiB        | 387.8 MiB  | -36 MiB ✓  |
+| foxglove_bridge | ~15%           | 19.3%      | 65.1 MiB       | 90.3 MiB   | +25 MiB ⚠️ |
+| microros_agent  | —              | 9.1%       | 109.4 MiB      | 94.5 MiB   | -15 MiB ✓  |
+| ros2_realsense  | —              | 22.4%      | 84.5 MiB       | 139.7 MiB  | +55 MiB ⚠️ |
+
+### Topic Hz
+
+| Topic | Hz    | Periódus | Értékelés |
+|-------|-------|----------|-----------|
+| /scan | 6.75 Hz | 148ms | ✓ normális (RPLidar A2 Sensitivity mód) |
+| /tf   | ~87 Hz  | ~11ms | ⚠️ Magas — több publisher aggregál (slam_toolbox, robot_state_publisher, diff_drive_controller, ekf) |
+
+**/scan sávszélesség:** ~100 KB/s, üzenetméret 14.46 KB (1800 pont × ~8 byte) — normális.
+
+**/tf publishers:** slam_toolbox (2×!), robot_state_publisher, diff_drive_controller, ekf_filter_node + sok transform_listener_impl. A 87 Hz az összes TF transzformáció összege — nem egy node pörög, hanem sok kis publish aggregálódik.
+
+### Thread Profiling (top -H, robot konténer)
+
+| PID | Szál neve  | %CPU | Folyamat         | Megjegyzés |
+|-----|------------|------|------------------|------------|
+| 134 | rplidar+   | 16.7% | rplidar_node    | LiDAR scan feldolgozás |
+| **157** | **recvMC** | **16.7%** | **diff_drive / CycloneDDS** | **⚠️ Multicast receive — fizikai NIC-en!** |
+| 54, 209 | ros2_co+ | 8.3% ea. | ros2_control_node | 50Hz TCP poll |
+| **111** | **recvMC** | **8.3%** | rc_teleop | **⚠️ Multicast receive** |
+| **305** | **recvMC** | **8.3%** | bt_navigator | **⚠️ Multicast receive** |
+| **280** | **recvMC** | **8.3%** | velocity_smoother | **⚠️ Multicast receive** |
+| **203** | **recvMC** | **8.3%** | lifecycle_manager | **⚠️ Multicast receive** |
+| 146 | startup+   | 8.3% | startup_supervisor | startup check loop |
+| 147 | safety_+   | 8.3% | safety_supervisor  | safety check loop |
+| 183 | planner+   | 8.3% | planner_server    | Nav2 planner |
+
+**Összesített `recvMC` CPU terhelés: ~58%** — ez a robot konténer CPU spikejének fő oka.
+
+### QoS Mismatch — /scan
+
+| Node             | Reliability     | Depth | Státusz |
+|------------------|-----------------|-------|---------|
+| rplidar_node (pub) | RELIABLE      | 10    | Publisher |
+| slam_toolbox     | BEST_EFFORT     | 5     | ⚠️ MISMATCH |
+| local_costmap    | BEST_EFFORT     | **50** | ⚠️ MISMATCH + depth felesleges |
+| global_costmap   | BEST_EFFORT     | **50** | ⚠️ MISMATCH + depth felesleges |
+| foxglove_bridge  | **RELIABLE**    | 10    | ✓ match (de QoS override még nem vette át) |
+| safety_supervisor| RELIABLE        | 10    | ✓ match |
+
+**Diagnózis:** A QoS mismatch (RELIABLE pub → BEST_EFFORT sub) az előző audittól **változatlan** — a costmap depth:1 override nem vette át a config frissítést. A costmap 50 mélységű sorból 50 scan-t (~700 KB) pufferel folyamatosan.
+
+### Shared Memory — CycloneDDS
+
+**Eredmény: CycloneDDS shared memory NEM aktív.**
+
+| Ellenőrzés | Eredmény | Következtetés |
+|------------|----------|---------------|
+| `ipc: host` mindkét konténeren | ✓ host | Helyes, a /dev/shm osztott |
+| `/dev/shm` CycloneDDS szegmensek | ❌ Nincs `cdds_*` fájl | SHM transport nem aktiválódott |
+| `/dev/shm` tartalom | Csak NVIDIA NvSci IPC (RealSense) | DDS nem használja |
+| `cyclonedds.xml` `<SharedMemory>` | ❌ Nincs ilyen szekció | Nincs konfigurálva |
+| CycloneDDS bind NIC | `enP1p1s0` (fizikai eth1) | ⚠️ Probléma forrása! |
+
+**Gyökérok:** A `cyclonedds.xml` csak az `enP1p1s0` fizikai NIC-re kötve (`AllowMulticast=true`). Ez azt jelenti, hogy **az összes intra-host DDS üzenet (konténer ↔ konténer) a fizikai hálózati kártyán megy keresztül UDP multicast formájában** — még akkor is, ha feladó és fogadó ugyanazon a Jetsonen fut. Minden egyes `/scan`, `/tf`, `/odom` üzenet kimegy az NIC-re és visszajön → a `recvMC` szálak folyamatosan pollozzák az NIC-t.
+
+Az `ipc: host` csökkentette a RAM-ot (megosztott kernel pufferek) de a tényleges üzenetküldési útvonal nem változott — UDP marad.
+
+**A helyes fix:** `cyclonedds.xml`-ben `lo` (loopback) interfész hozzáadása, hogy az intra-host forgalom loopbacken menjen (nem fizikai NIC), VAGY `<SharedMemory><Enable>true</Enable>` konfigurálása CycloneDDS natív SHM transport aktiválásához.
+
+### Összefoglalás (Audit #3 → Audit #4)
+
+| Metrika             | Audit #3    | Audit #4    | Δ                    |
+|---------------------|-------------|-------------|----------------------|
+| robot RAM           | 424 MiB     | 387.8 MiB   | **-36 MiB ✓**        |
+| robot CPU           | 125.3%      | **172.4%**  | **+47% ⚠️ ROMLOTT**  |
+| /scan Hz            | —           | 6.75 Hz     | ✓ normális           |
+| /tf Hz              | —           | ~87 Hz      | ⚠️ sok publisher      |
+| recvMC CPU összesen | —           | ~58%        | **⚠️ ROOT CAUSE**    |
+| CycloneDDS SHM      | nem aktív   | **nem aktív** | ❌ még mindig UDP   |
+| /scan QoS mismatch  | ⚠️ megmaradt | ⚠️ megmaradt | változatlan          |
+
+### Nyitott feladatok (Audit #4 alapján)
+
+1. **🔴 KRITIKUS — CycloneDDS loopback fix:** `cyclonedds.xml`-be `<NetworkInterface name="lo" multicast="default"/>` hozzáadása, hogy az intra-host forgalom a fizikai NIC helyett loopbacken menjen → `recvMC` CPU drasztikusan csökken várhatóan.
+2. **🔴 CycloneDDS SharedMemory:** `<SharedMemory><Enable>true</Enable></SharedMemory>` aktiválása → zero-copy intra-host transport, ha CycloneDDS verzió támogatja.
+3. **⚠️ /scan costmap depth:1** — megmarad nyitott feladatnak.
+4. **⚠️ foxglove_bridge /scan QoS** — megmarad nyitott feladatnak.

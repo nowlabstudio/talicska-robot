@@ -52,6 +52,13 @@ slam_toolbox:
     use_scan_barycenter: true
     throttle_scans: 1                   # process every scan
 
+    # ── TF publish rate ───────────────────────────────────────────────────
+    # map→odom TF publikálási periódus másodpercben.
+    # Default slam_toolbox: 0.02s (50 Hz). Audit #4: slam_toolbox 2× publisher
+    # volt a /tf-en → ~30 Hz-et hozzájárult a 87 Hz /tf forgalomhoz.
+    # 0.05s (20 Hz) elegendő Nav2-nek (controller 50 Hz saját TF-et kap odomtól).
+    transform_publish_period: 0.05
+
     # ── Serialization ─────────────────────────────────────────────────────
     serialize_map_on_destruction: true
     map_file_description: talicska_outdoor

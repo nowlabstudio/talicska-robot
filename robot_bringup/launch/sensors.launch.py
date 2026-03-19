@@ -61,6 +61,17 @@ def generate_launch_description():
             'angle_compensate': True,
             'scan_mode':        'Sensitivity',
             'scan_frequency':   10.0,
+            # ── QoS override: BEST_EFFORT publisher ──────────────────────────
+            # Audit #4: a RELIABLE publisher → BEST_EFFORT subscriber mismatch
+            # (slam_toolbox, costmapok) extra CycloneDDS buffert és overhead-et
+            # okozott. Ha a forrás is BEST_EFFORT, a mismatch megszűnik.
+            # safety_supervisor és foxglove_bridge szintén BEST_EFFORT-ra vált
+            # (ők a publisher QoS-hoz igazodnak automatikusan).
+            # Ha rplidar_ros nem támogatja a qos_overrides paramétert (régebbi
+            # build), ez a bejegyzés figyelmen kívül marad — nem okoz hibát.
+            'qos_overrides./scan.publisher.reliability': 'best_effort',
+            'qos_overrides./scan.publisher.history':     'keep_last',
+            'qos_overrides./scan.publisher.depth':       1,
         }],
         output='screen',
     )
