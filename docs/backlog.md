@@ -4,6 +4,16 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ---
 
+## Aktív feladatok (2026-03-19)
+
+- **Safety szintek tesztelése — E-Stop, UTP kábel kicsúszás, hibakezelés** — 2026-03-19. Végig kell ellenőrizni a teljes safety láncot: (1) E-Stop bridge `/robot/estop` trigger → robot megáll, startup_supervisor FAULT állapot, (2) UTP kábel kicsúszás közben (RoboClaw TCP, bridge UDP) → mit csinál a stack, helyreáll-e, (3) egyéb fault forgatókönyvek (bridge timeout, SLAM crash, nav2 fail). Cél: dokumentálni a viselkedést, és minden esetben biztonságos leállást garantálni. Érintett: `startup_supervisor`, `scripts/prestart.sh`, `robot_bringup/launch/`.
+
+- **ROS Bridge modulok javítása, újrafordítása — fordítási környezet eltört** — 2026-03-19. A Docker build/colcon fordítási környezet hibás állapotban van. Diagnosztizálni kell a törés okát (dependency, cache, build artifact), javítani, és újrafordítani az érintett modulokat. Érintett: Dockerfile, `colcon build`, Docker image.
+
+- **`/startup/state` valós státusz ellenőrzés és javítás** — 2026-03-19. A startup_supervisor `/startup/state` topicja látszólag nem ad valós státuszt. A Foxglove `startupstate.ts` script (`~/Dropbox/share/startupstate.ts`) a `data` JSON stringet bontja ki (`state`, `armed`, `fault_reason`, `tilt_roll`, `tilt_pitch` mezők). Ellenőrizni: (1) a topic valóban publikál-e friss adatot (`ros2 topic echo /startup/state`), (2) a JSON mezők megfelelnek-e a script elvárásainak, (3) a startup_supervisor állapotgép helyesen frissíti-e az állapotot futás közben. Javítani a publikálási logikát vagy az állapotgép tranzícióit ha szükséges. Érintett: `robot_bringup/scripts/startup_supervisor.py` (vagy megfelelő fájl).
+
+- **Teleop folyamatos mozgás — Foxglove nyíl gombok rövid szakaszok helyett folyamatos vezérlés** — 2026-03-19. Foxglove teleop panelből a nyíl gombokra a robot rövid mozgásokat végez megszakításokkal ahelyett, hogy folyamatosan haladna. Valószínű ok: a Foxglove teleop `Twist` üzeneteket csak gomb lenyomáskor küld (edge trigger), nem folyamatos publish rate-tel. Fix: (1) ellenőrizni a Foxglove teleop panel `publish rate` beállítását (legyen ≥10 Hz), vagy (2) a `rc_teleop_node` / `teleop_twist_joy` node oldalán hold-to-move logika, vagy (3) Foxglove panel konfiguráció: `repeat rate` / `hold to publish` opció bekapcsolása. Cél: gomb nyomva tartásakor folyamatos, lassú mozgás. Érintett: Foxglove layout konfig, esetleg `robot_bringup/config/` teleop paraméterek.
+
 ## Konfiguráció / Operator UX
 
 - **`talicska` CLI — system PATH-ra tenni a robot parancsokat** — Cél: `talicska up`, `talicska down`, `talicska check`, `talicska logs` stb. bárhonnan futtatható legyen, ne kelljen `cd`-vel a repo mappába navigálni. Megoldás: wrapper script (`/usr/local/bin/talicska` vagy `~/.local/bin/talicska`) ami a Makefile target-eket hívja a megfelelő munkakönyvtárból. Az `install.sh` telepíti. Tartalmazza az összes kritikus parancsot: up, down, check, rc-up, logs, topics, nodes, realsense-up, realsense-logs, stb.
@@ -14,17 +24,17 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 - **~~Motor irány + M1/M2 mapping paraméterek~~** — ✅ **KÉSZ (2026-03-19):** `invert_left_motor`/`invert_right_motor` URDF xacro argok, `config/robot_params.yaml` `roboclaw_hardware` szekciójából olvasva, build nélkül módosítható.
 
-- **RoboClaw velocity PID (SetM1PID/SetM2PID) — QPPS és PID gains YAML-ból** — A `roboclaw_hardware.cpp` `configure_servo_parameters()` jelenleg stub. A `qpps` paraméter be van kötve az URDF-be és a YAML-ba (2026-03-19), de a plugin nem hívja `SetM1PID`/`SetM2PID`-et. Implementálni kellene: `on_configure`-ban olvassa a YAML-ból a `qpps` + PID gains értékeket és elküldi a RoboClaw-nak. Enkóder újrakalibrálás után ez teszi aktívvá a mért QPPS értéket. Érintett fájl: `ROS2_RoboClaw/src/roboclaw_hardware.cpp`.
+- **~~RoboClaw velocity PID (SetM1PID/SetM2PID) — QPPS és PID gains YAML-ból~~** — ✅ **KÉSZ (2026-03-19):** `configure_servo_parameters()` implementálva, YAML-ból olvassa a `qpps` + PID gains értékeket, `SetM1PID`/`SetM2PID` hívásokkal küldi a RoboClaw-nak.
 
 ## URDF / Vizualizáció
 
-- **URDF modell hibás — kerekek rossz pozícióban, robot "szétesik"** — 2026-03-16, Foxglove-ban látható. Kanyarodáskor az odom vektorok fordulnak (nem a robot), a map az odom-hoz van kötve (nem a robot base_link-hez). Az URDF joint pozíciókat a valós méretek alapján kell korrigálni. Emellett szükséges egy **3D modell** (mesh) a robotról, hogy a Foxglove vizualizáció egyértelműen mutassa a robot pozícióját és orientációját.
+- **~~URDF modell hibás — kerekek rossz pozícióban, robot "szétesik"~~** — ✅ **KÉSZ (2026-03-19):** URDF joint pozíciók korrigálva valós méretek alapján.
 
 - **IMU tilt check — RealSense kamera frame orientáció nem egyezik a robot frame-mel** — 2026-03-16. A startup_supervisor tilt check a kamera IMU nyers adatából számol roll/pitch-et, de a D435i kamera fizikai felszerelési orientációja eltér a robot `base_link` frame-jétől (pl. kamera oldalra fektetve → -66° roll). Fix: (1) a tilt számításban figyelembe venni a kamera→base_link transzformációt (URDF extrinsic), vagy (2) TF-ből kiolvasni a gravitáció irányt base_link frame-ben. Addig: `CHECK_TILT_ENABLED=false` a `.env`-ben.
 
 ## Kalibrálás
 
-- **Enkóder CPR × áttétel kalibrálás kerekeken** — 2026-03-18. Az `encoder_counts_per_rev=70300` és `gear_ratio=1.0` egy becsült összeg, Motion Studio QPPS (M1: 232650, M2: 225720) és ~14 km/h max sebesség alapján számolva. A pontos áttétel (motor gearhead → lánc → kerék) nem ismert külön-külön. **Kalibráció módja:** robot kerekeken áll, ismert távolság megtétele, enkóder count összevetés → `encoder_counts_per_rev` finomhangolás. Érintett fájl: `robot_description/urdf/robot.urdf.xacro` (`encoder_counts_per_rev` arg). A `duty_max_rad_s` (jelenleg 20.5) és a `controllers.yaml` velocity limitek is frissítendők a valós max sebességgel.
+- **~~Enkóder CPR × áttétel kalibrálás kerekeken~~** — ✅ **KÉSZ (2026-03-19):** Kalibrálás elvégezve, `encoder_counts_per_rev` finomhangolva valós mérés alapján.
 
 ## Ismert hibák
 
@@ -34,15 +44,15 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 - **E-Stop bridge (10.0.10.23) nem csatlakozik a microros agent-hez stack újraindítás után** — 2026-03-16, többször reprodukálva. A `/robot/estop` topic nem jelenik meg, bridge reset után feljön. Az RC bridge (10.0.10.22) és Pedal bridge (10.0.10.21) ugyanazzal a firmware-rel működik — tehát nem firmware hiba. Valószínűleg hálózati/UDP szintű probléma: microros agent újrainduláskor a bridge nem tud újracsatlakozni (UDP session elvész). Vizsgálandó: (1) microros agent reconnect logika, (2) bridge-oldali watchdog/reconnect timeout, (3) SW1 port/kábel fizikai állapot, (4) ARP cache / UDP port reuse a Jetsonon.
 
-- **Összes bridge egyszerre leesik — microros agent session elvesztés** — 2026-03-16, RC + E-Stop + Pedal bridge egyszerre elérhetetlenné vált. `make down && make up` (agent restart) után minden bridge visszajött — tehát az agent oldalán van a probléma, nem a bridge-ek/hálózat. A bridge firmware watchdog reconnectet próbál, de a "régi" agent nem fogadja el a sessionöket. Vizsgálandó: (1) microros agent logok a kiesés időpontjában, (2) agent `--reliable` / `--best-effort` beállítás, (3) agent memória/resource leak hosszabb futásnál, (4) docker compose restart policy hozzáadása az agent-hez.
+- **~~Összes bridge egyszerre leesik — microros agent session elvesztés~~** — ✅ **KÉSZ (2026-03-19):** Javítva.
 
 - **`make agent-restart` workaround eltávolítása** — A `make agent-restart` a duplikált DDS session probléma ideiglenes megoldása. Ha a microros agent session cleanup végleges fixe elkészül (lásd alább), a Makefile target-et és a docker-compose.tools.yml-ben szükséges módosításokat el kell távolítani.
 
-- **Duplikált DDS node-ok reconnect után — Foxglove "multiple channels" hiba** — 2026-03-16. Bridge reconnect után az agent NEM törli a régi session DDS participant-jeit mielőtt az újat létrehozza. Eredmény: `/robot/estop` 2×, `/robot/pedal` 2× jelenik meg a `ros2 node list`-ben. A Foxglove bridge mindkét verziót látja (eltérő type hash/encoding) → "multiple channels on same topic" hiba, `/diagnostics` parse failure. **Agent CLI:** `/uros_ws/install/micro_ros_agent/lib/micro_ros_agent/micro_ros_agent udp4 -p 8888` — nincs `--client-timeout` vagy session cleanup paraméter. Elérhető middleware opciók: `-m ced|dds|rtps` (jelenlegi: `dds` default). **Vizsgálandó:** (1) `-m ced` vagy `-m rtps` middleware-rel jobb-e a session cleanup, (2) microros agent forráskód — van-e session timeout beállítás compile-time, (3) Foxglove bridge oldalon topic filter (MicroROS topicok kiszűrése), (4) agent periodikus restart (cron/healthcheck) mint workaround amíg nincs végleges fix.
+- **~~Duplikált DDS node-ok reconnect után — Foxglove "multiple channels" hiba~~** — ✅ **KÉSZ (2026-03-19):** Javítva, duplikált DDS node-ok már nem jelennek meg.
 
 - **slam_toolbox lifecycle verzió buildelése forrásból** — 2026-03-16. Az apt-s `ros-jazzy-slam-toolbox` csomag NEM tartalmazza a `lifecycle_slam_toolbox_node` executable-t — csak `async_slam_toolbox_node` van. Az async verzió nem hoz létre bondot → a lifecycle manager nem tudja felügyelni → `bond_timeout: 0.0` workaround kell, ami **biztonsági kockázat** egy 100kg/2.2m/s robotnál (bond nélkül a SLAM crash után a robot vakon halad tovább). **Fix:** slam_toolbox forrásból buildelés a Dockerfile-ban (`lifecycle_slam_toolbox_node` bináris előállítása), utána `bond_timeout: 4.0` visszaállítás. Jelenlegi állapot: `async_slam_toolbox_node` + `bond_timeout: 0.0` (ideiglenes, veszélyes).
 
-- **EKF `/odometry/filtered` — "no events recorded" Foxglove-ban** — 2026-03-16. Az EKF működik (46 Hz stack_test.sh-ban), de Foxglove nem látja az eventeket. Legvalószínűbb ok: enkóder nincs bekötve → diff_drive_controller open-loop odom nem változik → EKF output konstans. Enkóder bekötése után elvárt: valós odom adat.
+- **~~EKF `/odometry/filtered` — "no events recorded" Foxglove-ban~~** — ✅ **KÉSZ (2026-03-19):** Elhárítva.
 
 - **Controller manager execution jitter / high mean error** — 2026-03-16, Foxglove diagnostics. `diff_drive_controller` avg exec time: 138μs, `joint_state_broadcaster` avg: 165μs. A `RoboClawSystem` hardware interface `read_cycle` avg: 5567μs (5.5ms — USR-K6 TCP latencia), `write_cycle` avg: 82.64μs. A jitter a TCP round-trip variabilitásából ered. 50Hz-en elfogadható (20ms budget, ~6ms read = bőven belefér), de a Foxglove diagnosztika warningot jelez. A K6 csere (backlog: Infrastruktúra) csökkenti.
 
@@ -85,19 +95,7 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ## Távoli hozzáférés
 
-- **Tailscale VPN a Jetsonon** — Foxglove és Portainer LTE-n (CG-NAT-on) keresztül is elérhető legyen.
-
-  **Probléma:** LTE-n az operátorok CG-NAT mögött vannak — port forward és statikus WAN IP nem megoldható. A Mikrotik router bekötése önmagában nem oldja meg a befelé irányuló elérhetőséget.
-
-  **Megoldás:** Tailscale a Jetsonon. WireGuard alapú mesh VPN, átmegy CG-NAT-on (DERP relay-en át). A Jetson kap állandó Tailscale IP-t (`100.x.x.x`). Az operátor laptopon/telefonon Tailscale kliensben látja a Jetsont, és eléri:
-  - `100.x.x.x:8765` — Foxglove WebSocket
-  - `100.x.x.x:9000` — Portainer
-
-  **Mikor kell:** Mikrotik LTE router bekötésekor. Lab LAN-on Tailscale nélkül is minden elérhető.
-
-  **Biztonsági megjegyzés:** A Tailscale hálózat zárt (csak meghívott eszközök látják egymást). A Portainer továbbra is erős jelszóval védendő, mert Docker socket hozzáférést jelent.
-
-  **Zenoh kapcsolat:** A fleet kommunikáció (Zenoh) ugyanezen a Tailscale tunnelen futhat — egységes remote access réteg.
+- **~~Tailscale VPN a Jetsonon~~** — ✅ **KÉSZ (2026-03-19):** Tailscale telepítve, Foxglove és Portainer CG-NAT-on keresztül elérhető.
 
 ## Infrastruktúra — alacsony prioritás, de nem elhanyagolható
 
