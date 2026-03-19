@@ -42,17 +42,16 @@
       <MaxMessageSize>65500B</MaxMessageSize>
     </General>
 
-    <!-- SharedMemory transport (iceoryx) — zero-copy intra-host üzenetekhez.
-         Előfeltétel: iox-roudi fut (/opt/ros/jazzy/bin/iox-roudi).
-         Ha iox-roudi nem fut, CycloneDDS warning-ot logol és UDP-re esik vissza.
-         SubQueueCapacity: pending üzenetek száma per subscriber (6.7 Hz scan: 16 bőven elég).
-         PubHistoryCapacity: publisher oldalon tárolt üzenetek (VOLATILE → 1 elegendő). -->
-    <SharedMemory>
-      <Enable>true</Enable>
-      <SubQueueCapacity>16</SubQueueCapacity>
-      <PubHistoryCapacity>1</PubHistoryCapacity>
-      <LogLevel>warning</LogLevel>
-    </SharedMemory>
+    <!-- SharedMemory (iceoryx) — KÉSŐBB AKTIVÁLANDÓ, rebuild után.
+         A <Enable>true</Enable> flag kötelező iox-roudi daemontelt vár.
+         Ha RouDi nem fut, az összes node crash-el (IPC_INTERFACE__REG_ROUDI_NOT_AVAILABLE).
+         Aktiválás lépései:
+           1. docker-compose.yml: robot service command elé iox-roudi indítás
+              VAGY ros_entrypoint.sh-ban iox-roudi & + sleep 0.5 (már megírva)
+           2. make build (kép újraépítése az új entrypoint-tal)
+           3. make up
+         Addig: UDP loopbacken megy az intra-host forgalom (lo interfész). -->
+    <!-- <SharedMemory><Enable>true</Enable></SharedMemory> -->
 
     <Discovery>
       <!-- Restrict discovery to lab subnet -->

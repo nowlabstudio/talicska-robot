@@ -289,3 +289,80 @@ Az `ipc: host` csökkentette a RAM-ot (megosztott kernel pufferek) de a tényleg
 2. **🔴 CycloneDDS SharedMemory:** `<SharedMemory><Enable>true</Enable></SharedMemory>` aktiválása → zero-copy intra-host transport, ha CycloneDDS verzió támogatja.
 3. **⚠️ /scan costmap depth:1** — megmarad nyitott feladatnak.
 4. **⚠️ foxglove_bridge /scan QoS** — megmarad nyitott feladatnak.
+
+---
+
+## Audit #5 — Loopback aktív, SharedMemory nélkül (2026-03-19)
+
+### Elvégzett módosítások (Audit #4 → #5)
+
+| # | Módosítás | Státusz | Megjegyzés |
+|---|-----------|---------|------------|
+| 1 | `cyclonedds.xml`: `lo` loopback + `enP1p1s0` | ✅ AKTÍV | volume-mount, rebuild nélkül életbe lépett |
+| 2 | `cyclonedds.xml`: `<SharedMemory>` | ❌ VISSZAVONVA | SubQueueCapacity stb. nem támogatott ebben a CycloneDDS verzióban → crashloop; `<Enable>true</Enable>` egyedül kötelező iox-roudi daemontelt vár → crash |
+| 3 | `ros_entrypoint.sh`: iox-roudi indítás | ⏳ VÁR REBUILD-RE | docker restart nem veszi fel az image-be sült entrypointot |
+| 4 | `slam_params.yaml`: `transform_publish_period: 0.05` | ⏳ VÁR REBUILD-RE | COPY'd a képbe, nem volume-mount |
+| 5 | `sensors.launch.py`: rplidar BEST_EFFORT QoS | ⏳ VÁR REBUILD-RE | COPY'd a képbe, nem volume-mount |
+
+### Docker stats
+
+| Konténer        | Audit #4 CPU | Audit #5 CPU | Δ CPU      | Audit #4 RAM | Audit #5 RAM | Δ RAM      |
+|-----------------|-------------|-------------|------------|--------------|--------------|------------|
+| **robot**       | **172.4%**  | **130.1%**  | **-42% ✓** | **387.8 MiB**| **301.5 MiB**| **-86 MiB ✓** |
+| foxglove_bridge | 19.3%       | 18.2%       | ≈          | 90.3 MiB     | 99.4 MiB     | ≈          |
+| microros_agent  | 9.1%        | 8.5%        | ≈          | 94.5 MiB     | 78.3 MiB     | -16 MiB ✓  |
+| ros2_realsense  | 22.4%       | 23.2%       | ≈          | 139.7 MiB    | 80.4 MiB     | -59 MiB ✓  |
+
+### Thread Profiling — A legfontosabb változás
+
+| Szál típus | Audit #4 (összesített) | Audit #5 (összesített) | Δ |
+|-----------|------------------------|------------------------|---|
+| `recvMC` (multicast) | **~58% CPU** | **0% — ELTŰNT ✓** | **-58% !** |
+| `recvUC` (unicast)   | ~5%          | ~25%                   | +20% (loopback unicast) |
+
+**Magyarázat:** A `lo` interfész hozzáadásával a CycloneDDS felváltotta a UDP multicast forgalmat (fizikai NIC-en) UDP unicastra a loopback interfészen. A loopbacken nem kell fizikai NIC interrupt, nincs ütközés-érzékelés, nincs MTU felbontás → drámai CPU csökkentés.
+
+Bizonyíték a logból:
+```
+selected interface "lo" is not multicast-capable: disabling multicast
+```
+CycloneDDS felismeri hogy a lo nem multicast-képes és automatikusan unicastra vált.
+
+### Topic Hz
+
+| Topic | Audit #4 | Audit #5 | Δ | Megjegyzés |
+|-------|----------|----------|---|------------|
+| /scan | 6.75 Hz  | 6.73 Hz  | = | normális ✓ |
+| /tf   | ~87 Hz   | ~87 Hz   | = | slam_params rebuild kell a 20 Hz-hez |
+
+### /scan QoS
+
+| Node             | Reliability  | Megjegyzés |
+|------------------|--------------|------------|
+| rplidar_node     | RELIABLE     | QoS override rebuild után lép életbe |
+| global_costmap   | BEST_EFFORT  | változatlan |
+| local_costmap    | BEST_EFFORT  | változatlan |
+| slam_toolbox     | BEST_EFFORT  | változatlan |
+| foxglove_bridge  | RELIABLE     | változatlan |
+| safety_supervisor| RELIABLE     | változatlan |
+
+### Összesített haladás (Audit #1 → #5)
+
+| Metrika          | Baseline #1 | Audit #5   | Δ összesen        |
+|------------------|-------------|------------|-------------------|
+| robot CPU        | **126%**    | **130%**   | ≈ (Nav2 aktív!)   |
+| robot RAM        | **~470 MiB**| **301.5 MiB** | **-168 MiB ✓** |
+| IPC mode         | private     | host ✓     | javítva           |
+| recvMC szálak    | ~58% CPU    | 0% ✓       | **eliminálva**    |
+| CycloneDDS SHM   | nincs       | nincs      | rebuild után jön  |
+
+*Megjegyzés: baseline-ban Nav2 NEM volt aktív (use_nav:=false), most igen → a ~126% ≈ 130% CPU összehasonlítás torzított. A valódi CPU javulás Audit #4 (172%) → Audit #5 (130%) = **-42%**, ami kizárólag a loopback fix eredménye.*
+
+### Következő lépés: `make build && make up`
+
+Rebuild után életbe lép:
+1. **iox-roudi** → CycloneDDS SharedMemory zero-copy (recvUC szálak is megszűnnek)
+2. **slam_toolbox TF 20 Hz** → /tf forgalom ~87 Hz → ~55 Hz
+3. **rplidar BEST_EFFORT QoS** → mismatch megszűnik, costmap puffer csökken
+
+→ **Audit #6** a rebuild utáni állapotra tervezett.
