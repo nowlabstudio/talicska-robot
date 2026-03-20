@@ -339,7 +339,7 @@ velocity_smoother:
 rc_teleop_node:
   ros__parameters:
     # max_linear_vel: Nav2 8 km/h = 2.22 m/s limitjével megegyező (RC módban is védelem)
-    max_linear_vel:    2.22
+    max_linear_vel:    8.70
     # JAVÍTVA: 0.8 → 0.7 (controllers.yaml diff_drive_controller wheel_separation-nal egyezik)
     wheel_separation:  0.7
     rc_mode_threshold: 0.5    # RC mode kanal értéke felett RC módba vált
@@ -377,6 +377,21 @@ safety_supervisor:
     # imu_process_rate_hz: IMU adat feldolgozási ráta a tilt check-hez
     # Forrás default (safety_supervisor.cpp): 20.0 — megőrzött
     imu_process_rate_hz:  20.0
+    # Állapotgép paraméterek
+    rc_mode_threshold:    0.5    # rc_mode > threshold → RC state
+    mode_topic_timeout_s: 2.0   # ha /robot/mode ennyi ideje nem jön → IDLE
+    heartbeat_rate_hz:    10.0  # /robot/heartbeat publish rate (Safety Watchdog MCU előkészítés)
+
+    # Szenzor topic watchdog
+    # scan watchdog aktív: proximity_distance_m > 0 VAGY enable_scan_watchdog: true
+    # imu watchdog aktív:  tilt_roll_limit_deg < 90 VAGY enable_imu_watchdog: true
+    sensor_timeout_s:         2.0    # topic csend → dropout fault
+    sensor_recovery_stable_s: 2.0    # ennyi stabil adat → [recovered] jelölés (latch MEGMARAD)
+    enable_scan_watchdog:     false  # explicit ON (proximity=0 esetén is)
+    enable_imu_watchdog:      false  # explicit ON (tilt=90° esetén is)
+    # PLACEHOLDER (disabled) — ZED 2i és külső IMU watchdog
+    # enable_zed_watchdog:      false
+    # enable_ext_imu_watchdog:  false
 
 # ── Startup Supervisor ────────────────────────────────────────────────────────
 # Induláskor egyszer ellenőriz → FAULT ha nem teljesül → container restart oldja fel.
@@ -414,7 +429,7 @@ roboclaw_hardware:
   encoder_counts_per_rev:  70300
   gear_ratio:              1.0            # TODO: kalibrálás szükséges
   motion_strategy:         "speed_accel"
-  default_acceleration:    15000
+  default_acceleration:    50000
   duty_accel_rate:         50000
   duty_decel_rate:         50000
   duty_max_rad_s:          20.5

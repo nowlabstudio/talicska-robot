@@ -1,8 +1,8 @@
 # Robot Project — Teljes Projekt Áttekintés
 
-**Verzió:** 2.1
-**Dátum:** 2026-03-15
-**Státusz:** Implementáció folyamatban — Fázis 0–8 kész, RealSense stack validálás alatt
+**Verzió:** 2.3
+**Dátum:** 2026-03-20
+**Státusz:** Implementáció folyamatban — Fázis 0–8 kész, safety_supervisor latch+watchdog+active_faults kész
 
 ---
 
@@ -191,6 +191,293 @@ footprint: "[[0.505, 0.4], [0.505, -0.4], [-0.595, -0.4], [-0.595, 0.4]]"
 
 **Kombináció billentéssel:** Ha terrain dőlés + tilt mechanizmus szög együtt > threshold → tilt_cmd = 0
 
+### 7d. safety_supervisor — Autoritatív Robot Állapotgép ✅ (2026-03-20)
+
+#### Szerepkör
+
+A `safety_supervisor` a robot **egyetlen autoritatív runtime állapot forrása**.
+A `/safety/state` JSON topic folyamatosan közli a teljes operációs állapotot —
+Foxglove, mission executive és minden más node ebből olvas.
+
+A `startup_supervisor` ezzel szemben csak **egyszeri, induláskor futó** ellenőrző.
+Miután PASSED-ba kerül és kiadja a `/startup/armed = true` jelet, futásidőben statikus marad.
+
+---
+
+#### State enum és prioritási sorrend
+
+A `determine_state()` függvény felülről lefelé haladva az első igaz feltételnél megáll.
+**2026-03-20 óta latch-alapú**: a fault conditionok latchelnek, automatikusan nem törlődnek.
+
+```
+Prioritás  State     Feltétel
+─────────────────────────────────────────────────────────────────
+1.         STARTING  startup_passed_ == false
+                     (/startup/armed TRANSIENT_LOCAL nem érkezett meg)
+
+2.         FAULT     !estop_watchdog_ok_ VAGY watchdog_latch_ == true
+                     (E-Stop bridge > estop_timeout_s másodperce néma,
+                      vagy korábban volt ilyen esemény és nem resetelték)
+                     fault_reason = "E-Stop watchdog timeout" /
+                                    "E-Stop watchdog timeout [latch]"
+
+3.         ESTOP     estop_active_ == true
+                     (/robot/estop = true → fizikai gomb lenyomva)
+
+4.         ERROR     tilt_latch_ VAGY proximity_latch_
+                     VAGY scan_dropout_latch_ VAGY imu_dropout_latch_
+                     (bármelyik latchelt hibafeltétel)
+                     error_reason = az első aktív latch szöveges leírása
+
+5.         RC        rc_mode_ > rc_mode_threshold_ (0.5)
+                     (/robot/rc_mode Float32 > küszöb → RC adó aktív)
+                     → last_active_mode_ = "RC"
+
+6.         ROBOT     commanded_mode_ == "ROBOT" && mode_age < mode_topic_timeout_s
+           FOLLOW    commanded_mode_ == "FOLLOW" && ...
+           SHUTTLE   commanded_mode_ == "SHUTTLE" && ...
+                     (/robot/mode String topic, max 2s régi adat fogadható el)
+                     → last_active_mode_ = commanded_mode_
+
+7.         IDLE      minden fenti feltétel hamis
+                     (startup kész, biztonságos, nincs RC jel, nincs /robot/mode adat)
+```
+
+---
+
+#### Fault latch logika — F1 (2026-03-20)
+
+**Miért szükséges:** egy 100kg-os safety-kritikus robottól elfogadhatatlan, hogy ha a tilt visszaáll vagy a LiDAR visszajön, a state automatikusan törlődik operátori jóváhagyás nélkül.
+
+**Latch flagek:**
+
+| Latch | Mi aktiválja | Mi törli |
+|---|---|---|
+| `tilt_latch_` | `tilt_fault_` beáll | E-Stop press + release |
+| `proximity_latch_` | `proximity_fault_` beáll | E-Stop press + release |
+| `scan_dropout_latch_` | LiDAR topic timeout | E-Stop press + release |
+| `imu_dropout_latch_` | IMU topic timeout | E-Stop press + release |
+| `watchdog_latch_` | E-Stop bridge timeout | `/robot/reset` topic (Bool true), csak ha bridge online |
+
+**E-Stop reset szekvencia:**
+```
+estop_was_pressed_for_reset_ = false (induláskor)
+
+/robot/estop false → true:  estop_was_pressed_for_reset_ = true
+/robot/estop true  → false: ha estop_was_pressed_for_reset_ == true:
+                              → tilt_latch_ = false
+                              → proximity_latch_ = false
+                              → scan_dropout_latch_ = false
+                              → imu_dropout_latch_ = false
+                              → watchdog_latch_ NEM törlődik
+```
+
+Véletlen felengedés (press nélkül) **nem resetel** — az `estop_was_pressed_for_reset_` flag megakadályozza.
+
+**watchdog_latch_ reset:** `/robot/reset` (std_msgs/Bool, data=true) → csak ha `estop_watchdog_ok_ == true`.
+Ha bridge offline: "watchdog_latch nem törölhető" log + visszautasítás.
+
+---
+
+#### Szenzor watchdog — F2 (2026-03-20)
+
+A safety_supervisor figyeli az érzékelő topicok életét, és dropout esetén latchelt hibát jelez.
+
+**Aktiválási feltételek (feltételhez kötött):**
+
+| Watchdog | Aktív ha |
+|---|---|
+| `scan_watchdog_active_` | `proximity_distance_m > 0` VAGY `enable_scan_watchdog: true` |
+| `imu_watchdog_active_` | `tilt_roll_limit_deg < 90°` VAGY `enable_imu_watchdog: true` |
+
+**Startup false positive védelem:** `scan_received_` / `imu_received_` = false amíg az első üzenet nem érkezik — a watchdog addig nem aktiválódik.
+
+**IMU throttle és watchdog ütközés megoldása:** `last_imu_time_` frissítése a throttle check **előtt** — a watchdog a topic életét méri, nem a feldolgozás ritmusát.
+
+**Recovery tracking:** ha a topic kiesett, majd visszajön:
+```
+dropout = true, latch = true
+Topic visszajön:
+  → recovering = true, recovery_start = now()
+  → sensor_recovery_stable_s után: dropout_recovered = true, dropout = false
+  → latch MEGMARAD — E-Stop reset szükséges
+  → active_faults: "LiDAR timeout (2.3s) [recovered]"
+```
+
+**Jelenlegi watchdog állapot (YAML):**
+
+| Szenzor | Topic | Watchdog aktív? |
+|---|---|---|
+| RPLidar A2 | `/scan` | ❌ (`proximity=0`, `enable_scan_watchdog: false`) |
+| RealSense IMU | `/camera/camera/imu` | ❌ (`tilt_roll=90°`, `enable_imu_watchdog: false`) |
+| ZED 2i depth | — | PLACEHOLDER (commented out) |
+| Külső IMU | `/imu/data` | PLACEHOLDER (commented out) |
+
+**FIGYELEM:** ha a LiDAR nincs bedugva, a jelenlegi konfigban ez **nem látszik** a safety state-ben.
+Teszteléshez: `enable_scan_watchdog: true` a YAML-ban.
+
+---
+
+#### active_faults lista — F3 (2026-03-20)
+
+Az összes egyidejűleg fennálló fault megjelenik a `/safety/state` JSON-ban.
+
+```cpp
+build_active_faults(t):
+  active_faults_.clear()
+  if (tilt_latch_)         → "Tilt fault: roll=X.XX° pitch=X.XX°"
+  if (proximity_latch_)    → "Proximity fault: X.XXm"
+  if (scan_dropout_latch_) → "LiDAR timeout (X.XXs)"  // + " [recovered]" ha visszajött
+  if (imu_dropout_latch_)  → "IMU timeout (X.XXs)"    // + " [recovered]" ha visszajött
+  if (watchdog_latch_)     → "E-Stop watchdog timeout"
+```
+
+Change detektálás: `active_faults_json_prev_` string összehasonlítással — ha bármi változik a listában, azonnali publish.
+
+---
+
+#### Mode megőrzés — last_active_mode_
+
+A `mode` mező a **diagnosztikailag hasznos utolsó aktív üzemmódot** mutatja.
+
+Szabály: `last_active_mode_` csak az RC és ROBOT/FOLLOW/SHUTTLE prioritásnál frissül.
+ESTOP, ERROR és FAULT esetén **a mode NEM változik** — megőrzi az előző értékét.
+
+```
+Példa: RC módban lenyomják az E-Stop gombot
+  → state = "ESTOP", mode = "RC"     ← "RC-ben volt az E-Stop"
+
+Példa: ROBOT módban elvész az E-Stop bridge kapcsolat
+  → state = "FAULT", mode = "ROBOT"  ← "autonóm navigáció közben halt meg a bridge"
+```
+
+---
+
+#### cmd_vel gate
+
+A safety_supervisor **kapuzza a mozgásparancsokat**:
+
+```
+/cmd_vel_raw  ──►  [safety_supervisor]  ──►  /cmd_vel  ──►  diff_drive_controller
+                        │
+                        ▼
+                   is_safe() ?
+                     true  → átenged (TwistStamped stamppel)
+                     false → 0 Twist publishel (watchdog_rate_hz-n)
+```
+
+```cpp
+is_safe() = startup_passed_
+         && !estop_active_
+         && estop_watchdog_ok_
+         && !watchdog_latch_      // ← ÚJ: latchelt bridge fault
+         && !tilt_latch_          // ← ÚJ: latchelt tilt
+         && !proximity_latch_     // ← ÚJ: latchelt proximity
+         && !scan_dropout_latch_  // ← ÚJ: latchelt LiDAR dropout
+         && !imu_dropout_latch_   // ← ÚJ: latchelt IMU dropout
+```
+
+---
+
+#### Publish stratégia
+
+| Esemény | Reakció |
+|---|---|
+| State, mode, fault_reason, error_reason változás | Azonnali publish |
+| active_faults lista változás | Azonnali publish |
+| 1 másodperc eltelt publish nélkül | Baseline keepalive publish |
+| Watchdog timer (20 Hz) | State machine futtatása + változás detekció |
+
+Két timer fut párhuzamosan:
+- **watchdog_timer_** (20 Hz): sensor watchdog + `determine_state()` → változás detekció → azonnali publish → 1 Hz baseline
+- **heartbeat_timer_** (10 Hz): `/robot/heartbeat` Header publish (Safety Watchdog MCU, Tier 2 heartbeat ≤500ms elvárás)
+
+---
+
+#### /safety/state JSON struktúra (2026-03-20)
+
+```json
+{
+  "state":              "ERROR",
+  "mode":               "RC",
+  "safe":               false,
+  "fault_reason":       "",
+  "error_reason":       "LiDAR timeout",
+  "estop":              false,
+  "watchdog_ok":        true,
+  "tilt":               false,
+  "proximity":          false,
+  "active_faults":      ["LiDAR timeout (2.3s)", "Tilt fault: roll=26.10° pitch=3.20°"],
+  "tilt_latch":         true,
+  "proximity_latch":    false,
+  "scan_dropout_latch": true,
+  "imu_dropout_latch":  false,
+  "watchdog_latch":     false
+}
+```
+
+**Foxglove script:** `~/Dropbox/share/safetystate.ts` — frissítve, az összes új mezőt tartalmazza.
+Output mezők: `active_faults[]`, `active_faults_count`, `active_faults_str`, összes latch bool.
+
+---
+
+#### Subscriptionök és publisherek
+
+**Subscriptions:**
+| Topic | Típus | QoS | Szerepe |
+|---|---|---|---|
+| `/startup/armed` | Bool | TRANSIENT_LOCAL | `startup_passed_` |
+| `/robot/estop` | Bool | default | `estop_active_`, press/release reset detektálás |
+| `/robot/reset` | Bool | default | `watchdog_latch_` törlése (ÚJ) |
+| `/robot/rc_mode` | Float32 | default | `rc_mode_` |
+| `/robot/mode` | String | default | `commanded_mode_`, `last_mode_time_` |
+| `/camera/camera/imu` | Imu | SensorDataQoS | tilt check + IMU watchdog |
+| `/scan` | LaserScan | default | proximity check + scan watchdog |
+| `cmd_vel_raw` | Twist | default | cmd_vel gate |
+
+**Publishers:**
+| Topic | Típus | Rate | Tartalom |
+|---|---|---|---|
+| `/safety/state` | String (JSON) | 1 Hz + azonnali | teljes állapot + latch-ek + active_faults |
+| `/robot/heartbeat` | Header | 10 Hz | stamp + "base_link" |
+| `cmd_vel` | TwistStamped | passthrough / 20 Hz 0-vel | kapuzott mozgás |
+
+---
+
+#### YAML paraméterek (config/robot_params.yaml — safety_supervisor szekció)
+
+```yaml
+# Meglévő
+estop_timeout_s:      2.0    # ennyi némasága után FAULT + watchdog_latch
+tilt_roll_limit_deg:  90.0   # 90° = kikapcsolva (éles: 25°, kamera frame fix után)
+tilt_pitch_limit_deg: 90.0   # 90° = kikapcsolva (éles: 20°)
+proximity_distance_m: 0.0    # 0.0 = kikapcsolva (LiDAR szögmaszk fix után)
+proximity_angle_deg:  30.0   # ±30° front arc
+watchdog_rate_hz:     20.0   # state machine tick + change detection
+imu_process_rate_hz:  20.0   # IMU callback throttle (RealSense 200Hz → 20Hz)
+rc_mode_threshold:    0.5    # rc_mode_ > 0.5 → RC state
+mode_topic_timeout_s: 2.0    # /robot/mode ennyi másodperce nem jön → IDLE
+heartbeat_rate_hz:    10.0   # /robot/heartbeat rate
+
+# Szenzor watchdog (ÚJ, 2026-03-20)
+sensor_timeout_s:         2.0    # topic csend → dropout fault + latch
+sensor_recovery_stable_s: 2.0    # ennyi stabil adat → [recovered] jelölés (latch megmarad)
+enable_scan_watchdog:     false  # explicit ON (proximity=0 esetén is)
+enable_imu_watchdog:      false  # explicit ON (tilt=90° esetén is)
+# enable_zed_watchdog:    false  # PLACEHOLDER
+# enable_ext_imu_watchdog: false # PLACEHOLDER
+```
+
+---
+
+#### Önellenőrzési megjegyzések (2026-03-20)
+
+- **Watchdog age a recovered szenzoroknál:** `build_active_faults()` a jelenlegi `last_scan_time_`-ból számolja az age-et. Ha a szenzor visszajött, `last_scan_time_` frissül → `"LiDAR timeout (0.05s) [recovered]"`. Az age-szám misleading, de a `[recovered]` marker egyértelmű. Javítás: dropout pillanatában menteni az age-et — jövőbeli finomítás.
+- **scan_watchdog_active_ startup-kori kiszámítása:** csak egyszer, konstruktorban — runtime paraméterváltoztatás nem hat rá. Ez szándékos (params read once).
+- **Funkciók amire NEM alkalmazható a latch:** STARTING (statikus startup gate), ESTOP (real-time HW tükrözés), RC/ROBOT/FOLLOW/SHUTTLE (mode command, nem fault).
+
+---
+
 ### 7c. Teljes biztonsági réteg táblázat
 
 | Réteg | Forrás | Válaszidő | Reakció |
@@ -344,3 +631,8 @@ talicska-robot-ws/                         ← workspace gyökér
 | IMU tilt safety USB/Docker-dependent (V1) | — | V2-ben MCU szintre hozni |
 | NavfnPlanner plugin: `/` → `::` | nav2_params.yaml | ✅ Javítva 2026-03-15 |
 | startup_supervisor hiányzott | robot_safety | ✅ Implementálva 2026-03-15 |
+| safety_supervisor statikus maradt ARMED-ban E-Stop esetén | robot_safety | ✅ Állapotgép implementálva 2026-03-19 |
+| startup_supervisor ARMED state neve félrevezető volt (nem runtime state) | robot_safety | ✅ PASSED-re átnevezve 2026-03-19 |
+| safety_supervisor hibák nem latcheltek — operátori jóváhagyás nélkül törlődtek | robot_safety | ✅ Latch + E-Stop reset szekvencia implementálva 2026-03-20 |
+| szenzor dropout (LiDAR/IMU kihúzás) nem detektálódott safety szinten | robot_safety | ✅ Szenzor watchdog + dropout latch implementálva 2026-03-20 |
+| /safety/state csak egyetlen error_reason-t mutatott egyszerre | robot_safety | ✅ active_faults[] tömb hozzáadva 2026-03-20 |

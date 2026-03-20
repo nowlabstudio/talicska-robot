@@ -1,35 +1,64 @@
 /**
- * safety_supervisor — software watchdog and cmd_vel gate for Talicska robot
+ * safety_supervisor — runtime safety state machine and cmd_vel gate for Talicska robot
  *
- * Safety conditions monitored (all must be clear to allow motion):
- *   1. E-Stop HW  — /robot/estop (Bool, true = ACTIVE)
- *                   Published by RP2040 E-Stop bridge at 500 ms + GPIO edge.
- *   2. E-Stop watchdog — no message for > estop_timeout_s → fault
- *                        (bridge offline / network failure = unsafe)
- *   3. IMU tilt  — |roll| > tilt_roll_limit_deg  OR
- *                  |pitch| > tilt_pitch_limit_deg
- *                  Computed from gravity vector (accelerometer), valid for
- *                  slow-moving robot.
- *   4. LiDAR proximity — min range in front ±proximity_angle_deg arc
- *                        < proximity_distance_m
+ * Autoritatív robot állapot forrás: /safety/state JSON tartalmazza a teljes
+ * operációs állapotot (state, mode, safe, fault_reason, error_reason, stb.).
+ *
+ * State prioritási sorrend (fentebb = erősebb override):
+ *   STARTING  — startup_supervisor még nem passzolt (/startup/armed = false)
+ *   FAULT     — hardver/kommunikációs meghibásodás (E-Stop watchdog timeout)
+ *   ESTOP     — fizikai E-Stop gomb megnyomva
+ *   ERROR     — szenzor alapú nem-biztonságos állapot (tilt, proximity, sensor dropout)
+ *   RC        — rc_mode > threshold (RC adó aktív)
+ *   ROBOT     — autonóm alap mód
+ *   FOLLOW    — autonóm sub-mód
+ *   SHUTTLE   — autonóm sub-mód
+ *   IDLE      — startup passzolt, biztonságos, nincs mód parancs
+ *
+ * Fault latch logika:
+ *   Tilt, proximity, scan dropout, IMU dropout fault-ok latchelnek.
+ *   Reset: E-Stop press + release törli tilt/proximity/sensor latch-eket.
+ *   watchdog_latch csak /robot/reset topic-on (Bool true) törölhető,
+ *   és csak ha az E-Stop bridge online (estop_watchdog_ok_ == true).
+ *
+ * Safety conditions monitored:
+ *   1. E-Stop HW      — /robot/estop (Bool, true = ACTIVE)
+ *   2. E-Stop watchdog — no message for > estop_timeout_s → FAULT + watchdog_latch
+ *   3. IMU tilt       — |roll| > limit OR |pitch| > limit → ERROR + tilt_latch
+ *   4. LiDAR proximity — min front range < proximity_distance_m → ERROR + proximity_latch
+ *   5. LiDAR dropout  — /scan topic timeout > sensor_timeout_s → ERROR + scan_dropout_latch
+ *   6. IMU dropout    — /camera/camera/imu timeout > sensor_timeout_s → ERROR + imu_dropout_latch
+ *
+ * Sensor watchdog activation:
+ *   scan watchdog: proximity_distance_m > 0 OR enable_scan_watchdog: true
+ *   imu watchdog:  tilt_roll_limit_deg < 90 OR enable_imu_watchdog: true
  *
  * cmd_vel gate:
- *   Subscribes to  cmd_vel_raw  (output of Nav2 velocity_smoother).
- *   Republishes to cmd_vel      (subscribed by diff_drive_controller).
- *   When any fault is active: publishes zero Twist at watchdog_rate_hz.
+ *   Subscribes to cmd_vel_raw (Nav2 velocity_smoother output).
+ *   Republishes to cmd_vel (diff_drive_controller input).
+ *   When not safe: publishes zero Twist at watchdog_rate_hz.
  *
- * Safety state:
- *   /safety/state (std_msgs/String) — JSON-like, published at watchdog_rate_hz.
- *   e.g. {"safe":true,"estop":false,"watchdog_ok":true,"tilt":false,"proximity":false}
+ * Topics published:
+ *   /safety/state    (std_msgs/String)  — JSON, 1 Hz baseline + immediate on change
+ *   /robot/heartbeat (std_msgs/Header)  — 10 Hz (Safety Watchdog MCU előkészítés)
+ *   cmd_vel          (TwistStamped)     — gated motion commands
  *
- * NOTE: estop_watchdog_ok starts FALSE — robot is held until the E-Stop bridge
- * comes online. This is intentional: a disconnected bridge = unsafe.
+ * Topics subscribed:
+ *   /startup/armed   (std_msgs/Bool, TRANSIENT_LOCAL) — startup_passed_ flag
+ *   /robot/estop     (std_msgs/Bool)    — E-Stop hardware state
+ *   /robot/rc_mode   (std_msgs/Float32) — RC transmitter mode channel
+ *   /robot/mode      (std_msgs/String)  — commanded autonomous mode
+ *   /robot/reset     (std_msgs/Bool)    — reset watchdog_latch (true = reset)
+ *   /camera/camera/imu (sensor_msgs/Imu) — tilt check + IMU watchdog
+ *   /scan            (sensor_msgs/LaserScan) — proximity check + scan watchdog
+ *   cmd_vel_raw      (geometry_msgs/Twist)   — unfiltered velocity commands
  */
 
 #include <cmath>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
@@ -37,6 +66,8 @@
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/float32.hpp"
+#include "std_msgs/msg/header.hpp"
 #include "std_msgs/msg/string.hpp"
 
 namespace robot_safety
@@ -47,7 +78,13 @@ class SafetySupervisor : public rclcpp::Node
 public:
   SafetySupervisor()
   : Node("safety_supervisor"),
-    last_estop_time_(now())
+    last_estop_time_(now()),
+    last_mode_time_(now()),
+    last_baseline_publish_(now()),
+    last_scan_time_(now()),
+    last_imu_time_(now()),
+    scan_recovery_start_(now()),
+    imu_recovery_start_(now())
   {
     this->declare_parameter("estop_timeout_s",       2.0);
     this->declare_parameter("tilt_roll_limit_deg",  25.0);
@@ -55,21 +92,66 @@ public:
     this->declare_parameter("proximity_distance_m",  0.3);
     this->declare_parameter("proximity_angle_deg",  30.0);
     this->declare_parameter("watchdog_rate_hz",     20.0);
-    this->declare_parameter("imu_process_rate_hz", 20.0);
+    this->declare_parameter("imu_process_rate_hz",  20.0);
+    this->declare_parameter("rc_mode_threshold",     0.5);
+    this->declare_parameter("mode_topic_timeout_s",  2.0);
+    this->declare_parameter("heartbeat_rate_hz",    10.0);
+    // Sensor watchdog params
+    this->declare_parameter("sensor_timeout_s",          2.0);
+    this->declare_parameter("sensor_recovery_stable_s",  2.0);
+    this->declare_parameter("enable_scan_watchdog",      false);
+    this->declare_parameter("enable_imu_watchdog",       false);
+    // PLACEHOLDER: ZED 2i és külső IMU watchdog (disabled)
+    // this->declare_parameter("enable_zed_watchdog",      false);
+    // this->declare_parameter("enable_ext_imu_watchdog",  false);
 
-    estop_timeout_    = this->get_parameter("estop_timeout_s").as_double();
-    tilt_roll_limit_  = deg2rad(this->get_parameter("tilt_roll_limit_deg").as_double());
-    tilt_pitch_limit_ = deg2rad(this->get_parameter("tilt_pitch_limit_deg").as_double());
-    proximity_dist_   = this->get_parameter("proximity_distance_m").as_double();
-    proximity_angle_  = deg2rad(this->get_parameter("proximity_angle_deg").as_double());
-    double rate_hz    = this->get_parameter("watchdog_rate_hz").as_double();
-    double imu_hz     = this->get_parameter("imu_process_rate_hz").as_double();
-    imu_min_interval_ns_ = static_cast<int64_t>(1.0e9 / imu_hz);
+    estop_timeout_        = this->get_parameter("estop_timeout_s").as_double();
+    tilt_roll_limit_      = deg2rad(this->get_parameter("tilt_roll_limit_deg").as_double());
+    tilt_pitch_limit_     = deg2rad(this->get_parameter("tilt_pitch_limit_deg").as_double());
+    proximity_dist_       = this->get_parameter("proximity_distance_m").as_double();
+    proximity_angle_      = deg2rad(this->get_parameter("proximity_angle_deg").as_double());
+    rc_mode_threshold_    = this->get_parameter("rc_mode_threshold").as_double();
+    mode_topic_timeout_s_ = this->get_parameter("mode_topic_timeout_s").as_double();
+    double rate_hz        = this->get_parameter("watchdog_rate_hz").as_double();
+    double imu_hz         = this->get_parameter("imu_process_rate_hz").as_double();
+    double hb_hz          = this->get_parameter("heartbeat_rate_hz").as_double();
+    imu_min_interval_ns_  = static_cast<int64_t>(1.0e9 / imu_hz);
+
+    sensor_timeout_s_         = this->get_parameter("sensor_timeout_s").as_double();
+    sensor_recovery_stable_s_ = this->get_parameter("sensor_recovery_stable_s").as_double();
+    enable_scan_watchdog_     = this->get_parameter("enable_scan_watchdog").as_bool();
+    enable_imu_watchdog_      = this->get_parameter("enable_imu_watchdog").as_bool();
+
+    // Watchdog activation conditions
+    scan_watchdog_active_ = (proximity_dist_ > 0.0) || enable_scan_watchdog_;
+    imu_watchdog_active_  = (tilt_roll_limit_ < deg2rad(90.0)) || enable_imu_watchdog_;
 
     // --- subscriptions ---
+    armed_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "/startup/armed",
+      rclcpp::QoS(1).transient_local(),
+      [this](std_msgs::msg::Bool::SharedPtr msg) {
+        startup_passed_ = msg->data;
+        RCLCPP_INFO(get_logger(), "startup/armed received: %s",
+          startup_passed_ ? "true (PASSED)" : "false (FAULT)");
+      });
+
     estop_sub_ = create_subscription<std_msgs::msg::Bool>(
       "/robot/estop", rclcpp::QoS(10),
       std::bind(&SafetySupervisor::estop_cb, this, std::placeholders::_1));
+
+    rc_mode_sub_ = create_subscription<std_msgs::msg::Float32>(
+      "/robot/rc_mode", rclcpp::QoS(10),
+      [this](std_msgs::msg::Float32::SharedPtr msg) {
+        rc_mode_ = msg->data;
+      });
+
+    mode_sub_ = create_subscription<std_msgs::msg::String>(
+      "/robot/mode", rclcpp::QoS(10),
+      [this](std_msgs::msg::String::SharedPtr msg) {
+        commanded_mode_ = msg->data;
+        last_mode_time_ = now();
+      });
 
     imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
       "/camera/camera/imu", rclcpp::SensorDataQoS(),
@@ -83,25 +165,58 @@ public:
       "cmd_vel_raw", rclcpp::QoS(10),
       std::bind(&SafetySupervisor::cmd_vel_raw_cb, this, std::placeholders::_1));
 
-    // --- publishers ---
-    cmd_vel_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel", rclcpp::QoS(10));
-    state_pub_   = create_publisher<std_msgs::msg::String>("/safety/state", rclcpp::QoS(10));
+    reset_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "/robot/reset", rclcpp::QoS(10),
+      std::bind(&SafetySupervisor::reset_cb, this, std::placeholders::_1));
 
-    // --- watchdog timer ---
-    auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    // PLACEHOLDER: ZED 2i depth watchdog subscription (disabled)
+    // zed_sub_ = create_subscription<sensor_msgs::msg::Image>(
+    //   "/zed/zed_node/depth/depth_registered", rclcpp::QoS(10),
+    //   [this](sensor_msgs::msg::Image::SharedPtr) {
+    //     last_zed_time_ = now(); zed_received_ = true;
+    //   });
+
+    // PLACEHOLDER: External IMU watchdog subscription (disabled)
+    // ext_imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
+    //   "/imu/data", rclcpp::SensorDataQoS(),
+    //   [this](sensor_msgs::msg::Imu::SharedPtr) {
+    //     last_ext_imu_time_ = now(); ext_imu_received_ = true;
+    //   });
+
+    // --- publishers ---
+    cmd_vel_pub_   = create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel", rclcpp::QoS(10));
+    state_pub_     = create_publisher<std_msgs::msg::String>("/safety/state", rclcpp::QoS(10));
+    heartbeat_pub_ = create_publisher<std_msgs::msg::Header>("/robot/heartbeat", rclcpp::QoS(10));
+
+    // --- watchdog timer (20 Hz — state machine + change detection) ---
+    auto wd_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::duration<double>(1.0 / rate_hz));
     watchdog_timer_ = create_wall_timer(
-      period, std::bind(&SafetySupervisor::watchdog_tick, this));
+      wd_period, std::bind(&SafetySupervisor::watchdog_tick, this));
+
+    // --- heartbeat timer ---
+    auto hb_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(1.0 / hb_hz));
+    heartbeat_timer_ = create_wall_timer(
+      hb_period, [this]() {
+        std_msgs::msg::Header hb;
+        hb.stamp = now();
+        hb.frame_id = "base_link";
+        heartbeat_pub_->publish(hb);
+      });
 
     RCLCPP_INFO(get_logger(),
-      "SafetySupervisor ready. Holding until E-Stop bridge online. "
+      "SafetySupervisor ready. Holding until startup/armed + E-Stop bridge online. "
       "Limits: roll±%.0f° pitch±%.0f°, proximity %.2fm front±%.0f°. "
-      "IMU throttle: %.0f Hz.",
+      "IMU throttle: %.0f Hz. RC threshold: %.2f. Heartbeat: %.0f Hz. "
+      "Scan watchdog: %s. IMU watchdog: %s.",
       this->get_parameter("tilt_roll_limit_deg").as_double(),
       this->get_parameter("tilt_pitch_limit_deg").as_double(),
       proximity_dist_,
       this->get_parameter("proximity_angle_deg").as_double(),
-      imu_hz);
+      imu_hz, rc_mode_threshold_, hb_hz,
+      scan_watchdog_active_ ? "ON" : "OFF",
+      imu_watchdog_active_  ? "ON" : "OFF");
   }
 
 private:
@@ -109,51 +224,92 @@ private:
 
   void estop_cb(const std_msgs::msg::Bool::SharedPtr msg)
   {
-    last_estop_time_  = now();
+    last_estop_time_   = now();
     estop_watchdog_ok_ = true;
 
-    if (msg->data != estop_active_) {
-      estop_active_ = msg->data;
+    const bool prev   = estop_active_;
+    estop_active_     = msg->data;
+
+    // E-Stop press (false → true): mark for potential reset
+    if (!prev && estop_active_) {
+      estop_was_pressed_for_reset_ = true;
+    }
+
+    // E-Stop release (true → false) after press: reset sensor/tilt/proximity latches
+    // watchdog_latch is NOT cleared here — requires /robot/reset + bridge online
+    if (prev && !estop_active_ && estop_was_pressed_for_reset_) {
+      estop_was_pressed_for_reset_ = false;
+      tilt_latch_         = false;
+      proximity_latch_    = false;
+      scan_dropout_latch_ = false;
+      imu_dropout_latch_  = false;
+      RCLCPP_WARN(get_logger(),
+        "E-Stop reset: tilt/proximity/sensor latch-ek törölve");
+    }
+
+    if (msg->data != prev) {
       RCLCPP_WARN(get_logger(), "E-Stop: %s",
         estop_active_ ? "ACTIVE — robot halted" : "cleared");
     }
   }
 
+  void reset_cb(const std_msgs::msg::Bool::SharedPtr msg)
+  {
+    if (!msg->data) { return; }
+    if (!estop_watchdog_ok_) {
+      RCLCPP_WARN(get_logger(),
+        "/robot/reset received de E-Stop bridge offline — watchdog_latch nem törölhető");
+      return;
+    }
+    watchdog_latch_ = false;
+    RCLCPP_WARN(get_logger(), "/robot/reset: watchdog_latch törölve");
+  }
+
   void imu_cb(const sensor_msgs::msg::Imu::SharedPtr msg)
   {
-    // Throttle: the RealSense D435i IMU publishes at ~200 Hz, but tilt
-    // detection only needs ~20 Hz.  Skip callbacks that arrive too soon
-    // after the last processed one to save ~180 atan2+sqrt calls/sec.
+    // Watchdog time update BEFORE throttle check — méri a topic életét, nem a feldolgozást
+    last_imu_time_ = now();
+    imu_received_  = true;
+
     const int64_t now_ns = now().nanoseconds();
     if ((now_ns - last_imu_process_ns_) < imu_min_interval_ns_) {
       return;
     }
     last_imu_process_ns_ = now_ns;
 
-    // Tilt from gravity vector.
-    // Assumes slow motion so linear_acceleration ≈ gravity.
     const double ax = msg->linear_acceleration.x;
     const double ay = msg->linear_acceleration.y;
     const double az = msg->linear_acceleration.z;
 
-    const double roll  = std::atan2(ay, az);
-    const double pitch = std::atan2(-ax, std::sqrt(ay * ay + az * az));
+    last_roll_  = std::atan2(ay, az);
+    last_pitch_ = std::atan2(-ax, std::sqrt(ay * ay + az * az));
 
     const bool fault =
-      std::abs(roll)  > tilt_roll_limit_ ||
-      std::abs(pitch) > tilt_pitch_limit_;
+      std::abs(last_roll_)  > tilt_roll_limit_ ||
+      std::abs(last_pitch_) > tilt_pitch_limit_;
+
+    if (fault && !tilt_latch_) {
+      tilt_latch_ = true;
+      RCLCPP_WARN(get_logger(),
+        "Tilt FAULT latchelve — roll=%.1f° pitch=%.1f°",
+        rad2deg(last_roll_), rad2deg(last_pitch_));
+    }
 
     if (fault != tilt_fault_) {
       tilt_fault_ = fault;
       RCLCPP_WARN(get_logger(),
         "Tilt %s — roll=%.1f° pitch=%.1f°",
         fault ? "FAULT" : "cleared",
-        rad2deg(roll), rad2deg(pitch));
+        rad2deg(last_roll_), rad2deg(last_pitch_));
     }
   }
 
   void scan_cb(const sensor_msgs::msg::LaserScan::SharedPtr msg)
   {
+    // Watchdog time update at the start of callback
+    last_scan_time_ = now();
+    scan_received_  = true;
+
     float min_range = msg->range_max;
 
     for (size_t i = 0; i < msg->ranges.size(); ++i) {
@@ -170,23 +326,31 @@ private:
 
     const bool fault = (min_range < static_cast<float>(proximity_dist_));
 
+    if (fault && !proximity_latch_) {
+      proximity_latch_ = true;
+      RCLCPP_WARN(get_logger(),
+        "Proximity FAULT latchelve — min front range = %.2f m", min_range);
+    }
+
     if (fault != proximity_fault_) {
-      proximity_fault_ = fault;
+      proximity_fault_      = fault;
+      last_proximity_range_ = static_cast<double>(min_range);
       RCLCPP_WARN(get_logger(),
         "Proximity %s — min front range = %.2f m",
         fault ? "FAULT" : "cleared", min_range);
+    }
+    if (fault) {
+      last_proximity_range_ = static_cast<double>(min_range);
     }
   }
 
   void cmd_vel_raw_cb(const geometry_msgs::msg::Twist::SharedPtr msg)
   {
-    // Gate: only pass through when fully safe.
-    // Watchdog publishes zeros when unsafe (see watchdog_tick).
     if (is_safe()) {
       geometry_msgs::msg::TwistStamped stamped;
-      stamped.header.stamp = now();
+      stamped.header.stamp    = now();
       stamped.header.frame_id = "base_link";
-      stamped.twist = *msg;
+      stamped.twist           = *msg;
       cmd_vel_pub_->publish(stamped);
     }
   }
@@ -195,44 +359,310 @@ private:
 
   void watchdog_tick()
   {
-    const double elapsed = (now() - last_estop_time_).seconds();
-    if (elapsed > estop_timeout_ && estop_watchdog_ok_) {
+    const rclcpp::Time t = now();
+
+    // 1. E-Stop watchdog check
+    const double estop_elapsed = (t - last_estop_time_).seconds();
+    if (estop_elapsed > estop_timeout_ && estop_watchdog_ok_) {
       estop_watchdog_ok_ = false;
+      watchdog_latch_    = true;
       RCLCPP_ERROR(get_logger(),
-        "E-Stop watchdog TIMEOUT (%.1f s without message) — emergency stop!", elapsed);
+        "E-Stop watchdog TIMEOUT (%.1f s without message) — emergency stop!", estop_elapsed);
     }
 
+    // 2. Sensor watchdog — LiDAR /scan
+    if (scan_watchdog_active_ && scan_received_) {
+      const double scan_age = (t - last_scan_time_).seconds();
+      if (scan_age > sensor_timeout_s_) {
+        if (!scan_dropout_) {
+          scan_dropout_           = true;
+          scan_dropout_latch_     = true;
+          scan_recovering_        = false;
+          scan_dropout_recovered_ = false;
+          RCLCPP_ERROR(get_logger(),
+            "LiDAR /scan topic TIMEOUT (%.1f s) — scan_dropout_latch beállítva", scan_age);
+        }
+      } else {
+        // Topic él — recovery tracking
+        if (scan_dropout_) {
+          if (!scan_recovering_) {
+            scan_recovering_        = true;
+            scan_recovery_start_    = t;
+            scan_dropout_recovered_ = false;
+          } else if (!scan_dropout_recovered_ &&
+                     (t - scan_recovery_start_).seconds() >= sensor_recovery_stable_s_) {
+            scan_dropout_recovered_ = true;
+            scan_dropout_           = false;
+            RCLCPP_WARN(get_logger(),
+              "LiDAR /scan visszatért (%.1f s stabil) — latch MEGMARAD, E-Stop reset szükséges",
+              (t - scan_recovery_start_).seconds());
+          }
+        } else {
+          scan_recovering_ = false;
+        }
+      }
+    }
+
+    // 3. Sensor watchdog — IMU /camera/camera/imu
+    if (imu_watchdog_active_ && imu_received_) {
+      const double imu_age = (t - last_imu_time_).seconds();
+      if (imu_age > sensor_timeout_s_) {
+        if (!imu_dropout_) {
+          imu_dropout_           = true;
+          imu_dropout_latch_     = true;
+          imu_recovering_        = false;
+          imu_dropout_recovered_ = false;
+          RCLCPP_ERROR(get_logger(),
+            "IMU topic TIMEOUT (%.1f s) — imu_dropout_latch beállítva", imu_age);
+        }
+      } else {
+        if (imu_dropout_) {
+          if (!imu_recovering_) {
+            imu_recovering_        = true;
+            imu_recovery_start_    = t;
+            imu_dropout_recovered_ = false;
+          } else if (!imu_dropout_recovered_ &&
+                     (t - imu_recovery_start_).seconds() >= sensor_recovery_stable_s_) {
+            imu_dropout_recovered_ = true;
+            imu_dropout_           = false;
+            RCLCPP_WARN(get_logger(),
+              "IMU topic visszatért (%.1f s stabil) — latch MEGMARAD, E-Stop reset szükséges",
+              (t - imu_recovery_start_).seconds());
+          }
+        } else {
+          imu_recovering_ = false;
+        }
+      }
+    }
+
+    // 4. Zero-velocity gate when unsafe
     if (!is_safe()) {
       geometry_msgs::msg::TwistStamped zero;
-      zero.header.stamp = now();
+      zero.header.stamp    = t;
       zero.header.frame_id = "base_link";
       cmd_vel_pub_->publish(zero);
     }
 
-    publish_state();
+    // 5. Build active_faults list
+    build_active_faults(t);
+    const std::string af_json = active_faults_json();
+
+    // 6. Determine state & mode from priority rules
+    std::string new_state;
+    std::string new_mode;
+    std::string new_fault_reason;
+    std::string new_error_reason;
+
+    determine_state(new_state, new_mode, new_fault_reason, new_error_reason);
+
+    // 7. Publish immediately on any change
+    bool changed = (new_state        != current_state_) ||
+                   (new_mode         != current_mode_)  ||
+                   (new_fault_reason != fault_reason_)  ||
+                   (new_error_reason != error_reason_)  ||
+                   (af_json          != active_faults_json_prev_);
+
+    current_state_           = new_state;
+    current_mode_            = new_mode;
+    fault_reason_            = new_fault_reason;
+    error_reason_            = new_error_reason;
+    active_faults_json_prev_ = af_json;
+
+    if (changed) {
+      publish_state();
+      last_baseline_publish_ = now();
+      RCLCPP_INFO(get_logger(), "State: %s | Mode: %s%s%s",
+        current_state_.c_str(), current_mode_.c_str(),
+        fault_reason_.empty() ? "" : " | fault: ",
+        fault_reason_.empty() ? "" : fault_reason_.c_str());
+    }
+
+    // 8. 1 Hz baseline keepalive
+    const double since_publish = (now() - last_baseline_publish_).seconds();
+    if (since_publish >= 1.0) {
+      publish_state();
+      last_baseline_publish_ = now();
+    }
+  }
+
+  // ---------------------------------------------------------------- state machine
+
+  void determine_state(
+    std::string & state,
+    std::string & mode,
+    std::string & fault_reason,
+    std::string & error_reason)
+  {
+    fault_reason = "";
+    error_reason = "";
+
+    // Priority 1: startup not yet passed
+    if (!startup_passed_) {
+      state = "STARTING";
+      mode  = "IDLE";
+      return;
+    }
+
+    // Priority 2: E-Stop watchdog fault (bridge offline) — latch-alapú
+    if (!estop_watchdog_ok_ || watchdog_latch_) {
+      state        = "FAULT";
+      mode         = last_active_mode_;
+      fault_reason = watchdog_latch_ && estop_watchdog_ok_ ?
+                     "E-Stop watchdog timeout [latch]" : "E-Stop watchdog timeout";
+      return;
+    }
+
+    // Priority 3: E-Stop hardware active
+    if (estop_active_) {
+      state = "ESTOP";
+      mode  = last_active_mode_;
+      return;
+    }
+
+    // Priority 4: sensor/tilt/proximity latch-alapú ERROR
+    if (tilt_latch_ || proximity_latch_ || scan_dropout_latch_ || imu_dropout_latch_) {
+      state = "ERROR";
+      mode  = last_active_mode_;
+      // error_reason: az első aktív latch leírása
+      if (tilt_latch_) {
+        error_reason = "Tilt fault: roll=" + fmt(rad2deg(last_roll_)) +
+                       "° pitch=" + fmt(rad2deg(last_pitch_)) + "°";
+      } else if (proximity_latch_) {
+        error_reason = "Proximity fault: " + fmt(last_proximity_range_) + "m";
+      } else if (scan_dropout_latch_) {
+        error_reason = "LiDAR timeout";
+      } else {
+        error_reason = "IMU timeout";
+      }
+      return;
+    }
+
+    // Priority 5: RC mode active
+    if (static_cast<double>(rc_mode_) > rc_mode_threshold_) {
+      last_active_mode_ = "RC";
+      state = "RC";
+      mode  = "RC";
+      return;
+    }
+
+    // Priority 6: /robot/mode topic received and not timed out
+    if (!commanded_mode_.empty()) {
+      const double mode_age = (now() - last_mode_time_).seconds();
+      if (mode_age < mode_topic_timeout_s_) {
+        last_active_mode_ = commanded_mode_;
+        state = commanded_mode_;
+        mode  = commanded_mode_;
+        return;
+      }
+    }
+
+    // Priority 7: safe + startup passed, no active mode
+    state = "IDLE";
+    mode  = "IDLE";
   }
 
   // ---------------------------------------------------------------- helpers
 
   bool is_safe() const
   {
-    return !estop_active_ && estop_watchdog_ok_ && !tilt_fault_ && !proximity_fault_;
+    return startup_passed_ &&
+           !estop_active_ &&
+           estop_watchdog_ok_ &&
+           !watchdog_latch_ &&
+           !tilt_latch_ &&
+           !proximity_latch_ &&
+           !scan_dropout_latch_ &&
+           !imu_dropout_latch_;
+  }
+
+  void build_active_faults(const rclcpp::Time & t)
+  {
+    active_faults_.clear();
+
+    if (tilt_latch_) {
+      active_faults_.push_back(
+        "Tilt fault: roll=" + fmt(rad2deg(last_roll_)) +
+        "° pitch=" + fmt(rad2deg(last_pitch_)) + "°");
+    }
+    if (proximity_latch_) {
+      active_faults_.push_back("Proximity fault: " + fmt(last_proximity_range_) + "m");
+    }
+    if (scan_dropout_latch_) {
+      const double age = scan_received_ ? (t - last_scan_time_).seconds() : 0.0;
+      std::string entry = "LiDAR timeout (" + fmt(age) + "s)";
+      if (scan_dropout_recovered_) { entry += " [recovered]"; }
+      active_faults_.push_back(entry);
+    }
+    if (imu_dropout_latch_) {
+      const double age = imu_received_ ? (t - last_imu_time_).seconds() : 0.0;
+      std::string entry = "IMU timeout (" + fmt(age) + "s)";
+      if (imu_dropout_recovered_) { entry += " [recovered]"; }
+      active_faults_.push_back(entry);
+    }
+    if (watchdog_latch_) {
+      active_faults_.push_back("E-Stop watchdog timeout");
+    }
+  }
+
+  std::string active_faults_json() const
+  {
+    std::string s = "[";
+    for (size_t i = 0; i < active_faults_.size(); ++i) {
+      if (i > 0) { s += ","; }
+      s += "\"" + escape(active_faults_[i]) + "\"";
+    }
+    s += "]";
+    return s;
   }
 
   void publish_state()
   {
+    const bool safe = is_safe() &&
+                      current_state_ != "STARTING" &&
+                      current_state_ != "FAULT" &&
+                      current_state_ != "ESTOP" &&
+                      current_state_ != "ERROR";
+
     std::ostringstream ss;
     ss << "{"
-       << "\"safe\":"        << (is_safe()            ? "true" : "false") << ","
-       << "\"estop\":"       << (estop_active_         ? "true" : "false") << ","
-       << "\"watchdog_ok\":" << (estop_watchdog_ok_    ? "true" : "false") << ","
-       << "\"tilt\":"        << (tilt_fault_           ? "true" : "false") << ","
-       << "\"proximity\":"   << (proximity_fault_      ? "true" : "false")
+       << "\"state\":\""            << current_state_      << "\","
+       << "\"mode\":\""             << current_mode_       << "\","
+       << "\"safe\":"               << (safe                    ? "true" : "false") << ","
+       << "\"fault_reason\":\""     << escape(fault_reason_)    << "\","
+       << "\"error_reason\":\""     << escape(error_reason_)    << "\","
+       << "\"estop\":"              << (estop_active_           ? "true" : "false") << ","
+       << "\"watchdog_ok\":"        << (estop_watchdog_ok_      ? "true" : "false") << ","
+       << "\"tilt\":"               << (tilt_fault_             ? "true" : "false") << ","
+       << "\"proximity\":"          << (proximity_fault_        ? "true" : "false") << ","
+       << "\"active_faults\":"      << active_faults_json()                         << ","
+       << "\"tilt_latch\":"         << (tilt_latch_             ? "true" : "false") << ","
+       << "\"proximity_latch\":"    << (proximity_latch_        ? "true" : "false") << ","
+       << "\"scan_dropout_latch\":" << (scan_dropout_latch_     ? "true" : "false") << ","
+       << "\"imu_dropout_latch\":"  << (imu_dropout_latch_      ? "true" : "false") << ","
+       << "\"watchdog_latch\":"     << (watchdog_latch_         ? "true" : "false")
        << "}";
 
     std_msgs::msg::String state_msg;
     state_msg.data = ss.str();
     state_pub_->publish(state_msg);
+  }
+
+  static std::string escape(const std::string & s)
+  {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+      if (c == '"')  { out += '\''; }
+      else           { out += c; }
+    }
+    return out;
+  }
+
+  static std::string fmt(double v)
+  {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.2f", v);
+    return buf;
   }
 
   static double deg2rad(double deg) { return deg * M_PI / 180.0; }
@@ -245,26 +675,113 @@ private:
   double tilt_pitch_limit_;
   double proximity_dist_;
   double proximity_angle_;
+  double rc_mode_threshold_;
+  double mode_topic_timeout_s_;
 
+  // startup gate
+  bool startup_passed_ = false;
+
+  // E-Stop
   bool           estop_active_      = false;
   bool           estop_watchdog_ok_ = false;  // false until first E-Stop msg
-  bool           tilt_fault_        = false;
-  bool           proximity_fault_   = false;
   rclcpp::Time   last_estop_time_;
 
-  // IMU callback throttle (default 20 Hz — skip ~180 of ~200 Hz callbacks)
-  int64_t        imu_min_interval_ns_ = 0;
-  int64_t        last_imu_process_ns_ = 0;
+  // RC & mode
+  float          rc_mode_          = 0.0f;
+  std::string    commanded_mode_   = "";
+  rclcpp::Time   last_mode_time_;
 
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr         estop_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr       imu_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
-  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr   cmd_vel_raw_sub_;
+  // Tilt
+  bool   tilt_fault_   = false;
+  double last_roll_    = 0.0;
+  double last_pitch_   = 0.0;
+
+  // Proximity
+  bool   proximity_fault_       = false;
+  double last_proximity_range_  = 0.0;
+
+  // IMU callback throttle
+  int64_t imu_min_interval_ns_ = 0;
+  int64_t last_imu_process_ns_ = 0;
+
+  // State machine output
+  std::string current_state_  = "STARTING";
+  std::string current_mode_   = "IDLE";
+  std::string fault_reason_   = "";
+  std::string error_reason_   = "";
+
+  // last_active_mode_: only updated by RC or ROBOT/FOLLOW/SHUTTLE — preserved during ESTOP/ERROR/FAULT
+  std::string last_active_mode_ = "IDLE";
+
+  // Publish rate control
+  rclcpp::Time last_baseline_publish_;
+
+  // ── Latch flagek (F1) ──────────────────────────────────────────────────────
+  bool tilt_latch_                  = false;
+  bool proximity_latch_             = false;
+  bool watchdog_latch_              = false;    // FAULT szint
+  bool estop_was_pressed_for_reset_ = false;
+
+  // ── Szenzor watchdog (F2) ─────────────────────────────────────────────────
+  rclcpp::Time  last_scan_time_;               // init: now() in constructor
+  rclcpp::Time  last_imu_time_;                // init: now() in constructor
+  bool          scan_received_           = false;
+  bool          imu_received_            = false;
+  bool          scan_dropout_            = false;
+  bool          imu_dropout_             = false;
+  bool          scan_dropout_latch_      = false;
+  bool          imu_dropout_latch_       = false;
+  double        sensor_timeout_s_        = 2.0;
+  double        sensor_recovery_stable_s_ = 2.0;
+  bool          enable_scan_watchdog_    = false;
+  bool          enable_imu_watchdog_     = false;
+  bool          scan_watchdog_active_    = false;
+  bool          imu_watchdog_active_     = false;
+  rclcpp::Time  scan_recovery_start_;          // init: now() in constructor
+  rclcpp::Time  imu_recovery_start_;           // init: now() in constructor
+  bool          scan_recovering_         = false;
+  bool          imu_recovering_          = false;
+  bool          scan_dropout_recovered_  = false;
+  bool          imu_dropout_recovered_   = false;
+
+  // PLACEHOLDER: ZED 2i depth watchdog (disabled)
+  // rclcpp::Time  last_zed_time_;
+  // bool          zed_received_        = false;
+  // bool          zed_dropout_         = false;
+  // bool          zed_dropout_latch_   = false;
+  // bool          enable_zed_watchdog_ = false;
+
+  // PLACEHOLDER: External IMU watchdog /imu/data (disabled)
+  // rclcpp::Time  last_ext_imu_time_;
+  // bool          ext_imu_received_        = false;
+  // bool          ext_imu_dropout_         = false;
+  // bool          ext_imu_dropout_latch_   = false;
+  // bool          enable_ext_imu_watchdog_ = false;
+
+  // ── active_faults (F3) ───────────────────────────────────────────────────
+  std::vector<std::string> active_faults_;
+  std::string              active_faults_json_prev_;
+
+  // ROS handles
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr          armed_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr          estop_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr       rc_mode_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr        mode_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr        imu_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr  scan_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr    cmd_vel_raw_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr          reset_sub_;
+
+  // PLACEHOLDER: ZED 2i és external IMU subscriptions (disabled)
+  // rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr  zed_sub_;
+  // rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr    ext_imu_sub_;
 
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_vel_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr     state_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr            state_pub_;
+  rclcpp::Publisher<std_msgs::msg::Header>::SharedPtr            heartbeat_pub_;
 
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
+  rclcpp::TimerBase::SharedPtr heartbeat_timer_;
 };
 
 }  // namespace robot_safety

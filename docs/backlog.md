@@ -4,7 +4,7 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ---
 
-## Aktív feladatok (2026-03-19)
+## Aktív feladatok (2026-03-20)
 
 - **Safety szintek tesztelése — E-Stop, UTP kábel kicsúszás, hibakezelés** — 2026-03-19. Végig kell ellenőrizni a teljes safety láncot: (1) E-Stop bridge `/robot/estop` trigger → robot megáll, startup_supervisor FAULT állapot, (2) UTP kábel kicsúszás közben (RoboClaw TCP, bridge UDP) → mit csinál a stack, helyreáll-e, (3) egyéb fault forgatókönyvek (bridge timeout, SLAM crash, nav2 fail). Cél: dokumentálni a viselkedést, és minden esetben biztonságos leállást garantálni. Érintett: `startup_supervisor`, `scripts/prestart.sh`, `robot_bringup/launch/`.
 
@@ -66,7 +66,13 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ## Biztonság / Robustness
 
+- **~~`safety_supervisor` hibalatch + E-Stop reset mechanizmus~~** — ✅ **KÉSZ (2026-03-20):** Implementálva. `tilt_latch_`, `proximity_latch_`, `scan_dropout_latch_`, `imu_dropout_latch_`, `watchdog_latch_` latch flagek. E-Stop press+release szekvencia törli a tilt/proximity/sensor latch-eket (watchdog_latch_ nem törölhető E-Stop-pal). `/robot/reset` topic (Bool true) törli a `watchdog_latch_`-et, csak ha bridge online. `estop_was_pressed_for_reset_` flag megakadályozza a véletlen resetet. State machine latch-alapú feltételekre átírva. Érintett: `robot_safety/src/safety_supervisor.cpp`.
+
 - **Pre-start logika (`scripts/prestart.sh`)** — RoboClaw TCP + bridge ping ellenőrzés indítás előtt, timeout+retry, exit 1 ha nem jön fel. Docker restart policy újrapróbálja.
+
+- **~~Szenzor topic watchdog — LiDAR, IMU dropout detektálás~~** — ✅ **KÉSZ (2026-03-20):** Implementálva. `scan_dropout_latch_` és `imu_dropout_latch_` flagek, `sensor_timeout_s` (2.0s) és `sensor_recovery_stable_s` (2.0s) YAML paraméterek. Feltételhez kötött aktiválás: scan watchdog: `proximity_distance_m > 0` VAGY `enable_scan_watchdog: true`; imu watchdog: `tilt_roll_limit_deg < 90` VAGY `enable_imu_watchdog: true`. Startup false positive védelem: `scan_received_`/`imu_received_` false amíg első üzenet nem jön. Recovery: `[recovered]` jelölés az `active_faults`-ban, latch megmarad. Placeholder kommentek ZED 2i és külső IMU watchdog számára. Érintett: `robot_safety/src/safety_supervisor.cpp`, `config/robot_params.yaml`.
+
+- **~~Több egyidejű hiba megjelenítése — `active_faults` lista a `/safety/state` JSON-ban~~** — ✅ **KÉSZ (2026-03-20):** Implementálva. `/safety/state` JSON `active_faults: [...]` tömb mező az összes aktív latch tartalmával (tilt, proximity, scan_dropout, imu_dropout, watchdog). `build_active_faults()` segédfüggvény. Latch bool mezők: `tilt_latch`, `proximity_latch`, `scan_dropout_latch`, `imu_dropout_latch`, `watchdog_latch`. Change detektálás `active_faults_json_prev_` összehasonlítással. **TODO:** Foxglove `startupstate.ts` script frissítése az új mezők megjelenítéséhez. Érintett: `robot_safety/src/safety_supervisor.cpp`.
 
 - **Proximity visszakapcsolása** (`PROXIMITY_DISTANCE_M=0.3` a `.env`-ben) — halasztva, mert robot alkatrészek belelógnak a LiDAR látóterébe és false positive stop-ot okoznak. Előfeltétel: LiDAR maszk implementálása.
 
