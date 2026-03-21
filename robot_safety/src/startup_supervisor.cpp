@@ -10,7 +10,7 @@
  *   2. CHECK_MOTION — odom velocity < threshold for motion_stable_s (robot stationary)
  *   3. CHECK_TILT   — IMU roll/pitch within limits (robot not tipped over)
  *   4. CHECK_ESTOP  — E-Stop bridge online AND not active
- *   5. ARMED        — all checks passed, /startup/armed = true
+ *   5. PASSED       — all checks passed, /startup/armed = true
  *   → FAULT         — any check failed (latched, restart to retry)
  *
  * Topics published:
@@ -49,7 +49,7 @@ enum class StartupState {
   CHECK_MOTION,
   CHECK_TILT,
   CHECK_ESTOP,
-  ARMED,
+  PASSED,
   FAULT,
 };
 
@@ -60,7 +60,7 @@ static const char * state_name(StartupState s)
     case StartupState::CHECK_MOTION: return "CHECK_MOTION";
     case StartupState::CHECK_TILT:   return "CHECK_TILT";
     case StartupState::CHECK_ESTOP:  return "CHECK_ESTOP";
-    case StartupState::ARMED:        return "ARMED";
+    case StartupState::PASSED:       return "PASSED";
     case StartupState::FAULT:        return "FAULT";
     default:                         return "UNKNOWN";
   }
@@ -265,7 +265,7 @@ private:
           RCLCPP_WARN(get_logger(), "CHECK_ESTOP: SKIPPED (check_estop_enabled=false)");
           RCLCPP_INFO(get_logger(),
             "Billencs check: SKIPPED (Sabertooth not yet connected).");
-          transition_to(StartupState::ARMED);
+          transition_to(StartupState::PASSED);
           break;
         }
         if (!estop_received_) {
@@ -299,18 +299,18 @@ private:
         }
         RCLCPP_INFO(get_logger(), "E-Stop OK — bridge online, not active.");
         RCLCPP_INFO(get_logger(), "Billencs check: SKIPPED (Sabertooth not yet connected).");
-        transition_to(StartupState::ARMED);
+        transition_to(StartupState::PASSED);
         break;
 
-      // ------------------------------------------------------ ARMED
-      case StartupState::ARMED:
+      // ------------------------------------------------------ PASSED
+      case StartupState::PASSED:
         if (!armed_published_) {
           std_msgs::msg::Bool msg;
           msg.data = true;
           armed_pub_->publish(msg);
           armed_published_ = true;
           RCLCPP_INFO(get_logger(), "==============================");
-          RCLCPP_INFO(get_logger(), "   ROBOT ARMED — READY TO GO  ");
+          RCLCPP_INFO(get_logger(), " STARTUP PASSED — READY TO GO ");
           RCLCPP_INFO(get_logger(), "==============================");
         }
         break;
@@ -346,7 +346,7 @@ private:
     std::ostringstream ss;
     ss << "{"
        << "\"state\":\""           << state_name(state_) << "\","
-       << "\"armed\":"             << (state_ == StartupState::ARMED ? "true" : "false") << ","
+       << "\"armed\":"             << (state_ == StartupState::PASSED ? "true" : "false") << ","
        << "\"check_motion\":"      << (check_motion_ ? "true" : "false") << ","
        << "\"check_tilt\":"        << (check_tilt_   ? "true" : "false") << ","
        << "\"check_estop\":"       << (check_estop_  ? "true" : "false") << ","

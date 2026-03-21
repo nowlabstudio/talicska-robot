@@ -48,6 +48,8 @@ fi
 if [[ -f "${ENV_FILE}" ]]; then
   while IFS='=' read -r key val; do
     [[ "${key}" =~ ^[[:space:]]*#.*$ || -z "${key}" ]] && continue
+    val="${val%%#*}"           # inline komment levágása
+    val="${val%"${val##*[![:space:]]}"}"  # záró whitespace levágása
     case "${key}" in
       ROBOCLAW_HOST|ROBOCLAW_PORT|RC_BRIDGE_IP|INPUT_BRIDGE_IP|JETSON_IP)
         export "${key}=${val}"
