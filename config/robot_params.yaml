@@ -363,10 +363,15 @@ safety_supervisor:
   ros__parameters:
     estop_timeout_s:      2.0
     # RC bridge watchdog — /robot/rc_mode topic timeout → FAULT + rc_watchdog_latch
-    # 5s: engedélyez rövid UDP csomagvesztést, de 100kg robotnál az RC mindig jelen kell legyen
     rc_timeout_s:         5.0
+    # Motor controller watchdog — /joint_states timeout → FAULT + joint_states_dropout_latch
+    # 1.0s = 50 kihagyott üzenet 50Hz-en. RoboClaw TCP drop → controller stack elhallgat.
+    joint_states_timeout_s: 1.0
+    # RealSense watchdog — /camera/camera/color/camera_info timeout → ERROR + realsense_dropout_latch
+    # Előfeltétel: camera_info QoS kompatibilitás (SensorDataQoS — BEST_EFFORT)
+    enable_realsense_watchdog: true
+    realsense_timeout_s:  3.0
     # Latch perzisztencia — node crash + ROS2 restart után is megmarad a FAULT állapot
-    # /tmp: konténer újraindításkor törlődik (szándékos: teljes stack reset = clean state)
     latch_state_path:     "/tmp/safety_latch_state"
     # TILT: 90° = kikapcsolva
     # Éles robot: 25.0/20.0 — csak a kamera→base_link transzformáció fix után!

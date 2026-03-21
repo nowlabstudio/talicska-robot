@@ -26,10 +26,14 @@
  *   2. E-Stop watchdog — no message for > estop_timeout_s → FAULT + watchdog_latch
  *   3. RC bridge       — /robot/rc_mode topic timeout > rc_timeout_s → FAULT + rc_watchdog_latch
  *                        (only after first message; RC is a manual override safety net)
- *   4. IMU tilt        — |roll| > limit OR |pitch| > limit → ERROR + tilt_latch
- *   5. LiDAR proximity — min front range < proximity_distance_m → ERROR + proximity_latch
- *   6. LiDAR dropout   — /scan topic timeout > sensor_timeout_s → ERROR + scan_dropout_latch
- *   7. IMU dropout     — /camera/camera/imu timeout > sensor_timeout_s → ERROR + imu_dropout_latch
+ *   4. Motor ctrl      — /joint_states topic timeout > joint_states_timeout_s → FAULT + joint_states_dropout_latch
+ *                        (RoboClaw TCP drop detected via controller stack silence)
+ *   5. IMU tilt        — |roll| > limit OR |pitch| > limit → ERROR + tilt_latch
+ *   6. LiDAR proximity — min front range < proximity_distance_m → ERROR + proximity_latch
+ *   7. LiDAR dropout   — /scan topic timeout > sensor_timeout_s → ERROR + scan_dropout_latch
+ *   8. IMU dropout     — /camera/camera/imu timeout > sensor_timeout_s → ERROR + imu_dropout_latch
+ *   9. RealSense       — /camera/camera/color/camera_info timeout > realsense_timeout_s → ERROR + realsense_dropout_latch
+ *                        (enable_realsense_watchdog: true required)
  *
  * Sensor watchdog activation:
  *   scan watchdog: proximity_distance_m > 0 OR enable_scan_watchdog: true
@@ -72,7 +76,9 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/camera_info.hpp"
 #include "sensor_msgs/msg/imu.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/float32.hpp"
@@ -89,6 +95,8 @@ public:
   : Node("safety_supervisor"),
     last_estop_time_(now()),
     last_rc_time_(now()),
+    last_joint_states_time_(now()),
+    last_realsense_time_(now()),
     last_mode_time_(now()),
     last_baseline_publish_(now()),
     last_scan_time_(now()),
@@ -96,9 +104,12 @@ public:
     scan_recovery_start_(now()),
     imu_recovery_start_(now())
   {
-    this->declare_parameter("estop_timeout_s",       2.0);
-    this->declare_parameter("rc_timeout_s",          5.0);
-    this->declare_parameter("latch_state_path",      std::string("/tmp/safety_latch_state"));
+    this->declare_parameter("estop_timeout_s",          2.0);
+    this->declare_parameter("rc_timeout_s",             5.0);
+    this->declare_parameter("joint_states_timeout_s",   1.0);
+    this->declare_parameter("enable_realsense_watchdog", false);
+    this->declare_parameter("realsense_timeout_s",      3.0);
+    this->declare_parameter("latch_state_path",         std::string("/tmp/safety_latch_state"));
     this->declare_parameter("tilt_roll_limit_deg",  25.0);
     this->declare_parameter("tilt_pitch_limit_deg", 20.0);
     this->declare_parameter("proximity_distance_m",  0.3);
@@ -117,9 +128,12 @@ public:
     // this->declare_parameter("enable_zed_watchdog",      false);
     // this->declare_parameter("enable_ext_imu_watchdog",  false);
 
-    estop_timeout_        = this->get_parameter("estop_timeout_s").as_double();
-    rc_timeout_s_         = this->get_parameter("rc_timeout_s").as_double();
-    latch_state_path_     = this->get_parameter("latch_state_path").as_string();
+    estop_timeout_             = this->get_parameter("estop_timeout_s").as_double();
+    rc_timeout_s_              = this->get_parameter("rc_timeout_s").as_double();
+    joint_states_timeout_s_    = this->get_parameter("joint_states_timeout_s").as_double();
+    enable_realsense_watchdog_ = this->get_parameter("enable_realsense_watchdog").as_bool();
+    realsense_timeout_s_       = this->get_parameter("realsense_timeout_s").as_double();
+    latch_state_path_          = this->get_parameter("latch_state_path").as_string();
     tilt_roll_limit_      = deg2rad(this->get_parameter("tilt_roll_limit_deg").as_double());
     tilt_pitch_limit_     = deg2rad(this->get_parameter("tilt_pitch_limit_deg").as_double());
     proximity_dist_       = this->get_parameter("proximity_distance_m").as_double();
@@ -186,6 +200,22 @@ public:
       "/robot/reset", rclcpp::QoS(10),
       std::bind(&SafetySupervisor::reset_cb, this, std::placeholders::_1));
 
+    joint_states_sub_ = create_subscription<sensor_msgs::msg::JointState>(
+      "/joint_states", rclcpp::QoS(10),
+      [this](sensor_msgs::msg::JointState::SharedPtr) {
+        last_joint_states_time_    = now();
+        joint_states_received_     = true;
+        joint_states_watchdog_ok_  = true;
+      });
+
+    realsense_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
+      "/camera/camera/color/camera_info", rclcpp::SensorDataQoS(),
+      [this](sensor_msgs::msg::CameraInfo::SharedPtr) {
+        last_realsense_time_    = now();
+        realsense_received_     = true;
+        realsense_watchdog_ok_  = true;
+      });
+
     // PLACEHOLDER: ZED 2i depth watchdog subscription (disabled)
     // zed_sub_ = create_subscription<sensor_msgs::msg::Image>(
     //   "/zed/zed_node/depth/depth_registered", rclcpp::QoS(10),
@@ -228,7 +258,8 @@ public:
       "SafetySupervisor ready. Holding until startup/armed + E-Stop bridge online. "
       "Limits: roll±%.0f° pitch±%.0f°, proximity %.2fm front±%.0f°. "
       "IMU throttle: %.0f Hz. RC threshold: %.2f (timeout: %.1fs). Heartbeat: %.0f Hz. "
-      "Scan watchdog: %s. IMU watchdog: %s. Latch state: %s",
+      "Scan watchdog: %s. IMU watchdog: %s. RealSense watchdog: %s (%.1fs). "
+      "Joint states timeout: %.1fs. Latch state: %s",
       this->get_parameter("tilt_roll_limit_deg").as_double(),
       this->get_parameter("tilt_pitch_limit_deg").as_double(),
       proximity_dist_,
@@ -236,6 +267,8 @@ public:
       imu_hz, rc_mode_threshold_, rc_timeout_s_, hb_hz,
       scan_watchdog_active_ ? "ON" : "OFF",
       imu_watchdog_active_  ? "ON" : "OFF",
+      enable_realsense_watchdog_ ? "ON" : "OFF", realsense_timeout_s_,
+      joint_states_timeout_s_,
       latch_state_path_.c_str());
   }
 
@@ -259,13 +292,14 @@ private:
     // watchdog_latch and rc_watchdog_latch are NOT cleared here — requires /robot/reset + bridge online
     if (prev && !estop_active_ && estop_was_pressed_for_reset_) {
       estop_was_pressed_for_reset_ = false;
-      tilt_latch_         = false;
-      proximity_latch_    = false;
-      scan_dropout_latch_ = false;
-      imu_dropout_latch_  = false;
+      tilt_latch_              = false;
+      proximity_latch_         = false;
+      scan_dropout_latch_      = false;
+      imu_dropout_latch_       = false;
+      realsense_dropout_latch_ = false;
       persist_latches();
       RCLCPP_WARN(get_logger(),
-        "E-Stop reset: tilt/proximity/sensor latch-ek törölve");
+        "E-Stop reset: tilt/proximity/sensor/realsense latch-ek törölve");
     }
 
     if (msg->data != prev) {
@@ -282,11 +316,14 @@ private:
         "/robot/reset received de E-Stop bridge offline — watchdog/rc latch nem törölhető");
       return;
     }
-    watchdog_latch_    = false;
-    rc_watchdog_latch_ = false;
-    rc_watchdog_ok_    = true;   // engedélyezi az RC bridge újra-csatlakozást FAULT nélkül
+    watchdog_latch_               = false;
+    rc_watchdog_latch_            = false;
+    rc_watchdog_ok_               = true;   // engedélyezi az RC bridge újra-csatlakozást FAULT nélkül
+    joint_states_dropout_latch_   = false;
+    joint_states_watchdog_ok_     = true;   // engedélyezi a joint_states újra-csatlakozást FAULT nélkül
     persist_latches();
-    RCLCPP_WARN(get_logger(), "/robot/reset: watchdog_latch és rc_watchdog_latch törölve");
+    RCLCPP_WARN(get_logger(),
+      "/robot/reset: watchdog_latch, rc_watchdog_latch, joint_states_dropout_latch törölve");
   }
 
   void imu_cb(const sensor_msgs::msg::Imu::SharedPtr msg)
@@ -406,7 +443,52 @@ private:
       }
     }
 
-    // 3. Sensor watchdog — LiDAR /scan
+    // 3. Motor controller watchdog — /joint_states (RoboClaw TCP dropout detection)
+    if (joint_states_received_) {
+      const double js_elapsed = (t - last_joint_states_time_).seconds();
+      if (js_elapsed > joint_states_timeout_s_ && joint_states_watchdog_ok_) {
+        joint_states_watchdog_ok_   = false;
+        joint_states_dropout_latch_ = true;
+        RCLCPP_ERROR(get_logger(),
+          "Motor controller TIMEOUT (%.1f s without /joint_states) — "
+          "joint_states_dropout_latch beállítva", js_elapsed);
+      }
+    }
+
+    // 4. RealSense watchdog — /camera/camera/color/camera_info
+    if (enable_realsense_watchdog_ && realsense_received_) {
+      const double rs_elapsed = (t - last_realsense_time_).seconds();
+      if (rs_elapsed > realsense_timeout_s_) {
+        if (!realsense_dropout_) {
+          realsense_dropout_           = true;
+          realsense_dropout_latch_     = true;
+          realsense_recovering_        = false;
+          realsense_dropout_recovered_ = false;
+          RCLCPP_ERROR(get_logger(),
+            "RealSense camera_info TIMEOUT (%.1f s) — realsense_dropout_latch beállítva",
+            rs_elapsed);
+        }
+      } else {
+        if (realsense_dropout_) {
+          if (!realsense_recovering_) {
+            realsense_recovering_        = true;
+            realsense_recovery_start_    = t;
+            realsense_dropout_recovered_ = false;
+          } else if (!realsense_dropout_recovered_ &&
+                     (t - realsense_recovery_start_).seconds() >= sensor_recovery_stable_s_) {
+            realsense_dropout_recovered_ = true;
+            realsense_dropout_           = false;
+            RCLCPP_WARN(get_logger(),
+              "RealSense visszatért (%.1f s stabil) — latch MEGMARAD, E-Stop reset szükséges",
+              (t - realsense_recovery_start_).seconds());
+          }
+        } else {
+          realsense_recovering_ = false;
+        }
+      }
+    }
+
+    // 5. Sensor watchdog — LiDAR /scan
     if (scan_watchdog_active_ && scan_received_) {
       const double scan_age = (t - last_scan_time_).seconds();
       if (scan_age > sensor_timeout_s_) {
@@ -439,7 +521,7 @@ private:
       }
     }
 
-    // 4. Sensor watchdog — IMU /camera/camera/imu
+    // 6. Sensor watchdog — IMU /camera/camera/imu
     if (imu_watchdog_active_ && imu_received_) {
       const double imu_age = (t - last_imu_time_).seconds();
       if (imu_age > sensor_timeout_s_) {
@@ -471,7 +553,7 @@ private:
       }
     }
 
-    // 5. Zero-velocity gate when unsafe
+    // 7. Zero-velocity gate when unsafe
     if (!is_safe()) {
       geometry_msgs::msg::TwistStamped zero;
       zero.header.stamp    = t;
@@ -479,11 +561,11 @@ private:
       cmd_vel_pub_->publish(zero);
     }
 
-    // 6. Build active_faults list
+    // 8. Build active_faults list
     build_active_faults(t);
     const std::string af_json = active_faults_json();
 
-    // 7. Determine state & mode from priority rules
+    // 9. Determine state & mode from priority rules
     std::string new_state;
     std::string new_mode;
     std::string new_fault_reason;
@@ -491,7 +573,7 @@ private:
 
     determine_state(new_state, new_mode, new_fault_reason, new_error_reason);
 
-    // 8. Publish immediately on any change
+    // 10. Publish immediately on any change
     bool changed = (new_state        != current_state_) ||
                    (new_mode         != current_mode_)  ||
                    (new_fault_reason != fault_reason_)  ||
@@ -513,10 +595,10 @@ private:
         fault_reason_.empty() ? "" : fault_reason_.c_str());
     }
 
-    // 9. Latch állapot perzisztálása (csak ha változott)
+    // 11. Latch állapot perzisztálása (csak ha változott)
     persist_latches();
 
-    // 10. 1 Hz baseline keepalive
+    // 12. 1 Hz baseline keepalive
     const double since_publish = (now() - last_baseline_publish_).seconds();
     if (since_publish >= 1.0) {
       publish_state();
@@ -542,10 +624,11 @@ private:
       return;
     }
 
-    // Priority 2: hardver watchdog FAULT (E-Stop vagy RC bridge offline) — latch-alapú
+    // Priority 2: hardver watchdog FAULT (E-Stop, RC bridge, motor controller offline) — latch-alapú
     const bool estop_fault = !estop_watchdog_ok_ || watchdog_latch_;
     const bool rc_fault    = rc_received_ && (!rc_watchdog_ok_ || rc_watchdog_latch_);
-    if (estop_fault || rc_fault) {
+    const bool hw_fault    = joint_states_dropout_latch_;
+    if (estop_fault || rc_fault || hw_fault) {
       state = "FAULT";
       mode  = last_active_mode_;
       std::string reason;
@@ -557,6 +640,10 @@ private:
       if (rc_fault) {
         if (!reason.empty()) { reason += ", "; }
         reason += !rc_watchdog_ok_ ? "RC bridge offline" : "RC bridge offline [latch]";
+      }
+      if (hw_fault) {
+        if (!reason.empty()) { reason += ", "; }
+        reason += "Motor controller dropout [latch]";
       }
       fault_reason = reason;
       return;
@@ -620,10 +707,12 @@ private:
            estop_watchdog_ok_ &&
            !watchdog_latch_ &&
            !(rc_received_ && (!rc_watchdog_ok_ || rc_watchdog_latch_)) &&
+           !joint_states_dropout_latch_ &&
            !tilt_latch_ &&
            !proximity_latch_ &&
            !scan_dropout_latch_ &&
-           !imu_dropout_latch_;
+           !imu_dropout_latch_ &&
+           !realsense_dropout_latch_;
   }
 
   void build_active_faults(const rclcpp::Time & t)
@@ -656,6 +745,17 @@ private:
     if (rc_received_ && rc_watchdog_latch_) {
       std::string entry = "RC bridge timeout";
       if (rc_watchdog_ok_) { entry += " [recovered]"; }
+      active_faults_.push_back(entry);
+    }
+    if (joint_states_dropout_latch_) {
+      std::string entry = "Motor controller dropout";
+      if (joint_states_watchdog_ok_) { entry += " [recovered]"; }
+      active_faults_.push_back(entry);
+    }
+    if (realsense_dropout_latch_) {
+      const double age = realsense_received_ ? (t - last_realsense_time_).seconds() : 0.0;
+      std::string entry = "RealSense timeout (" + fmt(age) + "s)";
+      if (realsense_dropout_recovered_) { entry += " [recovered]"; }
       active_faults_.push_back(entry);
     }
   }
@@ -695,8 +795,10 @@ private:
        << "\"proximity_latch\":"    << (proximity_latch_        ? "true" : "false") << ","
        << "\"scan_dropout_latch\":" << (scan_dropout_latch_     ? "true" : "false") << ","
        << "\"imu_dropout_latch\":"  << (imu_dropout_latch_      ? "true" : "false") << ","
-       << "\"watchdog_latch\":"     << (watchdog_latch_         ? "true" : "false") << ","
-       << "\"rc_watchdog_latch\":"  << (rc_watchdog_latch_      ? "true" : "false")
+       << "\"watchdog_latch\":"              << (watchdog_latch_              ? "true" : "false") << ","
+       << "\"rc_watchdog_latch\":"           << (rc_watchdog_latch_           ? "true" : "false") << ","
+       << "\"joint_states_dropout_latch\":"  << (joint_states_dropout_latch_  ? "true" : "false") << ","
+       << "\"realsense_dropout_latch\":"     << (realsense_dropout_latch_     ? "true" : "false")
        << "}";
 
     std_msgs::msg::String state_msg;
@@ -709,12 +811,14 @@ private:
   void persist_latches()
   {
     std::ostringstream ss;
-    ss << "watchdog_latch="     << (watchdog_latch_     ? "1" : "0") << "\n"
-       << "rc_watchdog_latch="  << (rc_watchdog_latch_  ? "1" : "0") << "\n"
-       << "tilt_latch="         << (tilt_latch_         ? "1" : "0") << "\n"
-       << "proximity_latch="    << (proximity_latch_    ? "1" : "0") << "\n"
-       << "scan_dropout_latch=" << (scan_dropout_latch_ ? "1" : "0") << "\n"
-       << "imu_dropout_latch="  << (imu_dropout_latch_  ? "1" : "0") << "\n";
+    ss << "watchdog_latch="              << (watchdog_latch_              ? "1" : "0") << "\n"
+       << "rc_watchdog_latch="           << (rc_watchdog_latch_           ? "1" : "0") << "\n"
+       << "joint_states_dropout_latch="  << (joint_states_dropout_latch_  ? "1" : "0") << "\n"
+       << "tilt_latch="                  << (tilt_latch_                  ? "1" : "0") << "\n"
+       << "proximity_latch="             << (proximity_latch_             ? "1" : "0") << "\n"
+       << "scan_dropout_latch="          << (scan_dropout_latch_          ? "1" : "0") << "\n"
+       << "imu_dropout_latch="           << (imu_dropout_latch_           ? "1" : "0") << "\n"
+       << "realsense_dropout_latch="     << (realsense_dropout_latch_     ? "1" : "0") << "\n";
 
     const std::string content = ss.str();
     if (content == persisted_latch_content_) { return; }  // változatlan
@@ -737,12 +841,14 @@ private:
     std::string line;
     bool any_restored = false;
     while (std::getline(f, line)) {
-      if      (line == "watchdog_latch=1")     { watchdog_latch_     = true; any_restored = true; }
-      else if (line == "rc_watchdog_latch=1")  { rc_watchdog_latch_  = true; any_restored = true; }
-      else if (line == "tilt_latch=1")         { tilt_latch_         = true; any_restored = true; }
-      else if (line == "proximity_latch=1")    { proximity_latch_    = true; any_restored = true; }
-      else if (line == "scan_dropout_latch=1") { scan_dropout_latch_ = true; any_restored = true; }
-      else if (line == "imu_dropout_latch=1")  { imu_dropout_latch_  = true; any_restored = true; }
+      if      (line == "watchdog_latch=1")             { watchdog_latch_              = true; any_restored = true; }
+      else if (line == "rc_watchdog_latch=1")          { rc_watchdog_latch_           = true; any_restored = true; }
+      else if (line == "joint_states_dropout_latch=1") { joint_states_dropout_latch_  = true; any_restored = true; }
+      else if (line == "tilt_latch=1")                 { tilt_latch_                  = true; any_restored = true; }
+      else if (line == "proximity_latch=1")            { proximity_latch_             = true; any_restored = true; }
+      else if (line == "scan_dropout_latch=1")         { scan_dropout_latch_          = true; any_restored = true; }
+      else if (line == "imu_dropout_latch=1")          { imu_dropout_latch_           = true; any_restored = true; }
+      else if (line == "realsense_dropout_latch=1")    { realsense_dropout_latch_     = true; any_restored = true; }
     }
 
     if (any_restored) {
@@ -752,6 +858,8 @@ private:
         "  watchdog_latch RESTORED → FAULT (/robot/reset szükséges)"); }
       if (rc_watchdog_latch_)  { RCLCPP_ERROR(get_logger(),
         "  rc_watchdog_latch RESTORED → FAULT (/robot/reset szükséges)"); }
+      if (joint_states_dropout_latch_) { RCLCPP_ERROR(get_logger(),
+        "  joint_states_dropout_latch RESTORED → FAULT (/robot/reset szükséges)"); }
       if (tilt_latch_)         { RCLCPP_WARN(get_logger(),
         "  tilt_latch RESTORED → ERROR (E-Stop reset szükséges)"); }
       if (proximity_latch_)    { RCLCPP_WARN(get_logger(),
@@ -760,6 +868,8 @@ private:
         "  scan_dropout_latch RESTORED → ERROR (E-Stop reset szükséges)"); }
       if (imu_dropout_latch_)  { RCLCPP_WARN(get_logger(),
         "  imu_dropout_latch RESTORED → ERROR (E-Stop reset szükséges)"); }
+      if (realsense_dropout_latch_) { RCLCPP_WARN(get_logger(),
+        "  realsense_dropout_latch RESTORED → ERROR (E-Stop reset szükséges)"); }
     }
   }
 
@@ -788,6 +898,9 @@ private:
 
   double      estop_timeout_;
   double      rc_timeout_s_;
+  double      joint_states_timeout_s_;
+  bool        enable_realsense_watchdog_;
+  double      realsense_timeout_s_;
   double      tilt_roll_limit_;
   double      tilt_pitch_limit_;
   double      proximity_dist_;
@@ -807,9 +920,25 @@ private:
 
   // RC bridge watchdog
   rclcpp::Time   last_rc_time_;
-  bool           rc_received_        = false;  // false until first /robot/rc_mode msg
-  bool           rc_watchdog_ok_     = false;  // false until first msg, then tracks timeout
+  bool           rc_received_        = false;
+  bool           rc_watchdog_ok_     = false;
   bool           rc_watchdog_latch_  = false;  // FAULT szint, /robot/reset törli
+
+  // Motor controller watchdog (/joint_states — RoboClaw TCP dropout)
+  rclcpp::Time   last_joint_states_time_;
+  bool           joint_states_received_        = false;
+  bool           joint_states_watchdog_ok_     = false;
+  bool           joint_states_dropout_latch_   = false;  // FAULT szint, /robot/reset törli
+
+  // RealSense watchdog (/camera/camera/color/camera_info)
+  rclcpp::Time   last_realsense_time_;
+  bool           realsense_received_           = false;
+  bool           realsense_watchdog_ok_        = false;
+  bool           realsense_dropout_            = false;
+  bool           realsense_dropout_latch_      = false;  // ERROR szint, E-Stop reset törli
+  bool           realsense_recovering_         = false;
+  bool           realsense_dropout_recovered_  = false;
+  rclcpp::Time   realsense_recovery_start_;
 
   // RC & mode
   float          rc_mode_          = 0.0f;
@@ -892,8 +1021,10 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr          estop_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr       rc_mode_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr        mode_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr        imu_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr  scan_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr          imu_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr   joint_states_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr   realsense_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr    scan_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr    cmd_vel_raw_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr          reset_sub_;
 
