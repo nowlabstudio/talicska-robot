@@ -362,6 +362,12 @@ winch_node:
 safety_supervisor:
   ros__parameters:
     estop_timeout_s:      2.0
+    # RC bridge watchdog — /robot/rc_mode topic timeout → FAULT + rc_watchdog_latch
+    # 5s: engedélyez rövid UDP csomagvesztést, de 100kg robotnál az RC mindig jelen kell legyen
+    rc_timeout_s:         5.0
+    # Latch perzisztencia — node crash + ROS2 restart után is megmarad a FAULT állapot
+    # /tmp: konténer újraindításkor törlődik (szándékos: teljes stack reset = clean state)
+    latch_state_path:     "/tmp/safety_latch_state"
     # TILT: 90° = kikapcsolva
     # Éles robot: 25.0/20.0 — csak a kamera→base_link transzformáció fix után!
     # Backlog: "IMU tilt check — RealSense kamera frame orientáció"
