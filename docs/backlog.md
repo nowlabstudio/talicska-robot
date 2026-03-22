@@ -4,7 +4,7 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ---
 
-## Aktív feladatok (2026-03-20)
+## Aktív feladatok (2026-03-22)
 
 - **Safety szintek tesztelése — E-Stop, UTP kábel kicsúszás, hibakezelés** — 2026-03-19. Végig kell ellenőrizni a teljes safety láncot: (1) E-Stop bridge `/robot/estop` trigger → robot megáll, startup_supervisor FAULT állapot, (2) UTP kábel kicsúszás közben (RoboClaw TCP, bridge UDP) → mit csinál a stack, helyreáll-e, (3) egyéb fault forgatókönyvek (bridge timeout, SLAM crash, nav2 fail). Cél: dokumentálni a viselkedést, és minden esetben biztonságos leállást garantálni. Érintett: `startup_supervisor`, `scripts/prestart.sh`, `robot_bringup/launch/`.
 
@@ -66,6 +66,16 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ## Biztonság / Robustness
 
+- **~~Nav2 SIGABRT crash — params_file scope szivárgás~~** — ✅ **KÉSZ (2026-03-22):** `robot.launch.py` navigation include-ban explicit `params_file: PathJoinSubstitution([pkg, "config", "nav2_params.yaml"])` hozzáadva. A LaunchConfiguration scope-ból örökölt `robot_params.yaml` Nav2 node-okba kerülésekor SIGABRT-ot okozott. Érintett: `robot_bringup/launch/robot.launch.py`.
+
+- **~~RPLidar nem publikált /scan-t~~** — ✅ **KÉSZ (2026-03-22):** Két javítás kombinációja: (1) `docker-compose.yml`: `privileged: true` hozzáadva — `/dev:/dev` volume mount csak láthatóvá teszi az eszközt, de cgroup device whitelist nem frissül → EPERM az ioctl hívásokban; (2) `robot_params.yaml`: `scan_mode: ""` (auto-select) — explicit `"Sensitivity"` string RESULT_OPERATION_NOT_SUPPORT hibát adott (firmware name mismatch). Auto-select Sensitivity módot választ: 16 kHz, ~6.6 Hz, ~2424 pont/scan. Érintett: `docker-compose.yml`, `config/robot_params.yaml`.
+
+- **~~realsense_dropout_latch_ nem clearable /robot/reset-tel~~** — ✅ **KÉSZ (2026-03-22):** `reset_cb()` feltételes clearing: `realsense_dropout_recovered_ && !realsense_dropout_` esetén törli a latch-et. Korábban csak E-Stop press+release törölte. Érintett: `robot_safety/src/safety_supervisor.cpp`.
+
+- **~~realsense_dropout_latch_ IDLE state-t hagyott (safe=false de state nem változott)~~** — ✅ **KÉSZ (2026-03-22):** `realsense_dropout_latch_` hozzáadva a `compute_state()` Priority 4 ERROR feltételéhez. Korábban csak `safe=false`-t állított be, de a `state` IDLE maradt. Érintett: `robot_safety/src/safety_supervisor.cpp`.
+
+- **~~scan_dropout_latch watchdog inaktív~~** — ✅ **KÉSZ (2026-03-22):** `enable_scan_watchdog: true` beállítva `config/robot_params.yaml`-ban. LiDAR dropout most ERROR state-et vált.
+
 - **~~`safety_supervisor` hibalatch + E-Stop reset mechanizmus~~** — ✅ **KÉSZ (2026-03-20):** Implementálva. `tilt_latch_`, `proximity_latch_`, `scan_dropout_latch_`, `imu_dropout_latch_`, `watchdog_latch_` latch flagek. E-Stop press+release szekvencia törli a tilt/proximity/sensor latch-eket (watchdog_latch_ nem törölhető E-Stop-pal). `/robot/reset` topic (Bool true) törli a `watchdog_latch_`-et, csak ha bridge online. `estop_was_pressed_for_reset_` flag megakadályozza a véletlen resetet. State machine latch-alapú feltételekre átírva. Érintett: `robot_safety/src/safety_supervisor.cpp`.
 
 - **Pre-start logika (`scripts/prestart.sh`)** — RoboClaw TCP + bridge ping ellenőrzés indítás előtt, timeout+retry, exit 1 ha nem jön fel. Docker restart policy újrapróbálja.
@@ -76,7 +86,7 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 - **~~RoboClaw TCP disconnect nem detektált — robot 4s-ig fékezés nélkül halad (KRITIKUS)~~** — ✅ **KÉSZ (2026-03-22), tesztelve:** Két rétegű detektálás + hardver stop javítás. (1) **`roboclaw_hardware`** plugin: `/hardware/roboclaw/connected` topic **10 Hz heartbeat** + azonnali `false` TCP kieséskor. (2) **`safety_supervisor`**: `roboclaw_status_timeout_s: 0.3` csend-watchdog → `joint_states_dropout_latch_ → FAULT`. (3) **`SetTimeout` bug fix**: `roboclaw_protocol.cpp` hibásan `10ms` unit-ot feltételezett, valójában `100ms` → `SetTimeout(500)` = 5s-ot küldött (egyezett az EEPROM 5s értékkel, ezért rejtett maradt). Javítva `100ms` unit-ra, `SetTimeout(500ms)` → 5 unit = 500ms. EEPROM is 0.5s-ra állítva (Motion Studio). **Mért eredmény:** FAULT ≤300ms, motorok ≤500ms-en belül megállnak. Reset: E-Stop press+release (ha reconnected) VAGY `/robot/reset`. Érintett: `ROS2_RoboClaw/src/roboclaw_hardware.cpp`, `ROS2_RoboClaw/src/roboclaw_protocol.cpp`, `ROS2_RoboClaw/include/roboclaw_hardware/roboclaw_hardware.hpp`, `robot_safety/src/safety_supervisor.cpp`, `config/robot_params.yaml`.
 
-- **RealSense watchdog — enable_imu_watchdog engedélyezendő** — 2026-03-21, mérve. RealSense RJ45/USB kihúzva: `safety_supervisor` nem detektálja, állapot IDLE marad. Az `enable_imu_watchdog: false` és `tilt_roll_limit_deg: 90` kombináció miatt a watchdog inaktív. Ha be lenne kapcsolva: `/camera/camera/imu` topic timeout → `imu_dropout_latch_` → ERROR state. Előfeltétel: IMU frame orientáció korrekció (backlog: "IMU tilt check — RealSense kamera frame orientáció"), majd `enable_imu_watchdog: true` a `robot_params.yaml`-ban. Érintett: `config/robot_params.yaml`.
+- **RealSense IMU watchdog engedélyezése (`enable_imu_watchdog: true`)** — 2026-03-22. A `realsense_dropout_latch_` (camera_info timeout) már aktív és ERROR state-et vált — ez a fő RealSense watchdog. Az IMU-specifikus watchdog (`enable_imu_watchdog`) külön a tilt check IMU forrására vonatkozik. Előfeltétel: IMU frame orientáció korrekció (backlog: "IMU tilt check"), majd `enable_imu_watchdog: true` + `tilt_roll_limit_deg: 25`. Érintett: `config/robot_params.yaml`.
 
 - **~~Szenzor topic watchdog — LiDAR, IMU dropout detektálás~~** — ✅ **KÉSZ (2026-03-20):** Implementálva. `scan_dropout_latch_` és `imu_dropout_latch_` flagek, `sensor_timeout_s` (2.0s) és `sensor_recovery_stable_s` (2.0s) YAML paraméterek. Feltételhez kötött aktiválás: scan watchdog: `proximity_distance_m > 0` VAGY `enable_scan_watchdog: true`; imu watchdog: `tilt_roll_limit_deg < 90` VAGY `enable_imu_watchdog: true`. Startup false positive védelem: `scan_received_`/`imu_received_` false amíg első üzenet nem jön. Recovery: `[recovered]` jelölés az `active_faults`-ban, latch megmarad. Placeholder kommentek ZED 2i és külső IMU watchdog számára. Érintett: `robot_safety/src/safety_supervisor.cpp`, `config/robot_params.yaml`.
 

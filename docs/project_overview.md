@@ -1,8 +1,8 @@
 # Robot Project — Teljes Projekt Áttekintés
 
-**Verzió:** 2.3
-**Dátum:** 2026-03-20
-**Státusz:** Implementáció folyamatban — Fázis 0–8 kész, safety_supervisor latch+watchdog+active_faults kész
+**Verzió:** 2.4
+**Dátum:** 2026-03-22
+**Státusz:** Implementáció folyamatban — Nav2 + SLAM + LiDAR működik, safety teljes latch rendszer kész, navigációs teszt folyamatban
 
 ---
 
@@ -60,7 +60,7 @@ footprint: "[[0.505, 0.4], [0.505, -0.4], [-0.595, -0.4], [-0.595, 0.4]]"
 | RoboClaw | Motor ctrl | ETH→USR-K6→RS232 | 192.168.68.60:8234 | Differenciálhajtás |
 | Sabertooth 2x32 | Tilt motor ctrl | PWM from Tilt bridge | — | Billentő motor |
 | RealSense D435i | Mélységkamera | USB3 Jetsonen | — | Depth, stereo IR, IMU |
-| RPLidar A2 | 2D LiDAR | USB Jetsonen | — | SLAM + Nav2 + safety zónák |
+| RPLidar A2M12 | 2D LiDAR | USB Jetsonen → `/dev/rplidar` (udev) | — | SLAM + Nav2 + safety zónák |
 
 **Hálózat:** 192.168.68.x/24 labor LAN → jövőben VLAN szegmentáció
 
@@ -226,8 +226,11 @@ Prioritás  State     Feltétel
 
 4.         ERROR     tilt_latch_ VAGY proximity_latch_
                      VAGY scan_dropout_latch_ VAGY imu_dropout_latch_
-                     (bármelyik latchelt hibafeltétel)
+                     VAGY realsense_dropout_latch_
+                     (bármelyik latchelt szenzor/fizikai hibafeltétel)
                      error_reason = az első aktív latch szöveges leírása
+                     ("Tilt fault", "Proximity fault", "LiDAR timeout",
+                      "IMU timeout", "RealSense timeout")
 
 5.         RC        rc_mode_ > rc_mode_threshold_ (0.5)
                      (/robot/rc_mode Float32 > küszöb → RC adó aktív)
@@ -245,19 +248,22 @@ Prioritás  State     Feltétel
 
 ---
 
-#### Fault latch logika — F1 (2026-03-20)
+#### Fault latch logika — F1 (2026-03-20, frissítve 2026-03-22)
 
 **Miért szükséges:** egy 100kg-os safety-kritikus robottól elfogadhatatlan, hogy ha a tilt visszaáll vagy a LiDAR visszajön, a state automatikusan törlődik operátori jóváhagyás nélkül.
 
 **Latch flagek:**
 
-| Latch | Mi aktiválja | Mi törli |
-|---|---|---|
-| `tilt_latch_` | `tilt_fault_` beáll | E-Stop press + release |
-| `proximity_latch_` | `proximity_fault_` beáll | E-Stop press + release |
-| `scan_dropout_latch_` | LiDAR topic timeout | E-Stop press + release |
-| `imu_dropout_latch_` | IMU topic timeout | E-Stop press + release |
-| `watchdog_latch_` | E-Stop bridge timeout | `/robot/reset` topic (Bool true), csak ha bridge online |
+| Latch | Szint | Mi aktiválja | Mi törli |
+|---|---|---|---|
+| `tilt_latch_` | ERROR | IMU roll/pitch > limit | E-Stop press + release |
+| `proximity_latch_` | ERROR | LiDAR front arc < proximity_distance_m | E-Stop press + release |
+| `scan_dropout_latch_` | ERROR | `/scan` topic timeout | E-Stop press + release |
+| `imu_dropout_latch_` | ERROR | `/camera/camera/imu` topic timeout | E-Stop press + release |
+| `realsense_dropout_latch_` | ERROR | `/camera/camera/color/camera_info` timeout | E-Stop press + release VAGY `/robot/reset` ha `recovered` |
+| `watchdog_latch_` | FAULT | E-Stop bridge timeout | `/robot/reset` topic (Bool true), csak ha bridge online |
+| `rc_watchdog_latch_` | FAULT | `/robot/rc_mode` topic timeout (rc_received_ után) | `/robot/reset` |
+| `joint_states_dropout_latch_` | FAULT | RoboClaw TCP disconnect (`/hardware/roboclaw/connected = false`) vagy topic csend > 0.3s | `/robot/reset` VAGY E-Stop (ha RoboClaw reconnected) |
 
 **E-Stop reset szekvencia:**
 ```
@@ -269,13 +275,27 @@ estop_was_pressed_for_reset_ = false (induláskor)
                               → proximity_latch_ = false
                               → scan_dropout_latch_ = false
                               → imu_dropout_latch_ = false
-                              → watchdog_latch_ NEM törlődik
+                              → realsense_dropout_latch_ = false
+                              → joint_states_dropout_latch_ = false (csak ha RoboClaw reconnected)
+                              → watchdog_latch_ NEM törlődik E-Stop-pal
 ```
 
 Véletlen felengedés (press nélkül) **nem resetel** — az `estop_was_pressed_for_reset_` flag megakadályozza.
 
-**watchdog_latch_ reset:** `/robot/reset` (std_msgs/Bool, data=true) → csak ha `estop_watchdog_ok_ == true`.
-Ha bridge offline: "watchdog_latch nem törölhető" log + visszautasítás.
+**`/robot/reset` topic** (std_msgs/Bool, data=true) — feltételek:
+- `estop_watchdog_ok_ == true` kell (bridge online), különben visszautasítja
+- Törli: `watchdog_latch_`, `rc_watchdog_latch_`, `joint_states_dropout_latch_`
+- Törli `realsense_dropout_latch_` **csak ha** `realsense_dropout_recovered_ && !realsense_dropout_`
+  (kamera visszatért és stabil volt `sensor_recovery_stable_s` másodpercig)
+- NEM törli: `tilt_latch_`, `proximity_latch_`, `scan_dropout_latch_`, `imu_dropout_latch_`
+  → ezekhez fizikai E-Stop press + release szükséges
+
+**Gyorshivatkozás (terminálból):**
+```bash
+make reset                # /robot/reset küldése + safety-state ellenőrzés
+make realsense-restart    # RealSense container restart + 10s várakozás + auto reset
+make safety-state         # aktuális /safety/state JSON egy sorban
+```
 
 ---
 
@@ -308,13 +328,11 @@ Topic visszajön:
 
 | Szenzor | Topic | Watchdog aktív? |
 |---|---|---|
-| RPLidar A2 | `/scan` | ❌ (`proximity=0`, `enable_scan_watchdog: false`) |
-| RealSense IMU | `/camera/camera/imu` | ❌ (`tilt_roll=90°`, `enable_imu_watchdog: false`) |
+| RPLidar A2M12 | `/scan` | ✅ (`enable_scan_watchdog: true`, 2026-03-22 óta) |
+| RealSense kamera info | `/camera/camera/color/camera_info` | ✅ (`enable_realsense_watchdog: true`) |
+| RealSense IMU | `/camera/camera/imu` | ❌ (`tilt_roll=90°`, `enable_imu_watchdog: false`) — frame orientáció fix után engedélyezendő |
 | ZED 2i depth | — | PLACEHOLDER (commented out) |
 | Külső IMU | `/imu/data` | PLACEHOLDER (commented out) |
-
-**FIGYELEM:** ha a LiDAR nincs bedugva, a jelenlegi konfigban ez **nem látszik** a safety state-ben.
-Teszteléshez: `enable_scan_watchdog: true` a YAML-ban.
 
 ---
 
@@ -370,11 +388,14 @@ A safety_supervisor **kapuzza a mozgásparancsokat**:
 is_safe() = startup_passed_
          && !estop_active_
          && estop_watchdog_ok_
-         && !watchdog_latch_      // ← ÚJ: latchelt bridge fault
-         && !tilt_latch_          // ← ÚJ: latchelt tilt
-         && !proximity_latch_     // ← ÚJ: latchelt proximity
-         && !scan_dropout_latch_  // ← ÚJ: latchelt LiDAR dropout
-         && !imu_dropout_latch_   // ← ÚJ: latchelt IMU dropout
+         && !watchdog_latch_              // FAULT: E-Stop bridge timeout
+         && !rc_watchdog_latch_           // FAULT: RC bridge timeout (ha rc_received_)
+         && !joint_states_dropout_latch_  // FAULT: RoboClaw TCP disconnect
+         && !tilt_latch_                  // ERROR: IMU tilt
+         && !proximity_latch_             // ERROR: LiDAR proximity
+         && !scan_dropout_latch_          // ERROR: LiDAR topic timeout
+         && !imu_dropout_latch_           // ERROR: IMU topic timeout
+         && !realsense_dropout_latch_     // ERROR: RealSense camera_info timeout
 ```
 
 ---
@@ -394,26 +415,45 @@ Két timer fut párhuzamosan:
 
 ---
 
-#### /safety/state JSON struktúra (2026-03-20)
+#### /safety/state JSON struktúra (2026-03-22)
 
 ```json
 {
-  "state":              "ERROR",
-  "mode":               "RC",
-  "safe":               false,
-  "fault_reason":       "",
-  "error_reason":       "LiDAR timeout",
-  "estop":              false,
-  "watchdog_ok":        true,
-  "tilt":               false,
-  "proximity":          false,
-  "active_faults":      ["LiDAR timeout (2.3s)", "Tilt fault: roll=26.10° pitch=3.20°"],
-  "tilt_latch":         true,
-  "proximity_latch":    false,
-  "scan_dropout_latch": true,
-  "imu_dropout_latch":  false,
-  "watchdog_latch":     false
+  "state":                     "ERROR",
+  "mode":                      "RC",
+  "safe":                      false,
+  "fault_reason":              "",
+  "error_reason":              "RealSense timeout",
+  "estop":                     false,
+  "watchdog_ok":               true,
+  "tilt":                      false,
+  "proximity":                 false,
+  "active_faults":             ["RealSense timeout (0.00s) [recovered]"],
+  "tilt_latch":                false,
+  "proximity_latch":           false,
+  "scan_dropout_latch":        false,
+  "imu_dropout_latch":         false,
+  "watchdog_latch":            false,
+  "rc_watchdog_latch":         false,
+  "joint_states_dropout_latch": false,
+  "realsense_dropout_latch":   true
 }
+```
+
+**Olvasási segédlet:**
+- `state` = prioritási sorrend alapján az aktuális robot állapot (STARTING/FAULT/ESTOP/ERROR/RC/ROBOT/FOLLOW/SHUTTLE/IDLE)
+- `safe` = `is_safe()` eredménye — ha false, a cmd_vel gate zárva, a robot nem mozog
+- `fault_reason` = FAULT állapotban a kiváltó ok szövege
+- `error_reason` = ERROR állapotban az első aktív latch szövege
+- `active_faults` = összes aktív latch lista; `[recovered]` suffix = szenzor visszatért de latch még él
+- `*_latch` = egyedi latch boolean-ek — az összes egyidejűleg látható
+
+**Gyors lekérdezés:**
+```bash
+make safety-state
+# vagy közvetlenül:
+docker compose exec robot bash -c \
+  "source /opt/ros/jazzy/setup.bash && ros2 topic echo /safety/state --once --field data 2>/dev/null"
 ```
 
 **Foxglove script:** `~/Dropbox/share/safetystate.ts` — frissítve, az összes új mezőt tartalmazza.
@@ -428,11 +468,13 @@ Output mezők: `active_faults[]`, `active_faults_count`, `active_faults_str`, ö
 |---|---|---|---|
 | `/startup/armed` | Bool | TRANSIENT_LOCAL | `startup_passed_` |
 | `/robot/estop` | Bool | default | `estop_active_`, press/release reset detektálás |
-| `/robot/reset` | Bool | default | `watchdog_latch_` törlése (ÚJ) |
-| `/robot/rc_mode` | Float32 | default | `rc_mode_` |
+| `/robot/reset` | Bool | default | watchdog/rc/joint_states/realsense latch törlése |
+| `/robot/rc_mode` | Float32 | default | `rc_mode_`, RC watchdog forrása |
 | `/robot/mode` | String | default | `commanded_mode_`, `last_mode_time_` |
+| `/hardware/roboclaw/connected` | Bool | default | RoboClaw TCP állapot → `joint_states_dropout_latch_` |
 | `/camera/camera/imu` | Imu | SensorDataQoS | tilt check + IMU watchdog |
-| `/scan` | LaserScan | default | proximity check + scan watchdog |
+| `/camera/camera/color/camera_info` | CameraInfo | SensorDataQoS | RealSense watchdog |
+| `/scan` | LaserScan | BEST_EFFORT | proximity check + scan watchdog |
 | `cmd_vel_raw` | Twist | default | cmd_vel gate |
 
 **Publishers:**
@@ -447,7 +489,7 @@ Output mezők: `active_faults[]`, `active_faults_count`, `active_faults_str`, ö
 #### YAML paraméterek (config/robot_params.yaml — safety_supervisor szekció)
 
 ```yaml
-# Meglévő
+# Alap watchdog
 estop_timeout_s:      2.0    # ennyi némasága után FAULT + watchdog_latch
 tilt_roll_limit_deg:  90.0   # 90° = kikapcsolva (éles: 25°, kamera frame fix után)
 tilt_pitch_limit_deg: 90.0   # 90° = kikapcsolva (éles: 20°)
@@ -458,14 +500,18 @@ imu_process_rate_hz:  20.0   # IMU callback throttle (RealSense 200Hz → 20Hz)
 rc_mode_threshold:    0.5    # rc_mode_ > 0.5 → RC state
 mode_topic_timeout_s: 2.0    # /robot/mode ennyi másodperce nem jön → IDLE
 heartbeat_rate_hz:    10.0   # /robot/heartbeat rate
+rc_timeout_s:         5.0    # /robot/rc_mode csend (rc_received_ után) → FAULT
 
 # Szenzor watchdog (ÚJ, 2026-03-20)
-sensor_timeout_s:         2.0    # topic csend → dropout fault + latch
-sensor_recovery_stable_s: 2.0    # ennyi stabil adat → [recovered] jelölés (latch megmarad)
-enable_scan_watchdog:     false  # explicit ON (proximity=0 esetén is)
-enable_imu_watchdog:      false  # explicit ON (tilt=90° esetén is)
-# enable_zed_watchdog:    false  # PLACEHOLDER
-# enable_ext_imu_watchdog: false # PLACEHOLDER
+sensor_timeout_s:          2.0    # topic csend → dropout fault + latch
+sensor_recovery_stable_s:  2.0    # ennyi stabil adat → [recovered] jelölés (latch megmarad)
+enable_scan_watchdog:      true   # ✅ AKTÍV (2026-03-22 óta) — LiDAR dropout → ERROR
+enable_imu_watchdog:       false  # ❌ kikapcsolva (tilt frame orientáció fix után engedélyezni)
+enable_realsense_watchdog: true   # ✅ AKTÍV — /camera/camera/color/camera_info timeout → ERROR
+realsense_timeout_s:       2.0    # RealSense camera_info csend → realsense_dropout_latch
+roboclaw_status_timeout_s: 0.3    # /hardware/roboclaw/connected topic csend → FAULT (driver crash/freeze)
+# enable_zed_watchdog:     false  # PLACEHOLDER
+# enable_ext_imu_watchdog: false  # PLACEHOLDER
 ```
 
 ---
@@ -615,7 +661,98 @@ talicska-robot-ws/                         ← workspace gyökér
 
 ---
 
-## 12. Ismert Problémák (ERRATA)
+## 12. Docker Stack Architektúra
+
+### 12a. Container-ek
+
+| Container | Compose fájl | Szerepkör | Hálózat |
+|---|---|---|---|
+| `robot` | `docker-compose.yml` | ROS2 teljes stack (ros2_control, Nav2, SLAM, safety) | host |
+| `microros_agent` | `docker-compose.yml` | MicroROS UDP bridge (RP2040 bridge-ek → ROS2) | host |
+| `ros2_realsense` | `realsense-jetson/docker-compose.yml` | RealSense D435i driver (külön stack) | host |
+| `foxglove_bridge` | `docker-compose.tools.yml` | Foxglove WebSocket bridge | host |
+| `portainer` | `docker-compose.tools.yml` | Container management UI | host |
+
+### 12b. Device hozzáférés — fontos tudnivalók
+
+**Probléma:** `volumes: - /dev:/dev` csak láthatóvá teszi az eszközöket a containerben, de a Linux cgroup device whitelist **nem frissül**. Ennek következtében az ioctl hívások `EPERM` hibát adnak serial (ttyUSB) eszközökön.
+
+**Megoldás:** `privileged: true` a container definíciójában. Ez frissíti a cgroup-ot és engedélyezi a character device hozzáférést. Mind a `robot`, mind a `ros2_realsense` container `privileged: true`-val fut.
+
+```yaml
+# docker-compose.yml — robot service
+robot:
+  privileged: true   # serial port (rplidar ttyUSB) cgroup device access
+  volumes:
+    - /dev:/dev      # láthatóvá teszi az eszközöket
+```
+
+**Miért nem elég a `devices:` szekció a ttyUSB-hoz:** A `/dev/rplidar` egy udev symlink, nem valódi device fájl. A `devices:` szekció major:minor alapján dolgozik és nem követi a symlinkeket. A `privileged: true` + `/dev:/dev` kombinációja megbízhatóan működik.
+
+### 12c. USB Device Independence — udev szimlinkes
+
+A persistent szimlinkes megoldás garantálja, hogy bármelyik USB portba kerül az eszköz, mindig ugyanazon a `/dev/eszköznév` útvonalon érhető el.
+
+**RPLidar A2M12:**
+```
+Eszköz:   Silicon Labs CP2102 (idVendor=10c4, idProduct=ea60)
+Szimlink: /dev/rplidar → ttyUSB*
+Rule:     /etc/udev/rules.d/*rplidar*.rules
+Config:   robot_params.yaml → rplidar_node/serial_port: /dev/rplidar
+```
+
+**RealSense D435i:**
+```
+Eszköz:   Intel (idVendor=8086, idProduct=0b3a)
+Hozzáférés: /dev/bus/usb (devices: szekció + privileged)
+Detection: lsusb | grep "8086:0b3a" — make realsense-up ezt ellenőrzi
+```
+
+**udev rule telepítés:**
+```bash
+make realsense-fix   # RealSense udev rules
+# RPLidar udev rule: /etc/udev/rules.d/ manuálisan, vagy scripts/setup_udev.sh
+```
+
+### 12d. Volume mount stratégia
+
+A legtöbb konfig és launch fájl **volume-mount**olt — rebuild nem szükséges módosításhoz:
+
+| Mount | Mikor elég `docker compose restart`? |
+|---|---|
+| `./config:/config:ro` | ✅ robot_params.yaml változásnál |
+| `./robot_bringup/launch/*.py` | ✅ launch fájl változásnál |
+| `./robot_bringup/config/*.yaml` | ✅ nav2_params, slam_params, controllers |
+| `./robot_safety/launch/safety.launch.py` | ✅ safety launch változásnál |
+| C++ forrásfájlok (safety_supervisor.cpp stb.) | ❌ `docker compose build robot` szükséges |
+
+### 12e. RPLidar scan_mode konfiguráció
+
+**Fontos:** Az explicit `scan_mode: "Sensitivity"` string RESULT_OPERATION_NOT_SUPPORT hibát okoz az A2M12 firmware-rel (case/encoding mismatch). Az auto-select (`scan_mode: ""`) Sensitivity módot választ automatikusan:
+
+```
+Mód: Sensitivity | Sample rate: 16 kHz | Motor: ~6.6 Hz | Pont/scan: ~2424
+```
+
+Ez jobb mint a Standard mód (8 kHz, 10 Hz, ~800 pont/scan) — több angular resolution per scan, Nav2 és SLAM számára optimális.
+
+### 12f. Nav2 launch — params_file scope
+
+**Fontos:** A Nav2 include-ban explicit `params_file` kell, különben a szülő scope-ból örökölt `robot_params.yaml` kerül a Nav2 node-okba → SIGABRT crash.
+
+```python
+# robot_bringup/launch/robot.launch.py — navigation include
+launch_arguments={
+    "use_slam":          LaunchConfiguration("use_slam"),
+    "map_file":          LaunchConfiguration("map_file"),
+    "params_file":       PathJoinSubstitution([pkg, "config", "nav2_params.yaml"]),  # ← explicit!
+    "robot_params_file": params_file,
+}.items(),
+```
+
+---
+
+## 13. Ismert Problémák (ERRATA)
 
 | Probléma | Érintett | Státusz |
 |---|---|---|
@@ -636,3 +773,10 @@ talicska-robot-ws/                         ← workspace gyökér
 | safety_supervisor hibák nem latcheltek — operátori jóváhagyás nélkül törlődtek | robot_safety | ✅ Latch + E-Stop reset szekvencia implementálva 2026-03-20 |
 | szenzor dropout (LiDAR/IMU kihúzás) nem detektálódott safety szinten | robot_safety | ✅ Szenzor watchdog + dropout latch implementálva 2026-03-20 |
 | /safety/state csak egyetlen error_reason-t mutatott egyszerre | robot_safety | ✅ active_faults[] tömb hozzáadva 2026-03-20 |
+| Nav2 node-ok SIGABRT-val crasheltek induláskor | robot_bringup | ✅ robot.launch.py explicit params_file=nav2_params.yaml — LaunchConfiguration scope szivárgás javítva 2026-03-22 |
+| RPLidar nem publikált /scan-t (EPERM, Operation not permitted) | docker-compose.yml | ✅ privileged: true hozzáadva — /dev:/dev volume mount nem ad cgroup device access-t 2026-03-22 |
+| RPLidar scan_mode: Sensitivity crash (RESULT_OPERATION_NOT_SUPPORT) | robot_params.yaml | ✅ scan_mode: "" (auto-select) — firmware name mismatch javítva, Sensitivity mód fut 2026-03-22 |
+| LiDAR dropout nem jelent ERROR state-et — safe=false volt de state IDLE maradt | robot_safety | ✅ realsense_dropout_latch_ hozzáadva az ERROR feltételhez 2026-03-22 |
+| realsense_dropout_latch_ nem törölhető /robot/reset-tel | robot_safety | ✅ reset_cb() feltételes clearing: recovered && !dropout esetén törli 2026-03-22 |
+| scan_dropout_latch watchdog inaktív volt (proximity=0, enable=false) | robot_params.yaml | ✅ enable_scan_watchdog: true beállítva 2026-03-22 |
+| RealSense depth image nem jelent meg (Foxglove "waiting") | realsense-jetson | ✅ depth_module.depth_profile: 848x480x30 (volt: 640x480, infra-val nem egyezett) 2026-03-22 |
