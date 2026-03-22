@@ -4,7 +4,18 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ---
 
-## Aktív feladatok (2026-03-22)
+## Aktív feladatok (2026-03-22 23:55 CET)
+
+### 🔴 Magas prioritás (Biztonsági / Kritikus)
+
+- **SLAM lifecycle versió buildelése forrásból** — Bond timeout workaround (0.0) veszélyes
+- **E-Stop bridge pub frekvencia** — ~1 Hz jelenleg, cél ≥10 Hz (100ms reaction time)
+
+### 🟡 Közepes prioritás (Funkcionalitás)
+
+- **Status monitor ros2 topic echo optimalizálása** — 2026-03-22. `status_monitor.sh` és `ros2_health_check.sh` DDS subscribe latenciája miatt lassú (2-5s per topic). **Megoldva:** timeout-ok hozzáadva (3-5s), script mostmár stabil. **Marad:** topic echo-t lehet gyorsabbá tenni (pl. DDS QoS tuning, subscriber cache).
+
+- **ROS Bridge modulok javítása, újrafordítása — fordítási környezet eltört** — 2026-03-19. A Docker build/colcon fordítási környezet hibás állapotban van. Diagnosztizálni kell a törés okát (dependency, cache, build artifact), javítani, és újrafordítani az érintett modulokat. Érintett: Dockerfile, `colcon build`, Docker image.
 
 - **Safety szintek tesztelése — E-Stop, UTP kábel kicsúszás, hibakezelés** — 2026-03-19. Végig kell ellenőrizni a teljes safety láncot: (1) E-Stop bridge `/robot/estop` trigger → robot megáll, startup_supervisor FAULT állapot, (2) UTP kábel kicsúszás közben (RoboClaw TCP, bridge UDP) → mit csinál a stack, helyreáll-e, (3) egyéb fault forgatókönyvek (bridge timeout, SLAM crash, nav2 fail). Cél: dokumentálni a viselkedést, és minden esetben biztonságos leállást garantálni. Érintett: `startup_supervisor`, `scripts/prestart.sh`, `robot_bringup/launch/`.
 
