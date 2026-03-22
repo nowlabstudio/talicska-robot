@@ -725,6 +725,48 @@ BASHRC_BLOCK
     log "INFO" "Systemd + aliases telepítés kész"
 }
 
+# ── 9. Jetson Power Mode MAXN + jetson_clocks ────────────────────────────────
+setup_jetson_power() {
+    section "9. Fázis: Jetson Power Mode MAXN + jetson_clocks"
+
+    # Ellenőrzés: Jetson?
+    if ! command -v nvpmodel &>/dev/null; then
+        warn "nvpmodel nem található — nem Jetson platform?"
+        return 0
+    fi
+
+    # Aktuális power mode
+    local current_mode
+    current_mode=$(nvpmodel -q 2>/dev/null | grep "NV Power Mode" | awk '{print $NF}' || echo "unknown")
+
+    if [[ "$current_mode" == "MAXN" ]] || [[ "$current_mode" == "0" ]]; then
+        skip "Power mode már MAXN"
+    else
+        step "Power mode váltás: ${current_mode} → MAXN..."
+        if ! sudo nvpmodel -m 0 >> "${LOG_FILE}" 2>&1; then
+            warn "nvpmodel -m 0 sikertelen — sudoers hozzáférés szükséges"
+        else
+            sleep 1
+            current_mode=$(nvpmodel -q 2>/dev/null | grep "NV Power Mode" | awk '{print $NF}' || echo "unknown")
+            ok "Power mode: ${current_mode}"
+        fi
+    fi
+
+    # jetson_clocks: (1) service enable vagy (2) manual script hozzáadása
+    if command -v jetson_clocks &>/dev/null; then
+        step "jetson_clocks futtatása..."
+        if ! sudo jetson_clocks >> "${LOG_FILE}" 2>&1; then
+            warn "jetson_clocks futtatás sikertelen"
+        else
+            ok "jetson_clocks: futott"
+        fi
+    else
+        warn "jetson_clocks parancs nem található — NVIDIA tools telepítés szükséges"
+    fi
+
+    log "INFO" "Jetson Power Mode beállítás kész"
+}
+
 # ── Összesítő ─────────────────────────────────────────────────────────────────
 print_summary() {
     section "Telepítés összesítő"
@@ -797,6 +839,7 @@ main() {
     build_realsense_image    # 6b. RealSense image build (dustynv base)
     run_validation           # 7. validáció
     install_systemd          # 8. systemd services + bash aliases
+    setup_jetson_power       # 9. Jetson Power Mode MAXN + jetson_clocks
     print_summary
 
     echo ""

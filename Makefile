@@ -19,6 +19,9 @@ up: check realsense-up
 	@sudo docker compose up -d
 
 down:
+	@echo "RPLidar graceful shutdown..."
+	@sudo docker compose exec -T robot bash -c '$(ROS) ros2 lifecycle set /rplidar_node shutdown' 2>/dev/null || true
+	@sleep 1
 	@sudo docker compose stop
 	@if [ -n "$(REALSENSE_DIR)" ]; then \
 		cd $(REALSENSE_DIR) && sudo docker compose stop 2>/dev/null || true; \

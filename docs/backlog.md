@@ -38,6 +38,8 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ## Ismert hibák
 
+- **RPLidar motor nem áll le gracefully `make down` után** — 2026-03-22, reprodukálható. Az `auto_standby: true` paraméter azt kellene hogy jelentse, hogy a motor leáll, ha nincsenek subscriber-ek a `/scan`-re. Azonban, docker stop alatt a node leáll, és az `auto_standby` logikája nem aktiválódik helyesen. **Attempted fix:** `make down`-hoz `ros2 lifecycle set /rplidar_node shutdown` hozzáadva, de az rplidar_ros nem lifecycle-compatible (parancs silent fallback-kel zárult). **Root cause:** rplidar_ros driver nem explicit shutdown szekvenciát küld a hardverre. **Workaround:** `stop_grace_period: 60s` a docker-compose.yml-ben — elegendő idő a graceful shutdown-nak. **Megoldási opciók:** (1) rplidar_ros driver módosítása az explicit stop/shutdown logikához, (2) custom wrapper script a docker entrypoint-ban, (3) külső cleanup daemon. **Prioritás:** alacsony — a motor nem kockázat, csak műveleti kényelem.
+
 - **RC módban a jobb motor gyorsabban forog mint a bal** — Enkóder nélkül tesztelve (2026-03-15, open-loop). Lehetséges okok: (1) RoboClaw M1/M2 eltérő kalibrációja, (2) mechanikai ellenállás különbség, (3) RC mixer aszimmetria az adón. Enkóder bekötése + PID tuning után visszatérni — closed-loop-ban a controller kompenzálja. Addig: adón trimmelhető.
 
 - **E-Stop bridge publikálási frekvencia túl alacsony (~1 Hz)** — 2026-03-16, mérve. Egy 100kg-os robotnál az E-Stop jelzésnek ≤100ms-en belül meg kell érkeznie. Jelenlegi ~1 Hz = legrosszabb eset ~1s reakcióidő, elfogadhatatlan. Fix: bridge firmware publish rate emelése ≥10 Hz-re (100ms). Érintett firmware: ROS2-Bridge E-Stop (10.0.10.23), `/robot/estop` topic.
