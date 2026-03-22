@@ -43,25 +43,26 @@ _profiles_:
 # Eredmény: {**base, **override} dict kerül a Node(parameters=[...]) listájába.
 
   # ── NAVIGATION — Normál autonóm navigáció ──────────────────────────────────
-  # RPLidar: Sensitivity mód (nagy pontfelhő sűrűség), 10 Hz
+  # RPLidar: auto scan_mode (firmware dönti el a legjobb támogatott módot), 10 Hz
   # Nav2: 0.5 m/s, teljes costmap, SLAM aktív
-  # RealSense D435i: 640x480x30, IMU kikapcsolva (kamera frame orientáció fix backlogban)
+  # RealSense D435i: NEM AKTÍV ITT — lásd realsense2_camera_node szekció lent
   NAVIGATION:
     rplidar_node:
-      scan_mode:      Sensitivity
+      scan_mode:      ""              # auto — OPERATION_NOT_SUPPORT volt Sensitivity-vel (A2M12 firmware)
       scan_frequency: 10.0
 
+    # !! NEM AKTÍV — a RealSense külön Docker stackben fut (ros2_realsense container),
+    # saját konfigot olvas: realsense-jetson/realsense_params.yaml + launch argumentumok.
+    # Tényleges felbontás: depth=848x480x30 (infra default-tal egyezik), color=1280x720.
+    # FONTOS: depth és infra profil szélességének egyeznie kell — ha eltérnek,
+    # realsense2_camera v4 nem publikál depth image-et.
+    # Módosítás: realsense-jetson/docker-compose.yml launch command argumentumok.
     realsense2_camera_node:
-      # 640x480x30 — teljes felbontás, 30 Hz (navigációhoz elegendő)
       "rgb_camera.color_profile":   "640x480x30"
       "depth_module.depth_profile": "640x480x30"
-      # IMU: kikapcsolva — kamera fizikai orientációja nem egyezik base_link-kel
-      # (backlog: "IMU tilt check — RealSense kamera frame orientáció")
       enable_gyro:          false
       enable_accel:         false
-      # Sync: IMU nélkül sync felesleges és extra latenciát okoz
       enable_sync:          false
-      # Pointcloud: ki — Nav2 costmap LaserScan-ból (rplidar) épül NAVIGATION módban
       "pointcloud.enable":  false
 
     controller_server:
@@ -76,25 +77,22 @@ _profiles_:
   # ── DOCKING — Célba állás / pontos megközelítés ────────────────────────────
   # RPLidar: Standard mód, 5 Hz (energiatakarékos közelítésnél)
   # Nav2: 0.1 m/s (lassú, pontos)
-  # RealSense D435i: 424x240x6 (Audit #10 fix: alacsony CPU terhelés)
-  #   IMU: letiltva (Motion Module hw error — Audit #7)
-  #   Sync: letiltva (IMU nélkül a sync blokkolja a depth streamet)
-  #   Pointcloud: BE — dockoló célpont 3D detektáláshoz
+  # RealSense D435i: NEM AKTÍV ITT — lásd realsense2_camera_node szekció lent
   DOCKING:
     rplidar_node:
       scan_mode:      Standard
       scan_frequency: 5.0
 
+    # !! NEM AKTÍV — a RealSense külön Docker stackben fut (ros2_realsense container).
+    # Profil-alapú (NAVIGATION vs DOCKING) felbontásváltás nem lehetséges amíg a RealSense
+    # saját stack-ből indul. Megoldás: a realsense stack ROBOT_MODE-t olvasson és
+    # conditionálisan adjon át eltérő launch argumentumokat.
     realsense2_camera_node:
-      # 424x240x6 — alacsony felbontás, 6 Hz (Audit #10: no sync, no IMU)
       "rgb_camera.color_profile":   "424x240x6"
       "depth_module.depth_profile": "424x240x6"
-      # IMU: letiltva (Motion Module hardware hiba — Audit #7)
       enable_gyro:          false
       enable_accel:         false
-      # Sync: letiltva — IMU nélkül a sync blokkolja a depth stream frameket
       enable_sync:          false
-      # Pointcloud: BE — dockoló célpont 3D detektáláshoz szükséges
       "pointcloud.enable":  true
 
     controller_server:
@@ -116,16 +114,16 @@ _profiles_:
   # ZED 2i kamera: még nincs implementálva — minden érték PLACEHOLDER.
   # RealSense NEM indul FOLLOW módban (a ZED veszi át a szerepét).
   # RPLidar és Nav2 sebességek: NAVIGATION-nal azonos (gyors követés).
-  # Backlog: "ZED kamera integráció" — robot_architecture.md tervek szerint.
+  # Backlog: "ZED 2i integráció"
   FOLLOW:
     rplidar_node:
-      scan_mode:      Sensitivity
+      scan_mode:      ""              # auto — lásd NAVIGATION megjegyzés
       scan_frequency: 10.0
 
-    # ZED 2i — PLACEHOLDER paraméterek
-    # ZED ROS2 wrapper (zed_ros2_wrapper) param formátum: dotted keys
-    # A ZED natív felbontásai: HD2K/HD1080/HD720/VGA — 640x480 nem pontos,
-    # VGA (672×376) a legközelebbi natív mód; a spec szerinti 640x480x30 finomhangolást igényel.
+    # !! NEM AKTÍV — ZED 2i nincs integrálva. PLACEHOLDER értékek.
+    # Ha a ZED saját Docker stackben fut (várható), ugyanaz az elkülönülési probléma
+    # áll fenn mint a RealSense-nél: ez a szekció nem kerül felolvasásra.
+    # Backlog: "ZED 2i integráció" — udev, docker setup, zed_ros2_wrapper launch.
     zed_node:
       "general.camera_resolution": 3    # 3=VGA (672×376) — közelítő, PLACEHOLDER
       "general.grab_frame_rate":   30
@@ -153,12 +151,12 @@ _profiles_:
 # ── RPLidar A2M12 ─────────────────────────────────────────────────────────────
 rplidar_node:
   ros__parameters:
-    serial_port:      /dev/ttyUSB0       # docker-compose.yml: /dev/rplidar → /dev/ttyUSB0
+    serial_port:      /dev/rplidar        # udev persistent symlink — /dev:/dev mount miatt ttyUSB0 mapping nem érvényes
     serial_baudrate:  256000              # A2M12: 256 kbaud (M8: 115200)
     frame_id:         lidar_link
     inverted:         false
     angle_compensate: true
-    scan_mode:        Sensitivity         # NAVIGATION default; DOCKING: Standard
+    scan_mode:        ""                  # auto-select (OPERATION_NOT_SUPPORT volt Sensitivity-vel); DOCKING: Standard
     scan_frequency:   10.0               # NAVIGATION default; DOCKING: 5.0
     # QoS override: BEST_EFFORT publisher
     # Audit #4: RELIABLE→BEST_EFFORT mismatch extra CycloneDDS buffert okozott.
@@ -403,7 +401,7 @@ safety_supervisor:
     # imu watchdog aktív:  tilt_roll_limit_deg < 90 VAGY enable_imu_watchdog: true
     sensor_timeout_s:         2.0    # topic csend → dropout fault
     sensor_recovery_stable_s: 2.0    # ennyi stabil adat → [recovered] jelölés (latch MEGMARAD)
-    enable_scan_watchdog:     false  # explicit ON (proximity=0 esetén is)
+    enable_scan_watchdog:     true   # LiDAR dropout → scan_dropout_latch → ERROR
     enable_imu_watchdog:      false  # explicit ON (tilt=90° esetén is)
     # PLACEHOLDER (disabled) — ZED 2i és külső IMU watchdog
     # enable_zed_watchdog:      false
@@ -477,9 +475,25 @@ roboclaw_hardware:
   auto_home_on_startup:    false
   position_limits_enabled: false
 
-# ── RealSense D435i — Alap konfiguráció (NAVIGATION default) ────────────────
-# Külön Isaac ROS Docker stackben fut — ez jövőbeli integráció előkészítése.
-# Profile overrides: _profiles_/NAVIGATION és _profiles_/DOCKING már megvan.
+# ── RealSense D435i — REFERENCIA (NEM AKTÍV) ─────────────────────────────────
+#
+# !! FIGYELEM: ezt a szekciót a ros2_realsense container NEM olvassa.
+# A RealSense külön Docker stackben fut, saját konfigból:
+#   Repo:        realsense-jetson/
+#   Konfig:      realsense-jetson/realsense_params.yaml  (pontcloud, IMU beállítások)
+#   Launch argok: docker-compose.realsense.yml (depth_module.depth_profile stb.)
+#
+# Tényleges felbontás futásidőben:
+#   depth:  848x480x30  (infra default-tal egyezik — eltérő szélesség esetén nincs depth kép)
+#   color:  1280x720    (D435i default — rgb_camera.color_profile nincs felülírva!)
+#
+# Ha módosítani kell: realsense-jetson/realsense_params.yaml és/vagy a
+# ros2_realsense container launch command argumentumait kell szerkeszteni.
+#
+# Profil-alapú (NAVIGATION/DOCKING) váltás jelenleg NEM lehetséges:
+# a RealSense container nem olvas ROBOT_MODE-ot.
+# (_profiles_/NAVIGATION/realsense2_camera_node és _profiles_/DOCKING/realsense2_camera_node
+# csak dokumentációs célú referenciaként marad itt.)
 realsense2_camera_node:
   ros__parameters:
     "rgb_camera.color_profile":   "640x480x30"

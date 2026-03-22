@@ -90,6 +90,8 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ## Jövőbeli hardware
 
+- **ZED 2i integráció** — 2026-03-22. A FOLLOW üzemmód tárgykövetési képességéhez szükséges. Teendők: (1) udev rule létrehozása a ZED 2i USB eszközhöz (Stereolabs idVendor: 0x2b03, idProduct modell-specifikus) — persistent `/dev/zed` szimlink; (2) Docker stack megtervezése: külön container (mint a RealSense) vagy beintegrálás a robot containerbe; (3) `zed_ros2_wrapper` launch konfiguráció; (4) Ha külön container, ugyanaz az elkülönülési probléma áll fenn mint a RealSense-nél (robot_params.yaml zed_node szekciói NEM lesznek aktívak); (5) `_profiles_/FOLLOW/zed_node` placeholder értékeinek validálása valós hardveren. Érintett: `config/robot_params.yaml` (FOLLOW profil), docker-compose, új udev rule.
+
 - **PEDAL bridge → winch vezérlés** — 10.0.10.21, jelenleg nincs bekötve (channelek üresek). Tervezett átállás: a pedál ROS bridge a winch vezérlésére lesz használva. Integrálás a rendszerbe (safety watchdog, topic subscription) csak a hardver átépítése után következik.
 - **Sabertooth (billencs M3)** — 10.0.10.25, jövőbeli
 - **Tilt bridge firmware** — ROS2-Bridge platformon, még nem létezik

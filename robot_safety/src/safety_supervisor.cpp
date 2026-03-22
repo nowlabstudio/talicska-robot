@@ -347,9 +347,20 @@ private:
     joint_states_dropout_latch_   = false;
     // joint_states_watchdog_ok_ is managed by /hardware/roboclaw/connected subscription callbacks;
     // re-latch guard in watchdog_tick re-latches immediately if TCP is still down.
+
+    // RealSense dropout latch: csak akkor törölhető /robot/reset-tel, ha a kamera már visszatért.
+    // Ha még mindig offline, a watchdog_tick újra beállítja (re-latch guard nincs, de timeout
+    // azonnal tüzel → explicit nem engedjük meg az offline reset-et).
+    if (realsense_dropout_recovered_ && !realsense_dropout_) {
+      realsense_dropout_latch_      = false;
+      realsense_recovering_         = false;
+      realsense_dropout_recovered_  = false;
+    }
+
     persist_latches();
     RCLCPP_WARN(get_logger(),
-      "/robot/reset: watchdog_latch, rc_watchdog_latch, joint_states_dropout_latch törölve");
+      "/robot/reset: watchdog_latch, rc_watchdog_latch, joint_states_dropout_latch törölve%s",
+      (!realsense_dropout_latch_) ? ", realsense_dropout_latch törölve (recovered)" : "");
   }
 
   void imu_cb(const sensor_msgs::msg::Imu::SharedPtr msg)
@@ -701,8 +712,9 @@ private:
       return;
     }
 
-    // Priority 4: sensor/tilt/proximity latch-alapú ERROR
-    if (tilt_latch_ || proximity_latch_ || scan_dropout_latch_ || imu_dropout_latch_) {
+    // Priority 4: sensor/tilt/proximity/realsense latch-alapú ERROR
+    if (tilt_latch_ || proximity_latch_ || scan_dropout_latch_ || imu_dropout_latch_ ||
+        realsense_dropout_latch_) {
       state = "ERROR";
       mode  = last_active_mode_;
       // error_reason: az első aktív latch leírása
@@ -713,8 +725,10 @@ private:
         error_reason = "Proximity fault: " + fmt(last_proximity_range_) + "m";
       } else if (scan_dropout_latch_) {
         error_reason = "LiDAR timeout";
-      } else {
+      } else if (imu_dropout_latch_) {
         error_reason = "IMU timeout";
+      } else {
+        error_reason = "RealSense timeout";
       }
       return;
     }

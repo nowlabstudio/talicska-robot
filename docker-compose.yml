@@ -36,12 +36,12 @@ services:
     network_mode: host
     ipc: host
     restart: unless-stopped
+    privileged: true          # serial port (rplidar ttyUSB) cgroup device access — /dev:/dev volume alone is insufficient
     depends_on:
       - microros_agent
     env_file: .env
     devices:
       - /dev/bus/usb:/dev/bus/usb
-      - /dev/rplidar:/dev/ttyUSB0   # RPLidar A2 — persistent udev symlink (99-rplidar.rules)
     volumes:
       - /dev:/dev
       - ./cyclonedds.xml:/root/talicska-robot/cyclonedds.xml:ro

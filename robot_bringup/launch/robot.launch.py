@@ -117,7 +117,8 @@ def generate_launch_description():
                 launch_arguments={
                     "use_slam":          LaunchConfiguration("use_slam"),
                     "map_file":          LaunchConfiguration("map_file"),
-                    "robot_params_file": params_file,   # NEM "params_file"!
+                    "params_file":       PathJoinSubstitution([pkg, "config", "nav2_params.yaml"]),
+                    "robot_params_file": params_file,
                 }.items(),
                 condition=IfCondition(LaunchConfiguration("use_nav")),
             )

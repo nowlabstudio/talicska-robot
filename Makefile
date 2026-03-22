@@ -3,7 +3,7 @@ EXEC := sudo docker compose exec robot bash -c
 
 ROS := source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && export CYCLONEDDS_URI=file:///root/talicska-robot/cyclonedds.xml &&
 
-.PHONY: up down rc-up rc-down check check-rc agent-restart realsense-up realsense-down realsense-logs realsense-fix topics nodes rc estop motors cmd-stop logs ps
+.PHONY: up down rc-up rc-down check check-rc agent-restart realsense-up realsense-down realsense-logs realsense-fix realsense-restart reset safety-state topics nodes rc estop motors cmd-stop logs ps
 
 ## Stack lifecycle — orchestráció
 ##   make up      = prestart check → realsense container → fő stack
@@ -77,6 +77,27 @@ realsense-fix:
 	fi
 	@cd $(REALSENSE_DIR) && make install-udev
 
+## RealSense újraindítás USB reconnect után, majd safety latch reset
+## Sorrend: container restart → 10s várakozás (camera_info megjelenéséig) → /robot/reset
+realsense-restart:
+	@if [ -z "$(REALSENSE_DIR)" ]; then \
+		echo "HIBA: realsense-jetson repo nem található"; exit 1; \
+	fi
+	@echo "── RealSense container újraindítása ──"
+	@cd $(REALSENSE_DIR) && sudo docker compose restart ros2-realsense
+	@echo "Várakozás a kamera inicializációjára (10s)..."
+	@sleep 10
+	@$(MAKE) reset
+
+## Safety latch reset — watchdog_latch, rc_watchdog_latch, joint_states_dropout_latch,
+## realsense_dropout_latch (ha recovered) törlése.
+## NEM törli: tilt_latch, proximity_latch, scan_dropout_latch, imu_dropout_latch → E-Stop press+release
+reset:
+	@echo "── /robot/reset küldése ──"
+	@$(EXEC) "$(ROS) ros2 topic pub --once /robot/reset std_msgs/msg/Bool '{data: true}'"
+	@echo ""
+	@$(MAKE) safety-state
+
 ## Tools (Foxglove + Portainer) — robot stack leállása NEM érinti
 tools-up:
 	@sudo docker compose -f docker-compose.tools.yml up -d --build
@@ -133,7 +154,7 @@ estop:
 	$(EXEC) "$(ROS) timeout 4 ros2 topic echo /robot/estop"
 
 safety-state:
-	$(EXEC) "$(ROS) timeout 4 ros2 topic echo /safety/state"
+	$(EXEC) "$(ROS) ros2 topic echo /safety/state --once --field data"
 
 ## Diagnostics
 topic-info:
