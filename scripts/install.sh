@@ -663,6 +663,29 @@ install_systemd() {
         fi
     fi
 
+    # ── dropbox-sync.service (rclone mount) ────────────────────────────────────
+    local dropbox_src="${systemd_src}/dropbox-sync.service"
+    local dropbox_dst="${user_systemd_dir}/dropbox-sync.service"
+    if [[ ! -f "${dropbox_src}" ]]; then
+        warn "Hiányzó unit fájl: ${dropbox_src} — kihagyva"
+    else
+        if [[ -f "${dropbox_dst}" ]] && diff -q "${dropbox_src}" "${dropbox_dst}" &>/dev/null; then
+            skip "dropbox-sync.service: már naprakész"
+        else
+            step "dropbox-sync.service másolása → ${dropbox_dst}..."
+            run cp "${dropbox_src}" "${dropbox_dst}"
+            ok "dropbox-sync.service: telepítve"
+        fi
+        if systemctl --user is-enabled dropbox-sync.service &>/dev/null 2>&1; then
+            skip "dropbox-sync.service: már enabled"
+        else
+            step "dropbox-sync.service engedélyezése..."
+            run systemctl --user daemon-reload
+            run systemctl --user enable dropbox-sync.service
+            ok "dropbox-sync.service: enabled"
+        fi
+    fi
+
     # ── loginctl enable-linger ─────────────────────────────────────────────────
     if loginctl show-user "${user}" 2>/dev/null | grep -q "Linger=yes"; then
         skip "loginctl linger: ${user} már engedélyezve"

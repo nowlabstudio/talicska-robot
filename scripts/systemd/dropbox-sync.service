@@ -1,0 +1,15 @@
+[Unit]
+Description=Dropbox rclone mount
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/fusermount -u /home/eduard/Dropbox
+ExecStart=/bin/bash /home/eduard/dropbox_sync.sh
+ExecStop=-/usr/bin/fusermount -u /home/eduard/Dropbox
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=default.target

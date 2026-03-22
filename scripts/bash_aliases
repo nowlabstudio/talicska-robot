@@ -23,16 +23,17 @@ alias robot-status="sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.P
 alias robot-logs="sudo docker compose -f ${TALICSKA_DIR}/docker-compose.yml logs -f robot"
 
 # ── Safety ────────────────────────────────────────────────────────────────────
-alias robot-safety="sudo docker exec robot ros2 topic echo /safety/state --once"
-alias robot-reset="sudo docker exec robot ros2 topic pub --once /robot/reset std_msgs/msg/Bool '{data: true}'"
+# ROS2 env fix: docker compose exec -T örökli container env-t (RMW_IMPLEMENTATION, CYCLONEDDS_URI)
+alias robot-safety="sudo docker compose -f ${TALICSKA_DIR}/docker-compose.yml exec -T robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 4 ros2 topic echo /safety/state --once 2>/dev/null'"
+alias robot-reset="sudo docker compose -f ${TALICSKA_DIR}/docker-compose.yml exec -T robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && ros2 topic pub --once /robot/reset std_msgs/msg/Bool \"{data: true}\"'"
 
 # ── ROS2 debug ────────────────────────────────────────────────────────────────
-alias robot-topics="sudo docker exec robot ros2 topic list"
-alias robot-nodes="sudo docker exec robot ros2 node list"
+alias robot-topics="sudo docker compose -f ${TALICSKA_DIR}/docker-compose.yml exec -T robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 3 ros2 topic list 2>/dev/null'"
+alias robot-nodes="sudo docker compose -f ${TALICSKA_DIR}/docker-compose.yml exec -T robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 5 ros2 node list 2>/dev/null'"
 
 # ── Container újraindítás ─────────────────────────────────────────────────────
 alias robot-agent-restart="sudo docker compose -f ${TALICSKA_DIR}/docker-compose.yml restart microros_agent"
-alias robot-realsense-restart="sudo docker compose -f ${TALICSKA_DIR}/docker-compose.yml restart realsense"
+alias robot-realsense-restart="sudo docker compose -f ${TALICSKA_DIR}/docker-compose.yml restart ros2_realsense"
 
 # ── Systemd service ───────────────────────────────────────────────────────────
 alias robot-enable="sudo systemctl enable talicska-robot.service && echo 'talicska-robot.service engedélyezve (rebootnál indul)'"

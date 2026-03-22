@@ -77,7 +77,10 @@ done
 section "3. ROS2 NODES"
 
 step "Attempting to list ROS2 nodes..."
-NODES=$(docker exec robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 3 ros2 node list 2>/dev/null' 2>/dev/null || echo "")
+# docker compose exec -T örökli container env-t (RMW_IMPLEMENTATION, CYCLONEDDS_URI)
+NODES=$(docker compose exec -T robot bash -c \
+  'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && \
+   timeout 5 ros2 node list 2>/dev/null' 2>/dev/null || echo "")
 
 if [ -z "$NODES" ]; then
     warn "ROS2 network issue — nodes unreachable"
@@ -111,8 +114,13 @@ CRITICAL_TOPICS=(
     "/cmd_vel"
 )
 
+# Egyszeri topic list fetch (timeout 3s)
+TOPIC_LIST=$(docker compose exec -T robot bash -c \
+  'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && \
+   timeout 3 ros2 topic list 2>/dev/null' 2>/dev/null || echo "")
+
 for topic in "${CRITICAL_TOPICS[@]}"; do
-    if docker exec robot bash -c "source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 1 ros2 topic list 2>/dev/null | grep -q '^${topic}$'" 2>/dev/null; then
+    if echo "$TOPIC_LIST" | grep -q "^${topic}$"; then
         ok "${topic}: AVAILABLE"
     else
         warn "${topic}: NOT FOUND"
@@ -122,7 +130,11 @@ done
 # ── Startup State ─────────────────────────────────────────────────────────────
 section "5. STARTUP STATE"
 
-STARTUP=$(docker exec robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 2 ros2 topic echo /startup/state --once 2>/dev/null | grep "^data" | head -1 || echo ""' 2>/dev/null)
+# RAW lekérés docker compose exec -T-vel
+STARTUP_RAW=$(docker compose exec -T robot bash -c \
+  'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && \
+   timeout 4 ros2 topic echo /startup/state --once 2>/dev/null' 2>/dev/null || echo "")
+STARTUP=$(echo "$STARTUP_RAW" | grep "^data:" | head -1 | sed "s/^data: '//;s/'$//")
 
 if [ -z "$STARTUP" ]; then
     warn "Startup state: UNREACHABLE"
@@ -147,7 +159,11 @@ fi
 # ── Safety State ──────────────────────────────────────────────────────────────
 section "6. SAFETY STATE"
 
-SAFETY=$(docker exec robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 2 ros2 topic echo /safety/state --once 2>/dev/null | grep "^data" | head -1 || echo ""' 2>/dev/null)
+# RAW lekérés docker compose exec -T-vel
+SAFETY_RAW=$(docker compose exec -T robot bash -c \
+  'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && \
+   timeout 4 ros2 topic echo /safety/state --once 2>/dev/null' 2>/dev/null || echo "")
+SAFETY=$(echo "$SAFETY_RAW" | grep "^data:" | head -1 | sed "s/^data: '//;s/'$//")
 
 if [ -z "$SAFETY" ]; then
     warn "Safety state: UNREACHABLE"
@@ -195,8 +211,10 @@ fi
 # ── Summary ───────────────────────────────────────────────────────────────────
 section "8. SUMMARY"
 
-STARTUP_OK=$(docker exec robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 2 ros2 topic echo /startup/state --once 2>/dev/null | grep '"'"'PASSED'"'"'' &>/dev/null && echo "1" || echo "0"' 2>/dev/null)
-SAFETY_OK=$(docker exec robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 2 ros2 topic echo /safety/state --once 2>/dev/null | grep '"'"'"safe":true'"'"'' &>/dev/null && echo "1" || echo "0"' 2>/dev/null)
+# Section 8 logikai hiba fix: az előbb lekért JSON változókat felhasználjuk
+# (nem újra docker exec hívással, mivel a `&>/dev/null` a subshellben elnyeli az echo-t)
+STARTUP_OK=$(echo "$STARTUP" | grep -q "PASSED" && echo "1" || echo "0")
+SAFETY_OK=$(echo "$SAFETY" | grep -q '"safe":true' && echo "1" || echo "0")
 
 if [ "$STARTUP_OK" = "1" ] && [ "$SAFETY_OK" = "1" ]; then
     echo ""

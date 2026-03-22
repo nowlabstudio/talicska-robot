@@ -1,7 +1,7 @@
 # Robot Project — Teljes Projekt Áttekintés
 
-**Verzió:** 2.4
-**Dátum:** 2026-03-22
+**Verzió:** 2.5
+**Dátum:** 2026-03-23
 **Státusz:** Implementáció folyamatban — Nav2 + SLAM + LiDAR működik, safety teljes latch rendszer kész, navigációs teszt folyamatban
 
 ---
@@ -51,18 +51,18 @@ footprint: "[[0.505, 0.4], [0.505, -0.4], [-0.595, -0.4], [-0.595, 0.4]]"
 
 | Komponens | Hardver | Kapcsolat | IP | Szerepkör |
 |---|---|---|---|---|
-| Tier 2+3 | Jetson Orin Nano | — | 192.168.68.125 | ROS2, Nav2, AI, kamera |
-| MicroROS Agent | Jetson folyamat | UDP :8888 | 192.168.68.125 | Bridge MCU-k → ROS2 |
-| RC bridge | RP2040 + W6100 | ETH | 192.168.68.202 | 6ch RC (hajtás + mód) |
-| Input bridge | RP2040 + W6100 | ETH | 192.168.68.203 | E-Stop, A/B gombok, Follow Me |
-| Tilt bridge | RP2040 + W6100 | ETH | 192.168.68.204 | RC tilt + Sabertooth PWM + endstopok |
-| Pedal bridge | RP2040 + W6100 | ETH | 192.168.68.201 | Pedál bemenet (WIP) |
-| RoboClaw | Motor ctrl | ETH→USR-K6→RS232 | 192.168.68.60:8234 | Differenciálhajtás |
+| Tier 2+3 | Jetson Orin Nano | — | 10.0.10.1 | ROS2, Nav2, AI, kamera |
+| MicroROS Agent | Jetson folyamat | UDP :8888 | 10.0.10.1 | Bridge MCU-k → ROS2 |
+| RC bridge | RP2040 + W6100 | ETH | 10.0.10.22 | 6ch RC (hajtás + mód) |
+| Input bridge | RP2040 + W6100 | ETH | 10.0.10.23 | E-Stop, A/B gombok, Follow Me |
+| Tilt bridge | RP2040 + W6100 | ETH | 10.0.10.204 | RC tilt + Sabertooth PWM + endstopok |
+| Pedal bridge | RP2040 + W6100 | ETH | 10.0.10.21 | Pedál bemenet (WIP) |
+| RoboClaw | Motor ctrl | ETH→USR-K6→RS232 | 10.0.10.24:8234 | Differenciálhajtás |
 | Sabertooth 2x32 | Tilt motor ctrl | PWM from Tilt bridge | — | Billentő motor |
 | RealSense D435i | Mélységkamera | USB3 Jetsonen | — | Depth, stereo IR, IMU |
 | RPLidar A2M12 | 2D LiDAR | USB Jetsonen → `/dev/rplidar` (udev) | — | SLAM + Nav2 + safety zónák |
 
-**Hálózat:** 192.168.68.x/24 labor LAN → jövőben VLAN szegmentáció
+**Hálózat:** `10.0.10.x/24` robot-internal — Jetson enP8p1s0: 10.0.10.1/24 (nem labor LAN, hanem Jetson→bridge dedicated ethernetes hálózat)
 
 ---
 
@@ -490,7 +490,7 @@ Output mezők: `active_faults[]`, `active_faults_count`, `active_faults_str`, ö
 
 ```yaml
 # Alap watchdog
-estop_timeout_s:      2.0    # ennyi némasága után FAULT + watchdog_latch
+estop_timeout_s:      5.0    # 2026-03-23: javítva 2.0→5.0 (E-Stop firmware ~1Hz pub, UDP jitter → 5s timeout safety margin)
 tilt_roll_limit_deg:  90.0   # 90° = kikapcsolva (éles: 25°, kamera frame fix után)
 tilt_pitch_limit_deg: 90.0   # 90° = kikapcsolva (éles: 20°)
 proximity_distance_m: 0.0    # 0.0 = kikapcsolva (LiDAR szögmaszk fix után)
@@ -509,7 +509,7 @@ enable_scan_watchdog:      true   # ✅ AKTÍV (2026-03-22 óta) — LiDAR dropo
 enable_imu_watchdog:       false  # ❌ kikapcsolva (tilt frame orientáció fix után engedélyezni)
 enable_realsense_watchdog: true   # ✅ AKTÍV — /camera/camera/color/camera_info timeout → ERROR
 realsense_timeout_s:       2.0    # RealSense camera_info csend → realsense_dropout_latch
-roboclaw_status_timeout_s: 0.3    # /hardware/roboclaw/connected topic csend → FAULT (driver crash/freeze)
+roboclaw_status_timeout_s: 2.0    # 2026-03-23: javítva 0.3→2.0 /hardware/roboclaw/connected topic csend → FAULT
 # enable_zed_watchdog:     false  # PLACEHOLDER
 # enable_ext_imu_watchdog: false  # PLACEHOLDER
 ```
@@ -798,7 +798,8 @@ Boot
 ### 14.1 talicska-power.service
 
 - System service, `Type=oneshot`, `RemainAfterExit=yes`
-- `ExecStart=/usr/bin/nvpmodel -m 0` + `ExecStart=/usr/bin/jetson_clocks`
+- `ExecStart=/usr/bin/jetson_clocks` (csak ez — nvpmodel eltávolítva 2026-03-23)
+- Power Mode MAXN: `sudo nvpmodel -m 2 && sudo jetson_clocks` (manuálisan kell futtatni — `/usr/bin/nvpmodel` path nem létezik)
 - Boot után fut, a robot service előtt
 - Engedélyezve (`enabled`) — mindig lefut rebootnál
 
@@ -833,8 +834,10 @@ Boot
 | `robot-down` | `make down` |
 | `robot-restart` | `make down && make up` |
 | `robot-shutdown` | `make down && sudo shutdown -h now` |
-| `robot-safety` | `ros2 topic echo /safety/state --once` |
-| `robot-reset` | `/robot/reset` topic pub |
+| `robot-safety` | `docker compose exec -T robot bash -c "source … && ros2 topic echo /safety/state --once"` (2026-03-23: docker exec → docker compose exec -T) |
+| `robot-reset` | `docker compose exec -T robot bash -c "source … && ros2 topic pub --once /robot/reset std_msgs/msg/Bool"` (2026-03-23: docker exec → docker compose exec -T) |
+| `robot-topics` | `docker compose exec -T robot bash -c "source … && ros2 topic list"` (2026-03-23: docker exec → docker compose exec -T) |
+| `robot-nodes` | `docker compose exec -T robot bash -c "source … && ros2 node list"` (2026-03-23: docker exec → docker compose exec -T) |
 | `robot-enable` | `systemctl enable talicska-robot.service` |
 | `robot-disable` | `systemctl disable talicska-robot.service` |
 | `robot-service-status` | power + robot service status |

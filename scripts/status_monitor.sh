@@ -189,21 +189,31 @@ for bridge in "${BRIDGES[@]}"; do
 done
 
 # ════════════════════════════════════════════════════════════════════════════════
-# 4. ROS2 NODES (simplified)
+# 4. ROS2 NODES (egyszeri lekérés, bash szűrés)
 # ════════════════════════════════════════════════════════════════════════════════
 
 section "4️⃣ ROS2 NODES"
 
 CRITICAL_NODES=("/safety_supervisor" "/startup_supervisor" "/controller_manager" "/rplidar_node" "/slam_toolbox" "/foxglove_bridge")
 FOUND_COUNT=0
-for node in "${CRITICAL_NODES[@]}"; do
-    if docker exec robot bash -c "source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 1 ros2 node list 2>/dev/null | grep -q '${node}'" 2>/dev/null; then
-        ok "$(echo $node | sed 's/\///g'): UP"
-        ((FOUND_COUNT++))
-    else
-        warn "$(echo $node | sed 's/\///g'): NOT FOUND"
-    fi
-done
+
+# Egyszeri node list lekérés docker compose exec -T-vel (örökli env-t)
+NODE_LIST=$(docker compose exec -T robot bash -c \
+  "source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && \
+   timeout 5 ros2 node list 2>/dev/null" 2>/dev/null || echo "")
+
+if [ -z "$NODE_LIST" ]; then
+    warn "ROS2 nodes: UNREACHABLE (network issue)"
+else
+    for node in "${CRITICAL_NODES[@]}"; do
+        if echo "$NODE_LIST" | grep -q "^${node}$"; then
+            ok "$(echo $node | sed 's/\///g'): UP"
+            ((FOUND_COUNT++))
+        else
+            warn "$(echo $node | sed 's/\///g'): NOT FOUND"
+        fi
+    done
+fi
 echo ""
 echo "   Summary: ${FOUND_COUNT}/${#CRITICAL_NODES[@]} critical nodes found"
 
@@ -213,8 +223,16 @@ echo "   Summary: ${FOUND_COUNT}/${#CRITICAL_NODES[@]} critical nodes found"
 
 section "5️⃣ STARTUP & SAFETY STATE"
 
-STARTUP_JSON=$(timeout 5 docker exec robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 2 ros2 topic echo /startup/state --once 2>/dev/null | grep "^data" | sed "s/^data: //" | head -1' 2>/dev/null || echo "")
-SAFETY_JSON=$(timeout 5 docker exec robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 2 ros2 topic echo /safety/state --once 2>/dev/null | grep "^data" | sed "s/^data: //" | head -1' 2>/dev/null || echo "")
+# RAW topic echo lekérés (docker compose exec -T örökli env-t)
+STARTUP_RAW=$(docker compose exec -T robot bash -c \
+  "source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && \
+   timeout 4 ros2 topic echo /startup/state --once 2>/dev/null" 2>/dev/null || echo "")
+STARTUP_JSON=$(echo "$STARTUP_RAW" | grep "^data:" | head -1 | sed "s/^data: '//;s/'$//")
+
+SAFETY_RAW=$(docker compose exec -T robot bash -c \
+  "source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && \
+   timeout 4 ros2 topic echo /safety/state --once 2>/dev/null" 2>/dev/null || echo "")
+SAFETY_JSON=$(echo "$SAFETY_RAW" | grep "^data:" | head -1 | sed "s/^data: '//;s/'$//")
 
 if [ -n "$STARTUP_JSON" ]; then
     STARTUP_STATE=$(echo "$STARTUP_JSON" | grep -o '"state":"[^"]*"' | cut -d'"' -f4)
