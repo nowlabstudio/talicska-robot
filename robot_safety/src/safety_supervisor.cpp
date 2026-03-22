@@ -26,8 +26,8 @@
  *   2. E-Stop watchdog — no message for > estop_timeout_s → FAULT + watchdog_latch
  *   3. RC bridge       — /robot/rc_mode topic timeout > rc_timeout_s → FAULT + rc_watchdog_latch
  *                        (only after first message; RC is a manual override safety net)
- *   4. Motor ctrl      — /joint_states topic timeout > joint_states_timeout_s → FAULT + joint_states_dropout_latch
- *                        (RoboClaw TCP drop detected via controller stack silence)
+ *   4. Motor ctrl      — /hardware/roboclaw/connected = false → FAULT + joint_states_dropout_latch
+ *                        (RoboClaw TCP drop detected via dedicated status topic from roboclaw_hardware)
  *   5. IMU tilt        — |roll| > limit OR |pitch| > limit → ERROR + tilt_latch
  *   6. LiDAR proximity — min front range < proximity_distance_m → ERROR + proximity_latch
  *   7. LiDAR dropout   — /scan topic timeout > sensor_timeout_s → ERROR + scan_dropout_latch
@@ -78,7 +78,6 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
 #include "sensor_msgs/msg/imu.hpp"
-#include "sensor_msgs/msg/joint_state.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/float32.hpp"
@@ -95,7 +94,6 @@ public:
   : Node("safety_supervisor"),
     last_estop_time_(now()),
     last_rc_time_(now()),
-    last_joint_states_time_(now()),
     last_realsense_time_(now()),
     last_mode_time_(now()),
     last_baseline_publish_(now()),
@@ -106,7 +104,6 @@ public:
   {
     this->declare_parameter("estop_timeout_s",          2.0);
     this->declare_parameter("rc_timeout_s",             5.0);
-    this->declare_parameter("joint_states_timeout_s",   1.0);
     this->declare_parameter("enable_realsense_watchdog", false);
     this->declare_parameter("realsense_timeout_s",      3.0);
     this->declare_parameter("latch_state_path",         std::string("/tmp/safety_latch_state"));
@@ -130,7 +127,6 @@ public:
 
     estop_timeout_             = this->get_parameter("estop_timeout_s").as_double();
     rc_timeout_s_              = this->get_parameter("rc_timeout_s").as_double();
-    joint_states_timeout_s_    = this->get_parameter("joint_states_timeout_s").as_double();
     enable_realsense_watchdog_ = this->get_parameter("enable_realsense_watchdog").as_bool();
     realsense_timeout_s_       = this->get_parameter("realsense_timeout_s").as_double();
     latch_state_path_          = this->get_parameter("latch_state_path").as_string();
@@ -200,12 +196,25 @@ public:
       "/robot/reset", rclcpp::QoS(10),
       std::bind(&SafetySupervisor::reset_cb, this, std::placeholders::_1));
 
-    joint_states_sub_ = create_subscription<sensor_msgs::msg::JointState>(
-      "/joint_states", rclcpp::QoS(10),
-      [this](sensor_msgs::msg::JointState::SharedPtr) {
-        last_joint_states_time_    = now();
-        joint_states_received_     = true;
-        joint_states_watchdog_ok_  = true;
+    roboclaw_connected_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "/hardware/roboclaw/connected",
+      rclcpp::QoS(1).transient_local().reliable(),
+      [this](std_msgs::msg::Bool::SharedPtr msg) {
+        roboclaw_status_received_ = true;
+        if (!msg->data) {
+          // RoboClaw TCP connection lost
+          joint_states_watchdog_ok_ = false;
+          if (!joint_states_dropout_latch_) {
+            joint_states_dropout_latch_ = true;
+            persist_latches();
+            RCLCPP_ERROR(get_logger(),
+              "RoboClaw TCP connection lost — joint_states_dropout_latch → FAULT");
+          }
+        } else {
+          // RoboClaw TCP reconnected
+          joint_states_watchdog_ok_ = true;
+          RCLCPP_INFO(get_logger(), "RoboClaw TCP reconnected");
+        }
       });
 
     realsense_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
@@ -259,7 +268,7 @@ public:
       "Limits: roll±%.0f° pitch±%.0f°, proximity %.2fm front±%.0f°. "
       "IMU throttle: %.0f Hz. RC threshold: %.2f (timeout: %.1fs). Heartbeat: %.0f Hz. "
       "Scan watchdog: %s. IMU watchdog: %s. RealSense watchdog: %s (%.1fs). "
-      "Joint states timeout: %.1fs. Latch state: %s",
+      "RoboClaw dropout: /hardware/roboclaw/connected topic. Latch state: %s",
       this->get_parameter("tilt_roll_limit_deg").as_double(),
       this->get_parameter("tilt_pitch_limit_deg").as_double(),
       proximity_dist_,
@@ -268,7 +277,6 @@ public:
       scan_watchdog_active_ ? "ON" : "OFF",
       imu_watchdog_active_  ? "ON" : "OFF",
       enable_realsense_watchdog_ ? "ON" : "OFF", realsense_timeout_s_,
-      joint_states_timeout_s_,
       latch_state_path_.c_str());
   }
 
@@ -290,6 +298,8 @@ private:
 
     // E-Stop release (true → false) after press: reset sensor/tilt/proximity latches
     // watchdog_latch and rc_watchdog_latch are NOT cleared here — requires /robot/reset + bridge online
+    // joint_states_dropout_latch: only cleared if RoboClaw has already reconnected (watchdog_ok=true)
+    //   → prevents IDLE state with no motor control if TCP still down
     if (prev && !estop_active_ && estop_was_pressed_for_reset_) {
       estop_was_pressed_for_reset_ = false;
       tilt_latch_              = false;
@@ -297,9 +307,15 @@ private:
       scan_dropout_latch_      = false;
       imu_dropout_latch_       = false;
       realsense_dropout_latch_ = false;
+      if (joint_states_watchdog_ok_) {
+        // Only clear if RoboClaw has auto-reconnected — otherwise re-latch guard fires
+        joint_states_dropout_latch_ = false;
+      }
       persist_latches();
       RCLCPP_WARN(get_logger(),
-        "E-Stop reset: tilt/proximity/sensor/realsense latch-ek törölve");
+        "E-Stop reset: tilt/proximity/sensor/realsense latch-ek törölve%s",
+        joint_states_watchdog_ok_ ? ", roboclaw_dropout törölve" :
+          " (roboclaw_dropout megmarad — TCP még offline)");
     }
 
     if (msg->data != prev) {
@@ -320,7 +336,8 @@ private:
     rc_watchdog_latch_            = false;
     rc_watchdog_ok_               = true;   // engedélyezi az RC bridge újra-csatlakozást FAULT nélkül
     joint_states_dropout_latch_   = false;
-    joint_states_watchdog_ok_     = true;   // engedélyezi a joint_states újra-csatlakozást FAULT nélkül
+    // joint_states_watchdog_ok_ is managed by /hardware/roboclaw/connected subscription callbacks;
+    // re-latch guard in watchdog_tick re-latches immediately if TCP is still down.
     persist_latches();
     RCLCPP_WARN(get_logger(),
       "/robot/reset: watchdog_latch, rc_watchdog_latch, joint_states_dropout_latch törölve");
@@ -443,16 +460,15 @@ private:
       }
     }
 
-    // 3. Motor controller watchdog — /joint_states (RoboClaw TCP dropout detection)
-    if (joint_states_received_) {
-      const double js_elapsed = (t - last_joint_states_time_).seconds();
-      if (js_elapsed > joint_states_timeout_s_ && joint_states_watchdog_ok_) {
-        joint_states_watchdog_ok_   = false;
-        joint_states_dropout_latch_ = true;
-        RCLCPP_ERROR(get_logger(),
-          "Motor controller TIMEOUT (%.1f s without /joint_states) — "
-          "joint_states_dropout_latch beállítva", js_elapsed);
-      }
+    // 3. Motor controller — re-latch guard
+    // /hardware/roboclaw/connected = false callback sets the latch.
+    // If the latch was cleared (E-Stop or /robot/reset) but roboclaw is still offline,
+    // immediately re-latch to prevent IDLE state with no motor control.
+    if (roboclaw_status_received_ && !joint_states_watchdog_ok_ && !joint_states_dropout_latch_) {
+      joint_states_dropout_latch_ = true;
+      persist_latches();
+      RCLCPP_WARN(get_logger(),
+        "RoboClaw still disconnected after latch reset — re-latching → FAULT");
     }
 
     // 4. RealSense watchdog — /camera/camera/color/camera_info
@@ -859,7 +875,7 @@ private:
       if (rc_watchdog_latch_)  { RCLCPP_ERROR(get_logger(),
         "  rc_watchdog_latch RESTORED → FAULT (/robot/reset szükséges)"); }
       if (joint_states_dropout_latch_) { RCLCPP_ERROR(get_logger(),
-        "  joint_states_dropout_latch RESTORED → FAULT (/robot/reset szükséges)"); }
+        "  joint_states_dropout_latch RESTORED → FAULT (/robot/reset vagy E-Stop reset szükséges)"); }
       if (tilt_latch_)         { RCLCPP_WARN(get_logger(),
         "  tilt_latch RESTORED → ERROR (E-Stop reset szükséges)"); }
       if (proximity_latch_)    { RCLCPP_WARN(get_logger(),
@@ -898,7 +914,6 @@ private:
 
   double      estop_timeout_;
   double      rc_timeout_s_;
-  double      joint_states_timeout_s_;
   bool        enable_realsense_watchdog_;
   double      realsense_timeout_s_;
   double      tilt_roll_limit_;
@@ -924,11 +939,12 @@ private:
   bool           rc_watchdog_ok_     = false;
   bool           rc_watchdog_latch_  = false;  // FAULT szint, /robot/reset törli
 
-  // Motor controller watchdog (/joint_states — RoboClaw TCP dropout)
-  rclcpp::Time   last_joint_states_time_;
-  bool           joint_states_received_        = false;
-  bool           joint_states_watchdog_ok_     = false;
-  bool           joint_states_dropout_latch_   = false;  // FAULT szint, /robot/reset törli
+  // Motor controller watchdog (/hardware/roboclaw/connected — RoboClaw TCP dropout)
+  // Detection: Bool topic from roboclaw_hardware (not joint_states timeout — joint_states
+  // keeps flowing with stale/frozen data when TCP drops, timeout approach is unreliable).
+  bool           roboclaw_status_received_     = false;  // startup guard (no false-positive)
+  bool           joint_states_watchdog_ok_     = false;  // current TCP state (managed by sub callback)
+  bool           joint_states_dropout_latch_   = false;  // FAULT szint; /robot/reset OR E-Stop (if reconnected) törli
 
   // RealSense watchdog (/camera/camera/color/camera_info)
   rclcpp::Time   last_realsense_time_;
@@ -1022,7 +1038,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr       rc_mode_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr        mode_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr          imu_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr   joint_states_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr          roboclaw_connected_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr   realsense_sub_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr    scan_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr    cmd_vel_raw_sub_;

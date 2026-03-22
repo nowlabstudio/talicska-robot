@@ -364,9 +364,10 @@ safety_supervisor:
     estop_timeout_s:      2.0
     # RC bridge watchdog — /robot/rc_mode topic timeout → FAULT + rc_watchdog_latch
     rc_timeout_s:         5.0
-    # Motor controller watchdog — /joint_states timeout → FAULT + joint_states_dropout_latch
-    # 1.0s = 50 kihagyott üzenet 50Hz-en. RoboClaw TCP drop → controller stack elhallgat.
-    joint_states_timeout_s: 1.0
+    # Motor controller watchdog — /hardware/roboclaw/connected Bool topic (roboclaw_hardware plugin)
+    # false = TCP lost → FAULT + joint_states_dropout_latch. Reset: E-Stop (ha reconnected) VAGY /robot/reset.
+    # Megjegyzés: joint_states timeout-alapú detektálás nem működik — a plugin frozen adatokkal
+    # tovább publikál TCP kiesés után is (read() mindig return_type::OK).
     # RealSense watchdog — /camera/camera/color/camera_info timeout → ERROR + realsense_dropout_latch
     # Előfeltétel: camera_info QoS kompatibilitás (SensorDataQoS — BEST_EFFORT)
     enable_realsense_watchdog: true
