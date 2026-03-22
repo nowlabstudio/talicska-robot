@@ -7,7 +7,7 @@
 # =============================================================================
 
 clear
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROBOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -156,12 +156,12 @@ section "2️⃣ DOCKER STACK"
 CONTAINERS=("microros_agent" "robot" "ros2_realsense" "foxglove_bridge" "mesh_server" "portainer")
 UP_COUNT=0
 for container in "${CONTAINERS[@]}"; do
-    if docker ps --format "{{.Names}}" 2>/dev/null | grep -q "^${container}$"; then
-        STATUS=$(docker ps --filter "name=${container}" --format "{{.Status}}" 2>/dev/null)
+    if timeout 3 docker ps --format "{{.Names}}" 2>/dev/null | grep -q "^${container}$"; then
+        STATUS=$(timeout 3 docker ps --filter "name=${container}" --format "{{.Status}}" 2>/dev/null)
         ok "${container}: ${STATUS}"
         ((UP_COUNT++))
     else
-        error "${container}: DOWN"
+        warn "${container}: DOWN (or docker unavailable)"
     fi
 done
 echo ""
@@ -213,8 +213,8 @@ echo "   Summary: ${FOUND_COUNT}/${#CRITICAL_NODES[@]} critical nodes found"
 
 section "5️⃣ STARTUP & SAFETY STATE"
 
-STARTUP_JSON=$(docker exec robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 2 ros2 topic echo /startup/state --once 2>/dev/null | grep "^data" | sed "s/^data: //" | head -1' 2>/dev/null || echo "")
-SAFETY_JSON=$(docker exec robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 2 ros2 topic echo /safety/state --once 2>/dev/null | grep "^data" | sed "s/^data: //" | head -1' 2>/dev/null || echo "")
+STARTUP_JSON=$(timeout 5 docker exec robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 2 ros2 topic echo /startup/state --once 2>/dev/null | grep "^data" | sed "s/^data: //" | head -1' 2>/dev/null || echo "")
+SAFETY_JSON=$(timeout 5 docker exec robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && timeout 2 ros2 topic echo /safety/state --once 2>/dev/null | grep "^data" | sed "s/^data: //" | head -1' 2>/dev/null || echo "")
 
 if [ -n "$STARTUP_JSON" ]; then
     STARTUP_STATE=$(echo "$STARTUP_JSON" | grep -o '"state":"[^"]*"' | cut -d'"' -f4)
