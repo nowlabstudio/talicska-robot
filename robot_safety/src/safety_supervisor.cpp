@@ -28,6 +28,8 @@
  *                        (only after first message; RC is a manual override safety net)
  *   4. Motor ctrl      — /hardware/roboclaw/connected = false → FAULT + joint_states_dropout_latch
  *                        (RoboClaw TCP drop detected via dedicated status topic from roboclaw_hardware)
+ *                        Topic silence > roboclaw_status_timeout_s (default 0.3 s) → same FAULT
+ *                        (detects driver crash/freeze that never publishes false)
  *   5. IMU tilt        — |roll| > limit OR |pitch| > limit → ERROR + tilt_latch
  *   6. LiDAR proximity — min front range < proximity_distance_m → ERROR + proximity_latch
  *   7. LiDAR dropout   — /scan topic timeout > sensor_timeout_s → ERROR + scan_dropout_latch
@@ -94,6 +96,7 @@ public:
   : Node("safety_supervisor"),
     last_estop_time_(now()),
     last_rc_time_(now()),
+    last_roboclaw_status_time_(now()),
     last_realsense_time_(now()),
     last_mode_time_(now()),
     last_baseline_publish_(now()),
@@ -121,6 +124,9 @@ public:
     this->declare_parameter("sensor_recovery_stable_s",  2.0);
     this->declare_parameter("enable_scan_watchdog",      false);
     this->declare_parameter("enable_imu_watchdog",       false);
+    // RoboClaw status heartbeat timeout — driver crash/freeze detection
+    // At 10 Hz heartbeat: 0.3 s = 3 missed messages before FAULT
+    this->declare_parameter("roboclaw_status_timeout_s", 0.3);
     // PLACEHOLDER: ZED 2i és külső IMU watchdog (disabled)
     // this->declare_parameter("enable_zed_watchdog",      false);
     // this->declare_parameter("enable_ext_imu_watchdog",  false);
@@ -141,10 +147,11 @@ public:
     double hb_hz          = this->get_parameter("heartbeat_rate_hz").as_double();
     imu_min_interval_ns_  = static_cast<int64_t>(1.0e9 / imu_hz);
 
-    sensor_timeout_s_         = this->get_parameter("sensor_timeout_s").as_double();
-    sensor_recovery_stable_s_ = this->get_parameter("sensor_recovery_stable_s").as_double();
-    enable_scan_watchdog_     = this->get_parameter("enable_scan_watchdog").as_bool();
-    enable_imu_watchdog_      = this->get_parameter("enable_imu_watchdog").as_bool();
+    sensor_timeout_s_          = this->get_parameter("sensor_timeout_s").as_double();
+    sensor_recovery_stable_s_  = this->get_parameter("sensor_recovery_stable_s").as_double();
+    enable_scan_watchdog_      = this->get_parameter("enable_scan_watchdog").as_bool();
+    enable_imu_watchdog_       = this->get_parameter("enable_imu_watchdog").as_bool();
+    roboclaw_status_timeout_s_ = this->get_parameter("roboclaw_status_timeout_s").as_double();
 
     // Watchdog activation conditions
     scan_watchdog_active_ = (proximity_dist_ > 0.0) || enable_scan_watchdog_;
@@ -200,7 +207,8 @@ public:
       "/hardware/roboclaw/connected",
       rclcpp::QoS(1).transient_local().reliable(),
       [this](std_msgs::msg::Bool::SharedPtr msg) {
-        roboclaw_status_received_ = true;
+        roboclaw_status_received_   = true;
+        last_roboclaw_status_time_  = now();  // heartbeat time tracking
         if (!msg->data) {
           // RoboClaw TCP connection lost
           joint_states_watchdog_ok_ = false;
@@ -268,7 +276,7 @@ public:
       "Limits: roll±%.0f° pitch±%.0f°, proximity %.2fm front±%.0f°. "
       "IMU throttle: %.0f Hz. RC threshold: %.2f (timeout: %.1fs). Heartbeat: %.0f Hz. "
       "Scan watchdog: %s. IMU watchdog: %s. RealSense watchdog: %s (%.1fs). "
-      "RoboClaw dropout: /hardware/roboclaw/connected topic. Latch state: %s",
+      "RoboClaw dropout: /hardware/roboclaw/connected topic (silence timeout: %.2fs). Latch state: %s",
       this->get_parameter("tilt_roll_limit_deg").as_double(),
       this->get_parameter("tilt_pitch_limit_deg").as_double(),
       proximity_dist_,
@@ -277,6 +285,7 @@ public:
       scan_watchdog_active_ ? "ON" : "OFF",
       imu_watchdog_active_  ? "ON" : "OFF",
       enable_realsense_watchdog_ ? "ON" : "OFF", realsense_timeout_s_,
+      roboclaw_status_timeout_s_,
       latch_state_path_.c_str());
   }
 
@@ -469,6 +478,26 @@ private:
       persist_latches();
       RCLCPP_WARN(get_logger(),
         "RoboClaw still disconnected after latch reset — re-latching → FAULT");
+    }
+
+    // 3b. RoboClaw status topic heartbeat silence detection
+    // The driver publishes /hardware/roboclaw/connected at ~10 Hz.
+    // If the topic goes silent (driver crash, process freeze, container stop),
+    // we never receive the explicit false message — detect it via timeout instead.
+    // Only fires when driver was last known healthy (joint_states_watchdog_ok_=true).
+    if (roboclaw_status_received_ && joint_states_watchdog_ok_) {
+      const double silence = (t - last_roboclaw_status_time_).seconds();
+      if (silence > roboclaw_status_timeout_s_) {
+        joint_states_watchdog_ok_ = false;
+        if (!joint_states_dropout_latch_) {
+          joint_states_dropout_latch_ = true;
+          persist_latches();
+          RCLCPP_ERROR(get_logger(),
+            "RoboClaw status topic SILENCE (%.2f s > %.2f s) — "
+            "driver crash or freeze? → joint_states_dropout_latch FAULT",
+            silence, roboclaw_status_timeout_s_);
+        }
+      }
     }
 
     // 4. RealSense watchdog — /camera/camera/color/camera_info
@@ -940,11 +969,14 @@ private:
   bool           rc_watchdog_latch_  = false;  // FAULT szint, /robot/reset törli
 
   // Motor controller watchdog (/hardware/roboclaw/connected — RoboClaw TCP dropout)
-  // Detection: Bool topic from roboclaw_hardware (not joint_states timeout — joint_states
-  // keeps flowing with stale/frozen data when TCP drops, timeout approach is unreliable).
-  bool           roboclaw_status_received_     = false;  // startup guard (no false-positive)
+  // Detection 1: Bool topic data=false → immediate TCP loss (roboclaw_hardware on-change publish)
+  // Detection 2: Topic silence > roboclaw_status_timeout_s → driver crash/freeze
+  //   (roboclaw_hardware publishes at ~10 Hz; 0.3 s = 3 missed heartbeats before FAULT)
+  bool           roboclaw_status_received_     = false;  // startup guard (no false-positive on boot)
   bool           joint_states_watchdog_ok_     = false;  // current TCP state (managed by sub callback)
   bool           joint_states_dropout_latch_   = false;  // FAULT szint; /robot/reset OR E-Stop (if reconnected) törli
+  rclcpp::Time   last_roboclaw_status_time_;              // init: now() in constructor
+  double         roboclaw_status_timeout_s_    = 0.3;
 
   // RealSense watchdog (/camera/camera/color/camera_info)
   rclcpp::Time   last_realsense_time_;
