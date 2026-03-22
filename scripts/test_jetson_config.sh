@@ -71,7 +71,7 @@ fi
 # ── Teszt 4: talicska-robot.service ──────────────────────────────────────────
 echo ""
 echo -e "${BOLD}4. talicska-robot.service${NC}"
-if systemctl list-unit-files talicska-robot.service &>/dev/null 2>&1 \
+if systemctl list-unit-files talicska-robot.service 2>/dev/null \
         | grep -q "talicska-robot"; then
     STATE="$(systemctl is-enabled talicska-robot.service 2>/dev/null || echo 'unknown')"
     info "talicska-robot.service: ${STATE}"
@@ -83,7 +83,7 @@ fi
 # ── Teszt 5: talicska-tmux.service ───────────────────────────────────────────
 echo ""
 echo -e "${BOLD}5. talicska-tmux.service (user)${NC}"
-if systemctl --user list-unit-files talicska-tmux.service &>/dev/null 2>&1 \
+if systemctl --user list-unit-files talicska-tmux.service 2>/dev/null \
         | grep -q "talicska-tmux"; then
     STATE="$(systemctl --user is-enabled talicska-tmux.service 2>/dev/null || echo 'unknown')"
     info "talicska-tmux.service: ${STATE}"
