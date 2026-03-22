@@ -780,3 +780,91 @@ launch_arguments={
 | realsense_dropout_latch_ nem törölhető /robot/reset-tel | robot_safety | ✅ reset_cb() feltételes clearing: recovered && !dropout esetén törli 2026-03-22 |
 | scan_dropout_latch watchdog inaktív volt (proximity=0, enable=false) | robot_params.yaml | ✅ enable_scan_watchdog: true beállítva 2026-03-22 |
 | RealSense depth image nem jelent meg (Foxglove "waiting") | realsense-jetson | ✅ depth_module.depth_profile: 848x480x30 (volt: 640x480, infra-val nem egyezett) 2026-03-22 |
+
+---
+
+## 14. Jetson Konfigurálás
+
+### Architektúra
+
+```
+Boot
+ └─ talicska-power.service   [system] nvpmodel -m 0 + jetson_clocks
+     └─ talicska-robot.service  [system] startup.sh → make up
+         └─ talicska-tmux.service  [user] tmux session 5 ablakkal
+             └─ SSH login → auto-attach (bashrc)
+```
+
+### 14.1 talicska-power.service
+
+- System service, `Type=oneshot`, `RemainAfterExit=yes`
+- `ExecStart=/usr/bin/nvpmodel -m 0` + `ExecStart=/usr/bin/jetson_clocks`
+- Boot után fut, a robot service előtt
+- Engedélyezve (`enabled`) — mindig lefut rebootnál
+
+### 14.2 talicska-robot.service
+
+- System service, `Type=simple`, `User=root`
+- `ExecStart=scripts/startup.sh` → `exec make up` (systemd PID tracking)
+- `ExecStop=scripts/shutdown.sh` → `make down`
+- `Restart=on-failure`, `TimeoutStopSec=90s`
+- **Alapból DISABLED** — fejlesztési fázisban ne induljon minden rebootnál
+- Engedélyezés: `robot-enable` alias
+
+### 14.3 Graceful Shutdown
+
+- `docker-compose.yml`: `stop_grace_period: 60s` a robot service-nél
+- SLAM térkép mentés: SIGTERM után 60s, utána SIGKILL
+- `TimeoutStopSec=90s` = grace period (60s) + overhead (30s)
+- `shutdown.sh`: `make down || true` — ha a stack nem fut, nem hibázik
+
+### 14.4 tmux Session
+
+- 5 ablak: `claude`, `claude2`, `docker` (watch docker ps), `jetson` (jtop / tegrastats), `bash`
+- Idempotent: `tmux has-session -t talicska` guard
+- User service: `talicska-tmux.service` (`~/.config/systemd/user/`)
+- `loginctl enable-linger`: boot után is él, SSH disconnect után is
+
+### 14.5 Shell Aliasok
+
+| Alias | Parancs |
+|---|---|
+| `robot-up` | `make up` |
+| `robot-down` | `make down` |
+| `robot-restart` | `make down && make up` |
+| `robot-shutdown` | `make down && sudo shutdown -h now` |
+| `robot-safety` | `ros2 topic echo /safety/state --once` |
+| `robot-reset` | `/robot/reset` topic pub |
+| `robot-enable` | `systemctl enable talicska-robot.service` |
+| `robot-disable` | `systemctl disable talicska-robot.service` |
+| `robot-service-status` | power + robot service status |
+| `robot-service-logs` | journalctl -f |
+| `robot-tmux` | tmux attach vagy session indítás |
+
+### 14.6 Telepítés
+
+```bash
+bash scripts/install.sh
+# install_systemd() fut: power+robot+tmux service másolás, enable, linger, bash_aliases
+```
+
+Manuális systemd engedélyezés (robot service):
+```bash
+robot-enable   # rebootnál indul
+robot-disable  # fejlesztési módhoz
+```
+
+### 14.7 Verifikáció
+
+```bash
+bash scripts/test_jetson_config.sh
+# Elvárt: 8 PASS, 0 FAIL
+
+sudo systemctl status talicska-power.service
+sudo systemctl status talicska-robot.service
+systemctl --user status talicska-tmux.service
+
+nvpmodel -q   # NV Power Mode: MAXN
+tmux ls       # talicska: 5 windows
+robot-safety  # safety state lekérdezés
+```

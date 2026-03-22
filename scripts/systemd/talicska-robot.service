@@ -1,0 +1,19 @@
+[Unit]
+Description=Talicska Robot — Docker Stack
+After=talicska-power.service docker.service network-online.target
+Requires=docker.service talicska-power.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/eduard/talicska-robot-ws/src/robot/talicska-robot
+ExecStart=/home/eduard/talicska-robot-ws/src/robot/talicska-robot/scripts/startup.sh
+ExecStop=/home/eduard/talicska-robot-ws/src/robot/talicska-robot/scripts/shutdown.sh
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=120s
+TimeoutStopSec=90s
+
+[Install]
+WantedBy=multi-user.target

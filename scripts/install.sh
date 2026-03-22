@@ -593,6 +593,138 @@ run_validation() {
     ok "Validáció kész"
 }
 
+# ── 8. Systemd + bash_aliases telepítés ───────────────────────────────────────
+install_systemd() {
+    section "8. Fázis: Systemd Services + Shell Aliases"
+
+    local systemd_src="${SCRIPT_DIR}/systemd"
+    local user="${SUDO_USER:-${USER}}"
+    local user_home
+    user_home="$(eval echo "~${user}")"
+
+    # ── System services ────────────────────────────────────────────────────────
+    local system_service_dir="/etc/systemd/system"
+
+    for svc in talicska-power talicska-robot; do
+        local src="${systemd_src}/${svc}.service"
+        local dst="${system_service_dir}/${svc}.service"
+        if [[ ! -f "${src}" ]]; then
+            warn "Hiányzó unit fájl: ${src} — kihagyva"
+            continue
+        fi
+        if [[ -f "${dst}" ]] && diff -q "${src}" "${dst}" &>/dev/null; then
+            skip "${svc}.service: már naprakész"
+        else
+            step "${svc}.service másolása → ${dst}..."
+            run sudo cp "${src}" "${dst}"
+            ok "${svc}.service: telepítve"
+        fi
+    done
+
+    # talicska-power.service engedélyezése
+    if sudo systemctl is-enabled talicska-power.service &>/dev/null 2>&1; then
+        skip "talicska-power.service: már enabled"
+    else
+        step "talicska-power.service engedélyezése..."
+        run sudo systemctl daemon-reload
+        run sudo systemctl enable talicska-power.service
+        ok "talicska-power.service: enabled"
+    fi
+
+    # talicska-robot.service: CSAK daemon-reload, NEM enable (fejlesztési policy)
+    step "systemctl daemon-reload (talicska-robot.service regisztrálva, de NEM enabled)..."
+    run sudo systemctl daemon-reload
+    ok "talicska-robot.service: regisztrálva (engedélyezés: robot-enable)"
+
+    # ── User service (tmux) ────────────────────────────────────────────────────
+    local user_systemd_dir="${user_home}/.config/systemd/user"
+    run mkdir -p "${user_systemd_dir}"
+
+    local src="${systemd_src}/talicska-tmux.service"
+    local dst="${user_systemd_dir}/talicska-tmux.service"
+    if [[ ! -f "${src}" ]]; then
+        warn "Hiányzó unit fájl: ${src} — kihagyva"
+    else
+        if [[ -f "${dst}" ]] && diff -q "${src}" "${dst}" &>/dev/null; then
+            skip "talicska-tmux.service: már naprakész"
+        else
+            step "talicska-tmux.service másolása → ${dst}..."
+            run cp "${src}" "${dst}"
+            ok "talicska-tmux.service: telepítve"
+        fi
+
+        if systemctl --user is-enabled talicska-tmux.service &>/dev/null 2>&1; then
+            skip "talicska-tmux.service: már enabled"
+        else
+            step "talicska-tmux.service engedélyezése..."
+            run systemctl --user daemon-reload
+            run systemctl --user enable talicska-tmux.service
+            ok "talicska-tmux.service: enabled"
+        fi
+    fi
+
+    # ── loginctl enable-linger ─────────────────────────────────────────────────
+    if loginctl show-user "${user}" 2>/dev/null | grep -q "Linger=yes"; then
+        skip "loginctl linger: ${user} már engedélyezve"
+    else
+        step "loginctl enable-linger ${user}..."
+        run sudo loginctl enable-linger "${user}"
+        ok "loginctl linger: ${user} engedélyezve"
+    fi
+
+    # ── chmod +x scripts ───────────────────────────────────────────────────────
+    for s in startup.sh shutdown.sh tmux_session.sh test_jetson_config.sh; do
+        local sf="${SCRIPT_DIR}/${s}"
+        if [[ -f "${sf}" ]]; then
+            run chmod +x "${sf}"
+        fi
+    done
+    ok "Script-ek: +x beállítva"
+
+    # ── bash_aliases másolása ──────────────────────────────────────────────────
+    local aliases_src="${SCRIPT_DIR}/bash_aliases"
+    local aliases_dst="${user_home}/.bash_aliases"
+
+    if [[ ! -f "${aliases_src}" ]]; then
+        warn "bash_aliases forrás nem található: ${aliases_src} — kihagyva"
+    else
+        if [[ -f "${aliases_dst}" ]] && diff -q "${aliases_src}" "${aliases_dst}" &>/dev/null; then
+            skip "~/.bash_aliases: már naprakész"
+        else
+            step "~/.bash_aliases másolása..."
+            run cp "${aliases_src}" "${aliases_dst}"
+            ok "~/.bash_aliases: telepítve"
+        fi
+    fi
+
+    # ── .bashrc Talicska blokk ─────────────────────────────────────────────────
+    local bashrc="${user_home}/.bashrc"
+    local bashrc_marker="# ── Talicska Robot"
+
+    if grep -q "${bashrc_marker}" "${bashrc}" 2>/dev/null; then
+        skip ".bashrc: Talicska blokk már megvan"
+    else
+        step ".bashrc Talicska blokk hozzáadása..."
+        cat >> "${bashrc}" << 'BASHRC_BLOCK'
+
+# ── Talicska Robot ─────────────────────────────────────────────────────────
+# ~/.bash_aliases betöltése (ha létezik)
+if [[ -f "${HOME}/.bash_aliases" ]]; then
+    source "${HOME}/.bash_aliases"
+fi
+# Auto-cd robot könyvtárba
+cd /home/eduard/talicska-robot-ws/src/robot/talicska-robot 2>/dev/null || true
+# SSH session: auto-attach tmux (ha még nem vagyunk tmux-ban)
+if [[ -n "${SSH_CONNECTION}" ]] && [[ -z "${TMUX}" ]]; then
+    tmux attach-session -t talicska 2>/dev/null || true
+fi
+BASHRC_BLOCK
+        ok ".bashrc: Talicska blokk hozzáadva"
+    fi
+
+    log "INFO" "Systemd + aliases telepítés kész"
+}
+
 # ── Összesítő ─────────────────────────────────────────────────────────────────
 print_summary() {
     section "Telepítés összesítő"
@@ -664,6 +796,7 @@ main() {
     build_docker_image       # 6. docker compose build (robot + microros)
     build_realsense_image    # 6b. RealSense image build (dustynv base)
     run_validation           # 7. validáció
+    install_systemd          # 8. systemd services + bash aliases
     print_summary
 
     echo ""

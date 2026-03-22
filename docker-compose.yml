@@ -36,6 +36,7 @@ services:
     network_mode: host
     ipc: host
     restart: unless-stopped
+    stop_grace_period: 60s
     privileged: true          # serial port (rplidar ttyUSB) cgroup device access — /dev:/dev volume alone is insufficient
     depends_on:
       - microros_agent

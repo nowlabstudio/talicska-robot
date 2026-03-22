@@ -1,0 +1,47 @@
+# =============================================================================
+# Talicska Robot — Bash Aliases
+# =============================================================================
+# Forrás fájl — install.sh másolja ~/.bash_aliases-ba
+# Összes parancs robot- prefixszel
+# =============================================================================
+
+TALICSKA_DIR="/home/eduard/talicska-robot-ws/src/robot/talicska-robot"
+
+# ── Stack vezérlés ────────────────────────────────────────────────────────────
+alias robot-up="cd ${TALICSKA_DIR} && make up"
+alias robot-down="cd ${TALICSKA_DIR} && make down"
+alias robot-restart="cd ${TALICSKA_DIR} && make down && make up"
+
+# ── RoboClaw külön indítás ────────────────────────────────────────────────────
+alias robot-rc-up="cd ${TALICSKA_DIR} && make rc"
+
+# ── Stack ellenőrzés ──────────────────────────────────────────────────────────
+alias robot-check="cd ${TALICSKA_DIR} && bash scripts/prestart.sh"
+alias robot-status="sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+
+# ── Logok ─────────────────────────────────────────────────────────────────────
+alias robot-logs="sudo docker compose -f ${TALICSKA_DIR}/docker-compose.yml logs -f robot"
+
+# ── Safety ────────────────────────────────────────────────────────────────────
+alias robot-safety="sudo docker exec robot ros2 topic echo /safety/state --once"
+alias robot-reset="sudo docker exec robot ros2 topic pub --once /robot/reset std_msgs/msg/Bool '{data: true}'"
+
+# ── ROS2 debug ────────────────────────────────────────────────────────────────
+alias robot-topics="sudo docker exec robot ros2 topic list"
+alias robot-nodes="sudo docker exec robot ros2 node list"
+
+# ── Container újraindítás ─────────────────────────────────────────────────────
+alias robot-agent-restart="sudo docker compose -f ${TALICSKA_DIR}/docker-compose.yml restart microros_agent"
+alias robot-realsense-restart="sudo docker compose -f ${TALICSKA_DIR}/docker-compose.yml restart realsense"
+
+# ── Systemd service ───────────────────────────────────────────────────────────
+alias robot-enable="sudo systemctl enable talicska-robot.service && echo 'talicska-robot.service engedélyezve (rebootnál indul)'"
+alias robot-disable="sudo systemctl disable talicska-robot.service && echo 'talicska-robot.service letiltva'"
+alias robot-service-status="sudo systemctl status talicska-robot.service talicska-power.service"
+alias robot-service-logs="sudo journalctl -u talicska-robot.service -f"
+
+# ── tmux ──────────────────────────────────────────────────────────────────────
+alias robot-tmux="tmux attach-session -t talicska 2>/dev/null || bash ${TALICSKA_DIR}/scripts/tmux_session.sh && tmux attach-session -t talicska"
+
+# ── Leállás (lépcsőzetes: stack → gép) ───────────────────────────────────────
+alias robot-shutdown="cd ${TALICSKA_DIR} && make down && sudo shutdown -h now"

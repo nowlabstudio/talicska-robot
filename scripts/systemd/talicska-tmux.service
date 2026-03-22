@@ -1,0 +1,13 @@
+[Unit]
+Description=Talicska Robot — tmux session
+After=default.target
+
+[Service]
+Type=forking
+ExecStart=/home/eduard/talicska-robot-ws/src/robot/talicska-robot/scripts/tmux_session.sh
+ExecStop=/usr/bin/tmux kill-session -t talicska
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
