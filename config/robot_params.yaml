@@ -370,7 +370,7 @@ safety_supervisor:
     # Reset: E-Stop press+release (ha TCP reconnected) VAGY /robot/reset.
     # Megjegyzés: joint_states timeout-alapú detektálás nem működik — a plugin frozen adatokkal
     # tovább publikál TCP kiesés után is (read() mindig return_type::OK).
-    roboclaw_status_timeout_s: 0.3   # 10 Hz heartbeat → 3 kihagyott üzenet = FAULT
+    roboclaw_status_timeout_s: 2.0   # Workaround: RoboClaw TCP reconnect loop ~0.1s cycle (SetTimeout EEPROM issue)
     # RealSense watchdog — /camera/camera/color/camera_info timeout → ERROR + realsense_dropout_latch
     # Előfeltétel: camera_info QoS kompatibilitás (SensorDataQoS — BEST_EFFORT)
     enable_realsense_watchdog: true
