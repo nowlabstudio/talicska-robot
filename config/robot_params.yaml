@@ -158,6 +158,7 @@ rplidar_node:
     angle_compensate: true
     scan_mode:        ""                  # auto-select (OPERATION_NOT_SUPPORT volt Sensitivity-vel); DOCKING: Standard
     scan_frequency:   10.0               # NAVIGATION default; DOCKING: 5.0
+    auto_standby:     true               # motor leáll ha /scan-nek nincs subscriber-e (make down graceful stop)
     # QoS override: BEST_EFFORT publisher
     # Audit #4: RELIABLE→BEST_EFFORT mismatch extra CycloneDDS buffert okozott.
     # A forrás BEST_EFFORT-ra állítása szünteti meg a mismatcht (slam_toolbox, costmap).
