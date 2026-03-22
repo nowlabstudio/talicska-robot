@@ -725,32 +725,12 @@ BASHRC_BLOCK
     log "INFO" "Systemd + aliases telepítés kész"
 }
 
-# ── 9. Jetson Power Mode MAXN + jetson_clocks ────────────────────────────────
+# ── 9. Jetson jetson_clocks (Power Mode manuálisan beállítva) ──────────────────
 setup_jetson_power() {
-    section "9. Fázis: Jetson Power Mode MAXN + jetson_clocks"
+    section "9. Fázis: jetson_clocks"
 
-    # Ellenőrzés: Jetson?
-    if ! command -v nvpmodel &>/dev/null; then
-        warn "nvpmodel nem található — nem Jetson platform?"
-        return 0
-    fi
-
-    # Aktuális power mode
-    local current_mode
-    current_mode=$(nvpmodel -q 2>/dev/null | grep "NV Power Mode" | awk '{print $NF}' || echo "unknown")
-
-    if [[ "$current_mode" == "MAXN" ]] || [[ "$current_mode" == "0" ]]; then
-        skip "Power mode már MAXN"
-    else
-        step "Power mode váltás: ${current_mode} → MAXN..."
-        if ! sudo nvpmodel -m 0 >> "${LOG_FILE}" 2>&1; then
-            warn "nvpmodel -m 0 sikertelen — sudoers hozzáférés szükséges"
-        else
-            sleep 1
-            current_mode=$(nvpmodel -q 2>/dev/null | grep "NV Power Mode" | awk '{print $NF}' || echo "unknown")
-            ok "Power mode: ${current_mode}"
-        fi
-    fi
+    # MEGJEGYZÉS: nvpmodel MAXN beállítás manuálisan történik
+    # Lásd: docs/backlog.md — Power Mode MAXN (2026-03-22) jelölés
 
     # jetson_clocks: (1) service enable vagy (2) manual script hozzáadása
     if command -v jetson_clocks &>/dev/null; then
@@ -764,7 +744,7 @@ setup_jetson_power() {
         warn "jetson_clocks parancs nem található — NVIDIA tools telepítés szükséges"
     fi
 
-    log "INFO" "Jetson Power Mode beállítás kész"
+    log "INFO" "jetson_clocks beállítás kész"
 }
 
 # ── Összesítő ─────────────────────────────────────────────────────────────────

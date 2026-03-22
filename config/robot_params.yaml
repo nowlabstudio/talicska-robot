@@ -360,7 +360,7 @@ winch_node:
 # Módosítás után: docker compose up -d robot (nem csak restart)
 safety_supervisor:
   ros__parameters:
-    estop_timeout_s:      2.0
+    estop_timeout_s:      5.0    # E-Stop firmware ~1 Hz pub — 5s timeout safety margin
     # RC bridge watchdog — /robot/rc_mode topic timeout → FAULT + rc_watchdog_latch
     rc_timeout_s:         5.0
     # Motor controller watchdog — /hardware/roboclaw/connected Bool topic (roboclaw_hardware plugin)
