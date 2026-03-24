@@ -1,0 +1,19 @@
+[Unit]
+Description=Talicska Robot — Restart Watchdog
+# A robot stacktől független service — az is tudja restartolni
+After=docker.service network-online.target
+Wants=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/eduard/talicska-robot-ws/src/robot/talicska-robot
+ExecStart=/home/eduard/talicska-robot-ws/src/robot/talicska-robot/scripts/restart_watchdog.sh
+# Restart=always: ha a watchdog meghal (pl. unhandled error), jöjjön vissza
+Restart=always
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

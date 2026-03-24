@@ -51,6 +51,8 @@ enum class StartupState {
   CHECK_ESTOP,
   PASSED,
   FAULT,
+  OFF,    ///< Szándékos, operátor által kezdeményezett leállítás (/robot/shutdown topic).
+          ///< Foxglove-ban megkülönböztethető a FAULT (crash) állapottól.
 };
 
 static const char * state_name(StartupState s)
@@ -62,6 +64,7 @@ static const char * state_name(StartupState s)
     case StartupState::CHECK_ESTOP:  return "CHECK_ESTOP";
     case StartupState::PASSED:       return "PASSED";
     case StartupState::FAULT:        return "FAULT";
+    case StartupState::OFF:          return "OFF";
     default:                         return "UNKNOWN";
   }
 }
@@ -135,6 +138,17 @@ public:
       [this](std_msgs::msg::Float32::SharedPtr msg) {
         rc_mode_active_   = (msg->data > 0.5f);
         rc_mode_received_ = true;
+      });
+
+    // /robot/shutdown — szándékos leállítás jelzése (pl. make down).
+    // data=true → OFF állapotba lép; Foxglove látja, hogy ez graceful shutdown
+    // és nem crash/kapcsolatvesztés.
+    shutdown_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "/robot/shutdown", rclcpp::QoS(10),
+      [this](std_msgs::msg::Bool::SharedPtr msg) {
+        if (msg->data && state_ != StartupState::OFF) {
+          graceful_shutdown("operator shutdown (/robot/shutdown received)");
+        }
       });
 
     // --- publishers ---
@@ -319,6 +333,13 @@ private:
       case StartupState::FAULT:
         // Latched — keep publishing state, wait for operator restart
         break;
+
+      // ------------------------------------------------------ OFF
+      case StartupState::OFF:
+        // Szándékos leállítás — latched, csak az állapotot publikálja.
+        // Foxglove számára megkülönböztethető a FAULT-tól: ez nem hiba,
+        // hanem operátor által kezdeményezett graceful shutdown.
+        break;
     }
 
     publish_state();
@@ -337,6 +358,25 @@ private:
     armed_pub_->publish(msg);
 
     state_ = StartupState::FAULT;
+  }
+
+  // ---------------------------------------------------------------- graceful_shutdown
+
+  /// Szándékos operátor leállítás — OFF állapotba lép.
+  /// A `reason` mező megjelenik a /startup/state JSON-ban Foxglove számára.
+  /// Különbség a fault() -tól: ez NEM hiba, hanem tervezett leállítás.
+  void graceful_shutdown(const std::string & reason)
+  {
+    shutdown_reason_ = reason;
+    RCLCPP_INFO(get_logger(), "=== Graceful shutdown: %s ===", reason.c_str());
+    RCLCPP_INFO(get_logger(), "Robot stack leállítás folyamatban — OFF állapot.");
+
+    std_msgs::msg::Bool msg;
+    msg.data = false;
+    armed_pub_->publish(msg);
+
+    state_            = StartupState::OFF;
+    state_entry_time_ = now();
   }
 
   // ---------------------------------------------------------------- publish
@@ -366,6 +406,13 @@ private:
       }
       ss << ",\"fault_reason\":\"" << safe << "\"";
     }
+    if (state_ == StartupState::OFF) {
+      std::string safe = shutdown_reason_;
+      for (char & c : safe) {
+        if (c == '"') c = '\'';
+      }
+      ss << ",\"shutdown_reason\":\"" << safe << "\"";
+    }
     ss << "}";
 
     std_msgs::msg::String out;
@@ -391,6 +438,7 @@ private:
   rclcpp::Time state_entry_time_;
   std::optional<rclcpp::Time> motion_stable_since_;
   std::string fault_reason_;
+  std::string shutdown_reason_;    ///< Graceful shutdown oka (OFF állapotban)
   bool armed_published_    = false;
   int  last_estop_wait_log_ = -1;
 
@@ -428,7 +476,8 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr  odom_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr    imu_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr      estop_sub_;
-  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr    rc_mode_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr   rc_mode_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr      shutdown_sub_;
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr       state_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr         armed_pub_;

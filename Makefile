@@ -19,6 +19,14 @@ up: check realsense-up
 	@sudo docker compose up -d
 
 down:
+	@echo "Shutdown jelzés küldése a startup_supervisor-nak (OFF állapot)..."
+	@sudo docker compose exec -T robot bash -c \
+		"source /opt/ros/jazzy/setup.bash && \
+		 source /root/talicska-ws/install/setup.bash && \
+		 export CYCLONEDDS_URI=file:///root/talicska-robot/cyclonedds.xml && \
+		 ros2 topic pub --once /robot/shutdown std_msgs/msg/Bool '{data: true}'" \
+		2>/dev/null || true
+	@sleep 1
 	@echo "RPLidar motor leállítás..."
 	@sudo docker compose exec -T robot pkill -SIGINT -f rplidar_node 2>/dev/null || true
 	@sleep 2

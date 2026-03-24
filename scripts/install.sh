@@ -605,7 +605,7 @@ install_systemd() {
     # ── System services ────────────────────────────────────────────────────────
     local system_service_dir="/etc/systemd/system"
 
-    for svc in talicska-power talicska-robot; do
+    for svc in talicska-power talicska-robot talicska-restart-watchdog; do
         local src="${systemd_src}/${svc}.service"
         local dst="${system_service_dir}/${svc}.service"
         if [[ ! -f "${src}" ]]; then
@@ -635,6 +635,16 @@ install_systemd() {
     step "systemctl daemon-reload (talicska-robot.service regisztrálva, de NEM enabled)..."
     run sudo systemctl daemon-reload
     ok "talicska-robot.service: regisztrálva (engedélyezés: robot-enable)"
+
+    # talicska-restart-watchdog.service: engedélyezése (robot nélkül is futhat)
+    if sudo systemctl is-enabled talicska-restart-watchdog.service &>/dev/null 2>&1; then
+        skip "talicska-restart-watchdog.service: már enabled"
+    else
+        step "talicska-restart-watchdog.service engedélyezése..."
+        run sudo systemctl daemon-reload
+        run sudo systemctl enable talicska-restart-watchdog.service
+        ok "talicska-restart-watchdog.service: enabled"
+    fi
 
     # ── User service (tmux) ────────────────────────────────────────────────────
     local user_systemd_dir="${user_home}/.config/systemd/user"
