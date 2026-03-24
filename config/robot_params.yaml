@@ -400,9 +400,10 @@ safety_supervisor:
     # Szenzor topic watchdog
     # scan watchdog aktív: proximity_distance_m > 0 VAGY enable_scan_watchdog: true
     # imu watchdog aktív:  tilt_roll_limit_deg < 90 VAGY enable_imu_watchdog: true
-    sensor_timeout_s:         2.0    # topic csend → dropout fault
-    sensor_recovery_stable_s: 2.0    # ennyi stabil adat → [recovered] jelölés (latch MEGMARAD)
-    enable_scan_watchdog:     true   # LiDAR dropout → scan_dropout_latch → ERROR
+    sensor_timeout_s:                2.0   # topic csend → dropout fault (runtime)
+    sensor_recovery_stable_s:        2.0   # ennyi stabil adat → [recovered] jelölés (latch MEGMARAD)
+    scan_watchdog_startup_grace_s:   5.0   # motor warmup grace backup: első scan után N mp-ig watchdog inaktív
+    enable_scan_watchdog:            true  # LiDAR dropout → scan_dropout_latch → ERROR
     enable_imu_watchdog:      false  # explicit ON (tilt=90° esetén is)
     # PLACEHOLDER (disabled) — ZED 2i és külső IMU watchdog
     # enable_zed_watchdog:      false
@@ -444,7 +445,7 @@ roboclaw_hardware:
   encoder_counts_per_rev:  70300
   gear_ratio:              1.0            # TODO: kalibrálás szükséges
   motion_strategy:         "speed_accel"
-  default_acceleration:    50000
+  default_acceleration:    230000
   duty_accel_rate:         50000
   duty_decel_rate:         50000
   duty_max_rad_s:          20.5

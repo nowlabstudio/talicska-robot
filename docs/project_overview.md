@@ -1,8 +1,8 @@
 # Robot Project — Teljes Projekt Áttekintés
 
-**Verzió:** 2.5
-**Dátum:** 2026-03-23
-**Státusz:** Implementáció folyamatban — Nav2 + SLAM + LiDAR működik, safety teljes latch rendszer kész, navigációs teszt folyamatban
+**Verzió:** 2.6
+**Dátum:** 2026-03-24
+**Státusz:** Implementáció folyamatban — Nav2 + SLAM + LiDAR működik, safety teljes latch rendszer kész, RPLidar graceful shutdown kész, navigációs teszt folyamatban
 
 ---
 
@@ -276,7 +276,9 @@ estop_was_pressed_for_reset_ = false (induláskor)
                               → scan_dropout_latch_ = false
                               → imu_dropout_latch_ = false
                               → realsense_dropout_latch_ = false
-                              → joint_states_dropout_latch_ = false (csak ha RoboClaw reconnected)
+                              → joint_states_dropout_latch_ = false (csak ha RoboClaw reconnected,
+                                különben estop_pending_joint_clear_ = true flag → törlés
+                                automatikusan a TCP reconnect után)
                               → watchdog_latch_ NEM törlődik E-Stop-pal
 ```
 
@@ -310,7 +312,10 @@ A safety_supervisor figyeli az érzékelő topicok életét, és dropout esetén
 | `scan_watchdog_active_` | `proximity_distance_m > 0` VAGY `enable_scan_watchdog: true` |
 | `imu_watchdog_active_` | `tilt_roll_limit_deg < 90°` VAGY `enable_imu_watchdog: true` |
 
-**Startup false positive védelem:** `scan_received_` / `imu_received_` = false amíg az első üzenet nem érkezik — a watchdog addig nem aktiválódik.
+**Startup false positive védelem (2-rétegű, 2026-03-24):**
+1. `scan_received_` = false amíg az első scan nem érkezik — a watchdog addig nem aktiválódik.
+2. **Motor stability gate** (`rplidar_ros/src/rplidar_node.cpp`): az rplidar_node csak akkor kezd el scan-t publisholni, ha `1/scan_duration >= motor_min_hz_` (default: 5.0 Hz). Motor warmup alatt (PWM rámpázás, ~1-3s) a scan_received_ false marad → watchdog nem indul el. Log: `"LiDAR motor stable at X.X Hz — scan publishing starts"`.
+3. **`scan_watchdog_startup_grace_s`** backup paraméter (default: 5.0s, `robot_params.yaml`): az első scan után N másodpercig a watchdog inaktív marad — második védelmi vonal arra az esetre ha a motor stability gate valami miatt nem szűr ki minden warmup scant.
 
 **IMU throttle és watchdog ütközés megoldása:** `last_imu_time_` frissítése a throttle check **előtt** — a watchdog a topic életét méri, nem a feldolgozás ritmusát.
 
@@ -503,15 +508,16 @@ heartbeat_rate_hz:    10.0   # /robot/heartbeat rate
 rc_timeout_s:         5.0    # /robot/rc_mode csend (rc_received_ után) → FAULT
 
 # Szenzor watchdog (ÚJ, 2026-03-20)
-sensor_timeout_s:          2.0    # topic csend → dropout fault + latch
-sensor_recovery_stable_s:  2.0    # ennyi stabil adat → [recovered] jelölés (latch megmarad)
-enable_scan_watchdog:      true   # ✅ AKTÍV (2026-03-22 óta) — LiDAR dropout → ERROR
-enable_imu_watchdog:       false  # ❌ kikapcsolva (tilt frame orientáció fix után engedélyezni)
-enable_realsense_watchdog: true   # ✅ AKTÍV — /camera/camera/color/camera_info timeout → ERROR
-realsense_timeout_s:       2.0    # RealSense camera_info csend → realsense_dropout_latch
-roboclaw_status_timeout_s: 2.0    # 2026-03-23: javítva 0.3→2.0 /hardware/roboclaw/connected topic csend → FAULT
-# enable_zed_watchdog:     false  # PLACEHOLDER
-# enable_ext_imu_watchdog: false  # PLACEHOLDER
+sensor_timeout_s:                2.0   # topic csend → dropout fault + latch (runtime)
+sensor_recovery_stable_s:        2.0   # ennyi stabil adat → [recovered] jelölés (latch megmarad)
+scan_watchdog_startup_grace_s:   5.0   # 2026-03-24: motor warmup backup grace (elsődleges: rplidar_node motor_min_hz_)
+enable_scan_watchdog:            true  # ✅ AKTÍV (2026-03-22 óta) — LiDAR dropout → ERROR
+enable_imu_watchdog:             false # ❌ kikapcsolva (tilt frame orientáció fix után engedélyezni)
+enable_realsense_watchdog:       true  # ✅ AKTÍV — /camera/camera/color/camera_info timeout → ERROR
+realsense_timeout_s:             2.0   # RealSense camera_info csend → realsense_dropout_latch
+roboclaw_status_timeout_s:       2.0   # 2026-03-23: javítva 0.3→2.0 /hardware/roboclaw/connected topic csend → FAULT
+# enable_zed_watchdog:           false # PLACEHOLDER
+# enable_ext_imu_watchdog:       false # PLACEHOLDER
 ```
 
 ---

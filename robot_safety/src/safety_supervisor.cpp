@@ -101,6 +101,7 @@ public:
     last_mode_time_(now()),
     last_baseline_publish_(now()),
     last_scan_time_(now()),
+    scan_first_received_time_(now()),
     last_imu_time_(now()),
     scan_recovery_start_(now()),
     imu_recovery_start_(now())
@@ -120,10 +121,11 @@ public:
     this->declare_parameter("mode_topic_timeout_s",  2.0);
     this->declare_parameter("heartbeat_rate_hz",    10.0);
     // Sensor watchdog params
-    this->declare_parameter("sensor_timeout_s",          2.0);
-    this->declare_parameter("sensor_recovery_stable_s",  2.0);
-    this->declare_parameter("enable_scan_watchdog",      false);
-    this->declare_parameter("enable_imu_watchdog",       false);
+    this->declare_parameter("sensor_timeout_s",              2.0);
+    this->declare_parameter("sensor_recovery_stable_s",      2.0);
+    this->declare_parameter("enable_scan_watchdog",          false);
+    this->declare_parameter("enable_imu_watchdog",           false);
+    this->declare_parameter("scan_watchdog_startup_grace_s", 0.0);
     // RoboClaw status heartbeat timeout — driver crash/freeze detection
     // At 10 Hz heartbeat: 0.3 s = 3 missed messages before FAULT
     this->declare_parameter("roboclaw_status_timeout_s", 0.3);
@@ -147,10 +149,11 @@ public:
     double hb_hz          = this->get_parameter("heartbeat_rate_hz").as_double();
     imu_min_interval_ns_  = static_cast<int64_t>(1.0e9 / imu_hz);
 
-    sensor_timeout_s_          = this->get_parameter("sensor_timeout_s").as_double();
-    sensor_recovery_stable_s_  = this->get_parameter("sensor_recovery_stable_s").as_double();
-    enable_scan_watchdog_      = this->get_parameter("enable_scan_watchdog").as_bool();
-    enable_imu_watchdog_       = this->get_parameter("enable_imu_watchdog").as_bool();
+    sensor_timeout_s_               = this->get_parameter("sensor_timeout_s").as_double();
+    sensor_recovery_stable_s_       = this->get_parameter("sensor_recovery_stable_s").as_double();
+    enable_scan_watchdog_           = this->get_parameter("enable_scan_watchdog").as_bool();
+    enable_imu_watchdog_            = this->get_parameter("enable_imu_watchdog").as_bool();
+    scan_watchdog_startup_grace_s_  = this->get_parameter("scan_watchdog_startup_grace_s").as_double();
     roboclaw_status_timeout_s_ = this->get_parameter("roboclaw_status_timeout_s").as_double();
 
     // Watchdog activation conditions
@@ -221,7 +224,15 @@ public:
         } else {
           // RoboClaw TCP reconnected
           joint_states_watchdog_ok_ = true;
-          RCLCPP_INFO(get_logger(), "RoboClaw TCP reconnected");
+          if (estop_pending_joint_clear_) {
+            estop_pending_joint_clear_  = false;
+            joint_states_dropout_latch_ = false;
+            persist_latches();
+            RCLCPP_INFO(get_logger(),
+              "RoboClaw TCP visszaállt — joint_states_dropout_latch törölve (E-Stop reset)");
+          } else {
+            RCLCPP_INFO(get_logger(), "RoboClaw TCP reconnected");
+          }
         }
       });
 
@@ -317,14 +328,17 @@ private:
       imu_dropout_latch_       = false;
       realsense_dropout_latch_ = false;
       if (joint_states_watchdog_ok_) {
-        // Only clear if RoboClaw has auto-reconnected — otherwise re-latch guard fires
+        // RoboClaw már online: azonnal töröljük
         joint_states_dropout_latch_ = false;
+      } else {
+        // RoboClaw még offline: halasztott törlés, amikor TCP visszaáll
+        estop_pending_joint_clear_ = true;
       }
       persist_latches();
       RCLCPP_WARN(get_logger(),
         "E-Stop reset: tilt/proximity/sensor/realsense latch-ek törölve%s",
         joint_states_watchdog_ok_ ? ", roboclaw_dropout törölve" :
-          " (roboclaw_dropout megmarad — TCP még offline)");
+          " (roboclaw_dropout törlés halasztva — TCP reconnect után automatikus)");
     }
 
     if (msg->data != prev) {
@@ -405,6 +419,9 @@ private:
   void scan_cb(const sensor_msgs::msg::LaserScan::SharedPtr msg)
   {
     // Watchdog time update at the start of callback
+    if (!scan_received_) {
+      scan_first_received_time_ = now();
+    }
     last_scan_time_ = now();
     scan_received_  = true;
 
@@ -545,7 +562,10 @@ private:
     }
 
     // 5. Sensor watchdog — LiDAR /scan
-    if (scan_watchdog_active_ && scan_received_) {
+    const bool scan_grace_active = scan_received_ &&
+      scan_watchdog_startup_grace_s_ > 0.0 &&
+      (t - scan_first_received_time_).seconds() < scan_watchdog_startup_grace_s_;
+    if (scan_watchdog_active_ && scan_received_ && !scan_grace_active) {
       const double scan_age = (t - last_scan_time_).seconds();
       if (scan_age > sensor_timeout_s_) {
         if (!scan_dropout_) {
@@ -989,6 +1009,7 @@ private:
   bool           roboclaw_status_received_     = false;  // startup guard (no false-positive on boot)
   bool           joint_states_watchdog_ok_     = false;  // current TCP state (managed by sub callback)
   bool           joint_states_dropout_latch_   = false;  // FAULT szint; /robot/reset OR E-Stop (if reconnected) törli
+  bool           estop_pending_joint_clear_    = false;  // E-Stop release-kor TCP offline volt → reconnect után auto-töröl
   rclcpp::Time   last_roboclaw_status_time_;              // init: now() in constructor
   double         roboclaw_status_timeout_s_    = 0.3;
 
@@ -1040,6 +1061,7 @@ private:
 
   // ── Szenzor watchdog (F2) ─────────────────────────────────────────────────
   rclcpp::Time  last_scan_time_;               // init: now() in constructor
+  rclcpp::Time  scan_first_received_time_;     // init: now() in constructor
   rclcpp::Time  last_imu_time_;                // init: now() in constructor
   bool          scan_received_           = false;
   bool          imu_received_            = false;
@@ -1047,9 +1069,10 @@ private:
   bool          imu_dropout_             = false;
   bool          scan_dropout_latch_      = false;
   bool          imu_dropout_latch_       = false;
-  double        sensor_timeout_s_        = 2.0;
-  double        sensor_recovery_stable_s_ = 2.0;
-  bool          enable_scan_watchdog_    = false;
+  double        sensor_timeout_s_               = 2.0;
+  double        sensor_recovery_stable_s_       = 2.0;
+  double        scan_watchdog_startup_grace_s_  = 0.0;
+  bool          enable_scan_watchdog_           = false;
   bool          enable_imu_watchdog_     = false;
   bool          scan_watchdog_active_    = false;
   bool          imu_watchdog_active_     = false;
