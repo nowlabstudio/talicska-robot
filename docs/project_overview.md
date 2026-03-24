@@ -1,8 +1,8 @@
 # Robot Project — Teljes Projekt Áttekintés
 
-**Verzió:** 2.6
+**Verzió:** 2.7
 **Dátum:** 2026-03-24
-**Státusz:** Implementáció folyamatban — Nav2 + SLAM + LiDAR működik, safety teljes latch rendszer kész, RPLidar graceful shutdown kész, navigációs teszt folyamatban
+**Státusz:** Implementáció folyamatban — Nav2 + SLAM + LiDAR működik, safety teljes latch rendszer kész, RPLidar graceful shutdown kész, startup_supervisor OFF állapot kész, Foxglove restart watchdog kész, navigációs teszt folyamatban
 
 ---
 
@@ -201,6 +201,57 @@ Foxglove, mission executive és minden más node ebből olvas.
 
 A `startup_supervisor` ezzel szemben csak **egyszeri, induláskor futó** ellenőrző.
 Miután PASSED-ba kerül és kiadja a `/startup/armed = true` jelet, futásidőben statikus marad.
+
+**startup_supervisor állapotok (2026-03-24):**
+
+| Állapot | Leírás | Foxglove szín |
+|---|---|---|
+| `INIT` | 1s settling delay | szürke |
+| `CHECK_MOTION` | Odom sebesség ellenőrzés | sárga |
+| `CHECK_TILT` | IMU dőlés ellenőrzés | sárga |
+| `CHECK_ESTOP` | E-Stop bridge online + nem aktív | sárga |
+| `PASSED` | Minden ellenőrzés sikeres, armed=true | zöld |
+| `FAULT` | Valamelyik ellenőrzés hibázott (restart szükséges) | piros |
+| `OFF` | Szándékos operátor leállítás (`make down` → `/robot/shutdown` topic) | kék |
+
+Az `OFF` állapot megkülönbözteti a szándékos leállítást (`FAULT` = hiba/crash) és az `OFFLINE` állapottól (kapcsolatvesztés). A `make down` target elsőként `/robot/shutdown` jelzést küld (1s delay), mielőtt a containerek leállnak — Foxglove így látja, hogy ez graceful shutdown.
+
+**startup_supervisor subscriptions:**
+
+| Topic | Típus | Szerepe |
+|---|---|---|
+| `/diff_drive_controller/odom` | Odometry | motion check |
+| `/camera/camera/imu` | Imu | tilt check |
+| `/robot/estop` | Bool | E-Stop state |
+| `/robot/rc_mode` | Float32 | RC mód detektálás |
+| `/robot/shutdown` | Bool | OFF állapot trigger (2026-03-24) |
+
+**`/startup/state` JSON struktúra (frissítve 2026-03-24):**
+
+```json
+{
+  "state":           "PASSED",
+  "armed":           true,
+  "check_motion":    true,
+  "check_tilt":      true,
+  "check_estop":     true,
+  "estop":           false,
+  "estop_online":    true,
+  "imu_ok":          true,
+  "tilt_roll":       1.23,
+  "tilt_pitch":      0.45,
+  "odom_linear":     0.00,
+  "odom_angular":    0.00,
+  "rc_mode":         false,
+  "fault_reason":    "",
+  "shutdown_reason": ""
+}
+```
+
+`shutdown_reason` csak OFF állapotban nem üres (pl. `"operator shutdown (/robot/shutdown received)"`).
+
+**Foxglove script:** `~/Dropbox/share/startupstate.ts` — frissítve 2026-03-24.
+Output mezők: `shutdown_reason`, `is_off`, `is_passed`, `is_fault`, `is_checking` segéd flagek feltételes megjelenítéshez.
 
 ---
 
@@ -786,6 +837,9 @@ launch_arguments={
 | realsense_dropout_latch_ nem törölhető /robot/reset-tel | robot_safety | ✅ reset_cb() feltételes clearing: recovered && !dropout esetén törli 2026-03-22 |
 | scan_dropout_latch watchdog inaktív volt (proximity=0, enable=false) | robot_params.yaml | ✅ enable_scan_watchdog: true beállítva 2026-03-22 |
 | RealSense depth image nem jelent meg (Foxglove "waiting") | realsense-jetson | ✅ depth_module.depth_profile: 848x480x30 (volt: 640x480, infra-val nem egyezett) 2026-03-22 |
+| startup_supervisor nem jelezte a szándékos leállítást — Foxglove FAULT-tól nem különböztette meg | robot_safety | ✅ OFF állapot + `/robot/shutdown` subscriber + `graceful_shutdown()` implementálva 2026-03-24 |
+| `make down` nem küldött shutdown jelzést — startup_supervisor utolsó látott állapota megmaradt | Makefile | ✅ shutdown jelzés küldése `docker compose stop` előtt (1s delay) 2026-03-24 |
+| Foxglove-ból nem lehetett a robot stacket újraindítani | scripts | ✅ `restart_watchdog.sh` + `talicska-restart-watchdog.service` — HOST-oldali watchdog `/robot/restart` topicra 2026-03-24 |
 
 ---
 
@@ -795,10 +849,12 @@ launch_arguments={
 
 ```
 Boot
- └─ talicska-power.service   [system] nvpmodel -m 0 + jetson_clocks
-     └─ talicska-robot.service  [system] startup.sh → make up
-         └─ talicska-tmux.service  [user] tmux session 5 ablakkal
-             └─ SSH login → auto-attach (bashrc)
+ ├─ talicska-power.service          [system] jetson_clocks
+ ├─ talicska-robot.service          [system] startup.sh → make up
+ │   └─ talicska-tmux.service       [user]   tmux session 5 ablakkal
+ │       └─ SSH login → auto-attach (bashrc)
+ └─ talicska-restart-watchdog.service  [system] restart_watchdog.sh (Restart=always)
+     └─ Figyeli a /robot/restart topicot → systemctl restart talicska-robot.service
 ```
 
 ### 14.1 talicska-power.service
@@ -850,11 +906,25 @@ Boot
 | `robot-service-logs` | journalctl -f |
 | `robot-tmux` | tmux attach vagy session indítás |
 
-### 14.6 Telepítés
+### 14.6 talicska-restart-watchdog.service (2026-03-24)
+
+- System service, `Type=simple`, `User=root`, `Restart=always`
+- `ExecStart=scripts/restart_watchdog.sh`
+- Docker containerektől **független** — robot service nélkül is fut
+- Blokkolva figyeli a `/robot/restart` topicot (`docker compose exec -T robot ros2 topic echo --count 1`)
+- Üzenet érkezésekor: `systemctl restart talicska-robot.service` + 30s cooldown
+- **Engedélyezve** (`enabled`) — `install.sh` automatikusan beállítja
+
+**Foxglove restart gomb (layout konfig):**
+- Panels → Add Panel → Publish
+- Topic: `/robot/restart` | Type: `std_msgs/msg/Bool` | Payload: `{"data": true}`
+
+### 14.7 Telepítés
 
 ```bash
 bash scripts/install.sh
-# install_systemd() fut: power+robot+tmux service másolás, enable, linger, bash_aliases
+# install_systemd() fut: power+robot+restart-watchdog+tmux service másolás, enable, linger, bash_aliases
+# talicska-restart-watchdog.service: automatikusan enabled
 ```
 
 Manuális systemd engedélyezés (robot service):
@@ -863,7 +933,7 @@ robot-enable   # rebootnál indul
 robot-disable  # fejlesztési módhoz
 ```
 
-### 14.7 Verifikáció
+### 14.8 Verifikáció
 
 ```bash
 bash scripts/test_jetson_config.sh
