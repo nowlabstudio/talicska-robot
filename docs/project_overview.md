@@ -1,8 +1,8 @@
 # Robot Project — Teljes Projekt Áttekintés
 
-**Verzió:** 2.7
+**Verzió:** 2.8
 **Dátum:** 2026-03-24
-**Státusz:** Implementáció folyamatban — Nav2 + SLAM + LiDAR működik, safety teljes latch rendszer kész, RPLidar graceful shutdown kész, startup_supervisor OFF állapot kész, Foxglove restart watchdog kész, navigációs teszt folyamatban
+**Státusz:** Implementáció folyamatban — Nav2 + SLAM + LiDAR működik, safety teljes latch rendszer kész, RPLidar graceful shutdown kész, startup_supervisor RESTARTING/STOPPING állapotok kész, restart+shutdown watchdog (Foxglove) kész, boot auto-start kész, navigációs teszt folyamatban
 
 ---
 
@@ -213,8 +213,12 @@ Miután PASSED-ba kerül és kiadja a `/startup/armed = true` jelet, futásidőb
 | `PASSED` | Minden ellenőrzés sikeres, armed=true | zöld |
 | `FAULT` | Valamelyik ellenőrzés hibázott (restart szükséges) | piros |
 | `OFF` | Szándékos operátor leállítás (`make down` → `/robot/shutdown` topic) | kék |
+| `STOPPING` | Leállítás folyamatban — `/robot/shutdown` érkezett, graceful shutdown kiadva (pl. `make down` flow részeként) | kék |
+| `RESTARTING` | Újraindítás folyamatban — `/robot/restart` érkezett, watchdog `systemctl stop + start` futtat | narancs |
 
 Az `OFF` állapot megkülönbözteti a szándékos leállítást (`FAULT` = hiba/crash) és az `OFFLINE` állapottól (kapcsolatvesztés). A `make down` target elsőként `/robot/shutdown` jelzést küld (1s delay), mielőtt a containerek leállnak — Foxglove így látja, hogy ez graceful shutdown.
+
+A `RESTARTING` állapotba kerülés után a container leáll (watchdog), majd a stack újraindul — az állapot a következő INIT-ig látható (Foxglove offline periódus alatt is tájékoztat).
 
 **startup_supervisor subscriptions:**
 
@@ -224,7 +228,8 @@ Az `OFF` állapot megkülönbözteti a szándékos leállítást (`FAULT` = hiba
 | `/camera/camera/imu` | Imu | tilt check |
 | `/robot/estop` | Bool | E-Stop state |
 | `/robot/rc_mode` | Float32 | RC mód detektálás |
-| `/robot/shutdown` | Bool | OFF állapot trigger (2026-03-24) |
+| `/robot/shutdown` | Bool | OFF/STOPPING állapot trigger (2026-03-24) |
+| `/robot/restart` | Bool | RESTARTING állapot trigger (2026-03-24) |
 
 **`/startup/state` JSON struktúra (frissítve 2026-03-24):**
 
@@ -840,6 +845,13 @@ launch_arguments={
 | startup_supervisor nem jelezte a szándékos leállítást — Foxglove FAULT-tól nem különböztette meg | robot_safety | ✅ OFF állapot + `/robot/shutdown` subscriber + `graceful_shutdown()` implementálva 2026-03-24 |
 | `make down` nem küldött shutdown jelzést — startup_supervisor utolsó látott állapota megmaradt | Makefile | ✅ shutdown jelzés küldése `docker compose stop` előtt (1s delay) 2026-03-24 |
 | Foxglove-ból nem lehetett a robot stacket újraindítani | scripts | ✅ `restart_watchdog.sh` + `talicska-restart-watchdog.service` — HOST-oldali watchdog `/robot/restart` topicra 2026-03-24 |
+| startup_supervisor restart callback STOPPING állapotot állított be RESTARTING helyett | startup_supervisor.cpp:180 | ✅ `state_ = StartupState::RESTARTING` — guard feltétel RESTARTING-re is kiterjesztve 2026-03-24 |
+| `systemctl restart` race condition — ExecStart gyorsan kilép (docker compose up -d daemon), ExecStop lefut, ExecStart NEM fut újra | restart_watchdog.sh | ✅ `systemctl stop` + `systemctl start` (explicit szekvenciális) — systemctl restart helyett 2026-03-24 |
+| Foxglove shutdown gomb nem állította le a robot stacket — `/robot/shutdown` topic nem volt kezelve watchdog szinten | restart_watchdog.sh | ✅ `/robot/shutdown` hozzáadva Python rclpy subscriber-hez (SHUTDOWN branch → systemctl stop) 2026-03-24 |
+| `restart_watchdog.sh` `ros2 topic echo --count 1` ROS2 Jazzy discovery timeout miatt ~4s-onként hamisan kilépett | restart_watchdog.sh | ✅ Python rclpy `spin()` subscriber — blokkolva vár első valós üzenetre, nem időzít ki 2026-03-24 |
+| `/tmp/safety_latch_state` latch fájl persistent maradt restart után (Docker writable layer) — robot fault state-ben indult | Makefile, safety_supervisor | ✅ `make down` és watchdog SHUTDOWN branch törli a latch fájlt leállítás előtt (`rm -f /tmp/safety_latch_state`) 2026-03-24 |
+| `talicska-robot.service` DISABLED volt — power-on után manuális `make up` kellett, robot nem volt önálló | install.sh, systemd | ✅ `systemctl enable talicska-robot.service` — boot-kor automatikusan indul 2026-03-24 |
+| `talicska-restart-watchdog.service` `install.sh` csak enable-ölte, de nem indította el — első futtatás után reboot kellett | install.sh | ✅ `systemctl start` hozzáadva az enable után 2026-03-24 |
 
 ---
 
@@ -849,12 +861,13 @@ launch_arguments={
 
 ```
 Boot
- ├─ talicska-power.service          [system] jetson_clocks
- ├─ talicska-robot.service          [system] startup.sh → make up
- │   └─ talicska-tmux.service       [user]   tmux session 5 ablakkal
+ ├─ talicska-power.service             [system] jetson_clocks
+ ├─ talicska-robot.service             [system] startup.sh → make up  [ENABLED]
+ │   └─ talicska-tmux.service          [user]   tmux session 5 ablakkal
  │       └─ SSH login → auto-attach (bashrc)
  └─ talicska-restart-watchdog.service  [system] restart_watchdog.sh (Restart=always)
-     └─ Figyeli a /robot/restart topicot → systemctl restart talicska-robot.service
+     ├─ /robot/restart → systemctl stop + start talicska-robot.service
+     └─ /robot/shutdown → systemctl stop talicska-robot.service
 ```
 
 ### 14.1 talicska-power.service
@@ -871,8 +884,12 @@ Boot
 - `ExecStart=scripts/startup.sh` → `exec make up` (systemd PID tracking)
 - `ExecStop=scripts/shutdown.sh` → `make down`
 - `Restart=on-failure`, `TimeoutStopSec=90s`
-- **Alapból DISABLED** — fejlesztési fázisban ne induljon minden rebootnál
-- Engedélyezés: `robot-enable` alias
+- **Engedélyezve (`enabled`)** — boot-kor automatikusan indul (2026-03-24 óta)
+- Kikapcsolás (fejlesztési mód): `robot-disable` alias
+
+> **Boot viselkedés:** power-on → systemd start → startup.sh → `docker compose up -d` (RealSense + robot stack) → startup_supervisor INIT→PASSED → robot operatív. Ha a stack nem fut, de elindítható, a watchdog megvárja a container elindulását.
+
+> **Korábbi policy (fejlesztési fázis):** `talicska-robot.service` szándékosan DISABLED volt — minden rebootnál manuális `make up` szükséges volt. 2026-03-24-én megváltozott: a robot power-on után legyen azonnal operatív (Follow Me / Shuttle / RC módok mindegyikéhez szükséges a teljes stack).
 
 ### 14.3 Graceful Shutdown
 
@@ -911,13 +928,39 @@ Boot
 - System service, `Type=simple`, `User=root`, `Restart=always`
 - `ExecStart=scripts/restart_watchdog.sh`
 - Docker containerektől **független** — robot service nélkül is fut
-- Blokkolva figyeli a `/robot/restart` topicot (`docker compose exec -T robot ros2 topic echo --count 1`)
-- Üzenet érkezésekor: `systemctl restart talicska-robot.service` + 30s cooldown
-- **Engedélyezve** (`enabled`) — `install.sh` automatikusan beállítja
+- **Engedélyezve** (`enabled`) — `install.sh` automatikusan beállítja és elindítja
+
+**Watchdog mechanizmus (2026-03-24, v2 — Python rclpy subscriber):**
+
+```
+1. Megvárja, amíg a robot container fut (docker compose exec -T robot echo)
+2. Python subscriber (stdin via docker compose exec -i) blokkolva figyel
+   MINDKÉT topicra: /robot/restart és /robot/shutdown
+   Első data=true üzenetre "RESTART" vagy "SHUTDOWN" stdout-ra, rclpy.shutdown()
+3. RESTART:  systemctl stop talicska-robot.service
+             systemctl start talicska-robot.service
+   SHUTDOWN: systemctl stop talicska-robot.service
+4. 30s cooldown, vissza az 1. lépésre
+```
+
+> **Miért stop+start és nem systemctl restart?** Race condition: `startup.sh` (ExecStart) azonnal visszatér (docker compose up -d daemon). systemd a service-t "aktivált"-nak érzékeli, és restart esetén az ExecStop lefut, de az ExecStart NEM fut újra (exit 0 → not failure → no re-exec). Explicit `stop` + `start` megbízhatóan elvégzi mindkét lépést.
+
+> **Miért Python rclpy, nem ros2 topic echo?** ROS2 Jazzy discovery timeout (~4s) miatt a `ros2 topic echo --count 1` folyamatosan kilép üzenet nélkül is (discovery időtúllépés) — ez hamis újraindításokat okozna. A Python `rclpy.spin()` blokkolva vár az első valós üzenetre.
 
 **Foxglove restart gomb (layout konfig):**
 - Panels → Add Panel → Publish
 - Topic: `/robot/restart` | Type: `std_msgs/msg/Bool` | Payload: `{"data": true}`
+- Hatás: startup_supervisor → RESTARTING állapot (narancs), watchdog stop+start, INIT→PASSED flow
+
+**Foxglove shutdown gomb (layout konfig):**
+- Panels → Add Panel → Publish
+- Topic: `/robot/shutdown` | Type: `std_msgs/msg/Bool` | Payload: `{"data": true}`
+- Hatás: startup_supervisor → OFF állapot (kék), watchdog `systemctl stop`, stack leáll
+
+**Latch törlés tervezett leállítás esetén:**
+- `make down` és a Foxglove shutdown gomb egyaránt törli a `/tmp/safety_latch_state` fájlt a leállítás előtt
+- Ez biztosítja, hogy restart után a robot NE maradjon fault state-ben szándékos leállítás esetén
+- Ha a container writable layer-en marad a latch fájl (persist across `docker compose stop + up -d`), a következő induláskor hibás állapotot okozna
 
 ### 14.7 Telepítés
 
