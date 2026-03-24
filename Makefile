@@ -24,7 +24,7 @@ down:
 		"source /opt/ros/jazzy/setup.bash && \
 		 source /root/talicska-ws/install/setup.bash && \
 		 export CYCLONEDDS_URI=file:///root/talicska-robot/cyclonedds.xml && \
-		 ros2 topic pub --once /robot/shutdown std_msgs/msg/Bool '{data: true}'" \
+		 timeout 3 ros2 topic pub --once /robot/shutdown std_msgs/msg/Bool '{data: true}'" \
 		2>/dev/null || true
 	@sleep 1
 	@echo "RPLidar motor leállítás..."

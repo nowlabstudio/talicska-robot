@@ -51,8 +51,11 @@ enum class StartupState {
   CHECK_ESTOP,
   PASSED,
   FAULT,
-  OFF,    ///< Szándékos, operátor által kezdeményezett leállítás (/robot/shutdown topic).
-          ///< Foxglove-ban megkülönböztethető a FAULT (crash) állapottól.
+  STOPPING,   ///< Szándékos, operátor által kezdeményezett leállítás (/robot/shutdown topic).
+              ///< Foxglove-ban megkülönböztethető a FAULT (crash) állapottól.
+  RESTARTING, ///< Restart request érkezett (/robot/restart topic).
+              ///< A HOST-oldali restart_watchdog.sh fogja a talicska-robot.service-t újraindítani.
+              ///< Ez az állapot Foxglove-ban jelzi, hogy a leállítás szándékos és újraindítás következik.
 };
 
 static const char * state_name(StartupState s)
@@ -64,7 +67,8 @@ static const char * state_name(StartupState s)
     case StartupState::CHECK_ESTOP:  return "CHECK_ESTOP";
     case StartupState::PASSED:       return "PASSED";
     case StartupState::FAULT:        return "FAULT";
-    case StartupState::OFF:          return "OFF";
+    case StartupState::STOPPING:     return "STOPPING";
+    case StartupState::RESTARTING:   return "RESTARTING";
     default:                         return "UNKNOWN";
   }
 }
@@ -146,8 +150,35 @@ public:
     shutdown_sub_ = create_subscription<std_msgs::msg::Bool>(
       "/robot/shutdown", rclcpp::QoS(10),
       [this](std_msgs::msg::Bool::SharedPtr msg) {
-        if (msg->data && state_ != StartupState::OFF) {
+        if (msg->data && state_ != StartupState::STOPPING &&
+            state_ != StartupState::RESTARTING) {
           graceful_shutdown("operator shutdown (/robot/shutdown received)");
+        }
+      });
+
+    // /robot/restart — Foxglove restart gomb vagy egyéb restart request.
+    // data=true → RESTARTING állapotba lép (Foxglove visszajelzés),
+    // majd a HOST-oldali restart_watchdog.sh végzi a tényleges újraindítást
+    // (systemctl restart talicska-robot.service).
+    restart_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "/robot/restart", rclcpp::QoS(10),
+      [this](std_msgs::msg::Bool::SharedPtr msg) {
+        if (msg->data && state_ != StartupState::STOPPING) {
+          RCLCPP_WARN(get_logger(),
+            "======================================");
+          RCLCPP_WARN(get_logger(),
+            " RESTART REQUEST — STOPPING, újraindítás folyamatban...");
+          RCLCPP_WARN(get_logger(),
+            " restart_watchdog.sh hívja: systemctl restart talicska-robot.service");
+          RCLCPP_WARN(get_logger(),
+            "======================================");
+
+          std_msgs::msg::Bool armed_msg;
+          armed_msg.data = false;
+          armed_pub_->publish(armed_msg);
+
+          state_            = StartupState::STOPPING;
+          state_entry_time_ = now();
         }
       });
 
@@ -334,11 +365,18 @@ private:
         // Latched — keep publishing state, wait for operator restart
         break;
 
-      // ------------------------------------------------------ OFF
-      case StartupState::OFF:
-        // Szándékos leállítás — latched, csak az állapotot publikálja.
-        // Foxglove számára megkülönböztethető a FAULT-tól: ez nem hiba,
-        // hanem operátor által kezdeményezett graceful shutdown.
+      // ------------------------------------------------------ STOPPING
+      case StartupState::STOPPING:
+        // Szándékos operátor leállítás (make down / /robot/shutdown).
+        // Latched — csak az állapotot publikálja amíg a container le nem áll.
+        break;
+
+      // ------------------------------------------------------ RESTARTING
+      case StartupState::RESTARTING:
+        // Restart request érkezett (/robot/restart) — Foxglove visszajelzés.
+        // A tényleges újraindítást a HOST-oldali restart_watchdog.sh végzi.
+        // Ez az állapot addig látható, amíg a container le nem áll.
+        // Újraindítás után a node INIT-ből indul és a normál szekvencián megy át.
         break;
     }
 
@@ -369,13 +407,13 @@ private:
   {
     shutdown_reason_ = reason;
     RCLCPP_INFO(get_logger(), "=== Graceful shutdown: %s ===", reason.c_str());
-    RCLCPP_INFO(get_logger(), "Robot stack leállítás folyamatban — OFF állapot.");
+    RCLCPP_INFO(get_logger(), "Robot stack leállítás folyamatban — STOPPING állapot.");
 
     std_msgs::msg::Bool msg;
     msg.data = false;
     armed_pub_->publish(msg);
 
-    state_            = StartupState::OFF;
+    state_            = StartupState::STOPPING;
     state_entry_time_ = now();
   }
 
@@ -406,7 +444,7 @@ private:
       }
       ss << ",\"fault_reason\":\"" << safe << "\"";
     }
-    if (state_ == StartupState::OFF) {
+    if (state_ == StartupState::STOPPING) {
       std::string safe = shutdown_reason_;
       for (char & c : safe) {
         if (c == '"') c = '\'';
@@ -478,6 +516,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr      estop_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr   rc_mode_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr      shutdown_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr      restart_sub_;
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr       state_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr         armed_pub_;
