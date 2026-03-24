@@ -163,7 +163,8 @@ public:
     restart_sub_ = create_subscription<std_msgs::msg::Bool>(
       "/robot/restart", rclcpp::QoS(10),
       [this](std_msgs::msg::Bool::SharedPtr msg) {
-        if (msg->data && state_ != StartupState::STOPPING) {
+        if (msg->data && state_ != StartupState::STOPPING &&
+            state_ != StartupState::RESTARTING) {
           RCLCPP_WARN(get_logger(),
             "======================================");
           RCLCPP_WARN(get_logger(),
@@ -177,7 +178,7 @@ public:
           armed_msg.data = false;
           armed_pub_->publish(armed_msg);
 
-          state_            = StartupState::STOPPING;
+          state_            = StartupState::RESTARTING;
           state_entry_time_ = now();
         }
       });

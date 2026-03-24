@@ -631,12 +631,18 @@ install_systemd() {
         ok "talicska-power.service: enabled"
     fi
 
-    # talicska-robot.service: CSAK daemon-reload, NEM enable (fejlesztési policy)
-    step "systemctl daemon-reload (talicska-robot.service regisztrálva, de NEM enabled)..."
+    # talicska-robot.service: enable + daemon-reload (boot-kor automatikusan indul)
+    step "systemctl daemon-reload + enable (talicska-robot.service)..."
     run sudo systemctl daemon-reload
-    ok "talicska-robot.service: regisztrálva (engedélyezés: robot-enable)"
+    if sudo systemctl is-enabled talicska-robot.service &>/dev/null 2>&1; then
+        skip "talicska-robot.service: már enabled"
+    else
+        run sudo systemctl enable talicska-robot.service
+        ok "talicska-robot.service: enabled (boot-kor automatikusan indul)"
+    fi
 
-    # talicska-restart-watchdog.service: engedélyezése (robot nélkül is futhat)
+    # talicska-restart-watchdog.service: engedélyezése + azonnali indítása
+    # (enable csak következő boot-ra életbe lép — start azonnal kell)
     if sudo systemctl is-enabled talicska-restart-watchdog.service &>/dev/null 2>&1; then
         skip "talicska-restart-watchdog.service: már enabled"
     else
@@ -644,6 +650,13 @@ install_systemd() {
         run sudo systemctl daemon-reload
         run sudo systemctl enable talicska-restart-watchdog.service
         ok "talicska-restart-watchdog.service: enabled"
+    fi
+    if sudo systemctl is-active --quiet talicska-restart-watchdog.service; then
+        skip "talicska-restart-watchdog.service: már fut"
+    else
+        step "talicska-restart-watchdog.service indítása..."
+        run sudo systemctl start talicska-restart-watchdog.service
+        ok "talicska-restart-watchdog.service: fut"
     fi
 
     # ── User service (tmux) ────────────────────────────────────────────────────
