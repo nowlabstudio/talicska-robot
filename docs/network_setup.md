@@ -1,8 +1,13 @@
 # Talicska Robot — Hálózati Konfiguráció
 
-**Robot belső subnet:** 10.0.10.0/24 — Jetson ETH0 (static)
-**Lab LAN subnet:** 192.168.68.0/24 — Jetson ETH1 (DHCP)
+**Lab LAN subnet:** 192.168.68.0/24 — Jetson `enP8p1s0` (DHCP, default route)
+**Robot belső subnet:** 10.0.10.0/24 — Jetson `enP1p1s0` (static, no default route)
 **Tailscale overlay:** 100.x.y.z/32 — WireGuard mesh VPN, subnet router mód
+
+> **Safety design:** Ha az `enP1p1s0` (robot belső kábel) leesik, a robot leáll,
+> de a Jetson az `enP8p1s0` (LAN) interfészen keresztül SSH-val és Tailscale-en
+> át továbbra is elérhető marad. Ez szándékos — a robot hálózat leválasztása nem
+> ejti ki a gépet a menedzsment hálózatból.
 
 ---
 
@@ -17,13 +22,13 @@
     │                                        │
 [SW-MAIN]  ── Dev laptop (192.168.68.125)    │  ← Tailscale mesh VPN
     │                                        │     (WireGuard tunnel)
-Jetson ETH1 (eth1, DHCP, 192.168.68.x)   ← lab LAN, internet, SSH
-Jetson tailscale0 (100.71.242.128)        ← Tailscale VPN interfész
+Jetson enP8p1s0 (DHCP, 192.168.68.x)    ← lab LAN, internet, SSH  [DEFAULT ROUTE]
+Jetson tailscale0 (100.71.242.128)       ← Tailscale VPN interfész
     │                                        subnet router: 10.0.10.0/24
-Jetson ETH0 (eth0, static, 10.0.10.1)    ← robot belső hálózat
+Jetson enP1p1s0 (static, 10.0.10.1)     ← robot belső hálózat     [NO DEFAULT ROUTE]
     │
    SW1 (6-port managed)
-    ├── port 1 ── Jetson ETH0       (10.0.10.1)
+    ├── port 1 ── Jetson enP1p1s0  (10.0.10.1)
     ├── port 2 ── RC bridge         (10.0.10.22)  RP2040 + W6100
     ├── port 3 ── E-Stop bridge     (10.0.10.23)  RP2040 + W6100
     ├── port 4 ── RoboClaw / USR-K6 (10.0.10.24)  M1, M2 — TCP 8234
@@ -40,7 +45,7 @@ bárhonnan (LTE, másik WiFi, otthon) elérje a robot belső 10.0.10.0/24 háló
 eszközöket (RoboClaw web UI, bridge-ek).
 
 **Kritikus:** A Jetson az egyetlen híd SW-MAIN (lab LAN) és SW1 (robot) között.
-SW1 és SW-MAIN között **nincs közvetlen kábel** — ha Jetson ETH1 leesik ÉS
+SW1 és SW-MAIN között **nincs közvetlen kábel** — ha `enP8p1s0` (LAN) leesik ÉS
 a Tailscale tunnel is elérhetetlenné válik, a robot csak konzolon (HDMI/UART) érhető el.
 
 ---
@@ -52,12 +57,12 @@ a Tailscale tunnel is elérhetetlenné válik, a robot csak konzolon (HDMI/UART)
 | **Lab LAN — 192.168.68.0/24, gateway: 192.168.68.1, mask: 255.255.255.0** |||||
 | 192.168.68.1  | Gateway / Router          | —                   | LAN gateway, DHCP               | ✅ aktív        |
 | 192.168.68.125| Dev laptop                | MAC-alapú DHCP      | Fejlesztői gép                  | ✅ aktív        |
-| 192.168.68.x  | Jetson ETH1               | `ip link show eth1` | SSH, internet, ROS2 DDS         | 🔧 netplan      |
+| 192.168.68.x  | Jetson **enP8p1s0**       | `ip link show enP8p1s0` | SSH, internet, default route | 🔧 nmcli (DHCP) |
 | **Tailscale overlay — 100.64.0.0/10, WireGuard mesh VPN** |||||
 | 100.71.242.128| Jetson (synapse)          | tailscale0           | VPN + subnet router 10.0.10.0/24| ✅ aktív        |
 | 100.x.y.z     | Dev laptop                | tailscale0           | VPN kliens, eléri robot subnetet| ✅ aktív        |
 | **Robot belső — 10.0.10.0/24, gateway: 10.0.10.1, mask: 255.255.255.0** |||||
-| 10.0.10.1     | Jetson ETH0               | `ip link show eth0` | MicroROS agent, ROS2, Nav2      | 🔧 netplan      |
+| 10.0.10.1     | Jetson **enP1p1s0**       | `ip link show enP1p1s0` | MicroROS agent, ROS2, Nav2 | 🔧 nmcli (static)|
 | 10.0.10.22    | RC bridge (RP2040+W6100)  | 0C:2F:94:30:58:22   | /robot/motor_left, motor_right  | 🔧 upload_config|
 | 10.0.10.23    | E-Stop bridge (RP2040+W6100)| 0C:2F:94:30:58:33 | /robot/estop                    | 🔧 upload_config|
 | 10.0.10.24    | RoboClaw / USR-K6         | USR-K6 web UI       | Motor M1, M2 — TCP 8234         | 🔧 web UI       |
@@ -67,6 +72,25 @@ a Tailscale tunnel is elérhetetlenné válik, a robot csak konzolon (HDMI/UART)
 ---
 
 ## Tervezési döntések
+
+### Interfész szerepkör kiosztás — enP8p1s0 vs enP1p1s0
+
+A J401 kártyán két Ethernet port van, fixált PCI bus azonosítókkal:
+
+| Interfész | Fizikai port | Szerepkör | Konfig |
+|---|---|---|---|
+| `enP8p1s0` | ETH0 (külső) | Lab LAN, internet, SSH | DHCP, default route |
+| `enP1p1s0` | ETH1 (belső) | Robot belső hálózat | Static 10.0.10.1/24 |
+
+**Safety indoklás:** Ha a robot belső hálózati kábel (`enP1p1s0`) leesik:
+- A robot leáll (MicroROS bridgek elérhetetlenné válnak → E-Stop trigger)
+- A Jetson az `enP8p1s0` (LAN) interfészen keresztül **továbbra is elérhető** SSH-val és Tailscale-en át
+- Ez szándékos: a robot fizikai lecsatlakozása nem ejti ki a gépet a menedzsment hálózatból
+
+Korábban fordítva volt kiosztva (`enP8p1s0` = robot belső, `enP1p1s0` = LAN).
+Ez a változtatás 2026-03-25-én lett bevezetve.
+
+---
 
 ### Miért két külön subnet?
 
@@ -97,7 +121,7 @@ forgalmat kell izolálni ugyanazon switch-en belül.
 A switch flat L2 üzemmódban működik, konfigurálni **nem kell** — csak bekötni:
 
 ```
-SW1 port 1  ←→  Jetson ETH0
+SW1 port 1  ←→  Jetson enP1p1s0  (robot belső, 10.0.10.1)
 SW1 port 2  ←→  RC bridge (Ethernet)
 SW1 port 3  ←→  E-Stop bridge (Ethernet)
 SW1 port 4  ←→  RoboClaw USR-K6 (Ethernet)
@@ -122,30 +146,23 @@ bash ~/talicska-robot-ws/src/robot/talicska-robot/scripts/install.sh
 bash ~/talicska-robot-ws/src/robot/talicska-robot/scripts/setup_network.sh
 ```
 
-**Vagy direktben** — előbb keresd meg a robot interfészt (amelyiken nincs default route):
+**Vagy direktben** — az interfész nevek fixek a J401 hardveren:
 ```bash
-ip route show default          # → melyik interfész a LAN (pl. enP1p1s0)
-ip link show | grep '^[0-9].*en'  # → összes ethernet interfész
-```
+# enP8p1s0 = külső/LAN (DHCP, default route) — NetworkManager kezeli automatikusan
+# enP1p1s0 = robot belső (static 10.0.10.1/24, no default route)
 
-Majd (cseréld `enP8p1s0`-t a valódi robot interfész nevére):
-```bash
-sudo nmcli connection add type ethernet ifname enP8p1s0 con-name robot-internal ipv4.method manual ipv4.addresses 10.0.10.1/24 ipv4.never-default yes ipv6.method disabled
+sudo nmcli connection add type ethernet ifname enP1p1s0 con-name robot-internal \
+    ipv4.method manual ipv4.addresses 10.0.10.1/24 \
+    ipv4.never-default yes ipv6.method disabled
 sudo nmcli connection up robot-internal
 ```
 
 Ellenőrzés:
 ```bash
-ip addr show      # → enP8p1s0: 10.0.10.1/24
-ip route show     # → 10.0.10.0/24 dev enP8p1s0, default via 192.168.68.1 dev enP1p1s0
-```
-
-Ellenőrzés:
-
-```bash
-ip addr show eth0   # → 10.0.10.1/24
-ip addr show eth1   # → 192.168.68.x/24
-ip route show       # → 10.0.10.0/24 dev eth0, default via 192.168.68.1 dev eth1
+ip addr show enP8p1s0   # → 192.168.68.x/24  (LAN, DHCP)
+ip addr show enP1p1s0   # → 10.0.10.1/24     (robot belső, static)
+ip route show           # → default via 192.168.68.1 dev enP8p1s0
+                        #    10.0.10.0/24 dev enP1p1s0
 ```
 
 ---

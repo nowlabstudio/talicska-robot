@@ -26,12 +26,20 @@ LOG_FILE="${LOG_DIR}/install_${TIMESTAMP}.log"
 LATEST_LOG="${LOG_DIR}/install_latest.log"
 
 VERBOSE=false
+FROM_BACKUP=false      # --from-backup: pendrive-ról tölti az SSH kulcsot + Docker képeket
+PENDRIVE_MOUNT=""      # --pendrive PATH: kézi mount pont (default: auto-detect)
+OFFLINE=false          # --offline: internet check kihagyása (--from-backup-hoz)
 
 for arg in "$@"; do
     case "$arg" in
-        --verbose) VERBOSE=true ;;
-        --help)    print_help; exit 0 ;;
-        *)         echo "Ismeretlen opció: $arg"; echo "Használat: bash install.sh [--verbose] [--help]"; exit 1 ;;
+        --verbose)        VERBOSE=true ;;
+        --from-backup)    FROM_BACKUP=true ;;
+        --offline)        OFFLINE=true ;;
+        --pendrive=*)     PENDRIVE_MOUNT="${arg#*=}" ;;
+        --help)           print_help; exit 0 ;;
+        *)                echo "Ismeretlen opció: $arg"
+                          echo "Használat: bash install.sh [--verbose] [--from-backup] [--offline] [--pendrive=PATH] [--help]"
+                          exit 1 ;;
     esac
 done
 
@@ -106,14 +114,28 @@ print_help() {
     echo "    --help       Ez a súgó"
     echo ""
     echo "  Mit csinál:"
-    echo "    1. Docker Engine telepítés + Jetson iptables fix"
-    echo "    2. vcstool telepítés"
-    echo "    3. Robot belső hálózat: enP8p1s0 → 10.0.10.1/24 (nmcli, permanent)"
-    echo "    4. Workspace létrehozás (~/talicska-robot-ws/src/)"
-    echo "    5. Összes repo klónozása robot.repos alapján"
-    echo "    6. Docker image build (robot + microros_agent)"
-    echo "    6b. RealSense image build (dustynv base + librealsense + realsense-ros)"
-    echo "    7. Validáció"
+    echo "    0.  Pendrive detektálás + felcsatolás (--from-backup módban)"
+    echo "    1.  SSH kulcs visszaállítás pendrive-ról (--from-backup)"
+    echo "    2.  Docker Engine telepítés + Jetson iptables fix"
+    echo "    3.  Robot belső hálózat: 10.0.10.1/24 (nmcli, permanent)"
+    echo "    4.  vcstool telepítés"
+    echo "    5.  Workspace létrehozás + repók klónozása (robot.repos)"
+    echo "    6.  Docker képek visszaállítás pendrive-ról VAGY build"
+    echo "    6b. RealSense képek visszaállítás VAGY build"
+    echo "    7.  Validáció"
+    echo "    8.  Systemd services + bash aliases"
+    echo "    9.  udev rules telepítés (rplidar, realsense)"
+    echo "    10. rplidar_ros egyedi patch alkalmazása (SIGTERM fix)"
+    echo "    11. nvpmodel MAXN_SUPER + jetson_clocks"
+    echo "    12. Tailscale VPN telepítés"
+    echo "    13. rclone konfig visszaállítás (--from-backup)"
+    echo "    14. Portainer adatok visszaállítás (--from-backup)"
+    echo ""
+    echo "  Opciók:"
+    echo "    --from-backup    SSH kulcs, Docker képek, Portainer pendrive-ról"
+    echo "    --pendrive=PATH  Pendrive mount pont (default: auto-detect JETSON_BACKUP)"
+    echo "    --offline        Internet check kihagyása (--from-backup-hoz)"
+    echo "    --verbose        Részletes log ablak"
     echo ""
     echo "  Idempotent — már kész lépések kihagyva."
     echo "  Log: scripts/logs/install_latest.log"
@@ -171,11 +193,15 @@ check_prerequisites() {
     ok "Ubuntu: ${ubuntu_ver}"
 
     # Internet
-    step "Internet kapcsolat ellenőrzése..."
-    if ! curl -s --max-time 5 https://github.com -o /dev/null; then
-        fail "Nincs internet kapcsolat! A telepítéshez szükséges."
+    if [[ "${OFFLINE}" == true ]]; then
+        warn "Internet check kihagyva (--offline mód)"
+    else
+        step "Internet kapcsolat ellenőrzése..."
+        if ! curl -s --max-time 5 https://github.com -o /dev/null; then
+            fail "Nincs internet kapcsolat! A telepítéshez szükséges. (--offline-lal kihagyható --from-backup módban)"
+        fi
+        ok "Internet: OK"
     fi
-    ok "Internet: OK"
 
     # Git
     if ! command -v git &>/dev/null; then
@@ -302,46 +328,76 @@ print(json.dumps(d, indent=2))
 setup_network() {
     section "3. Fázis: Robot belső hálózat (10.0.10.1/24)"
 
-    # Már konfigurálva?
+    # Interfész kiosztás (J401 hardveren fixált PCI bus alapján):
+    #   enP8p1s0 = külső/LAN (DHCP, default route, internet, SSH)
+    #   enP1p1s0 = robot belső (static 10.0.10.1/24, no default route)
+    #
+    # Safety design: ha enP1p1s0 leesik → robot leáll, de Jetson elérhető marad
+    # enP8p1s0-n keresztül (LAN/Tailscale). Lásd: docs/network_setup.md
+    local ROBOT_IFACE="enP1p1s0"
+    local LAN_IFACE="enP8p1s0"
+
+    # Interfész létezik-e?
+    if ! ip link show "${ROBOT_IFACE}" &>/dev/null 2>&1; then
+        warn "Elsődleges robot interfész (${ROBOT_IFACE}) nem található — auto-detect..."
+        # Fallback: bármely ethernet amelyiken nincs default route
+        local lan_iface_actual
+        lan_iface_actual="$(ip route show default 2>/dev/null | awk '{print $5}' | head -1)"
+        if [[ -n "${lan_iface_actual}" ]]; then
+            ROBOT_IFACE="$(ip link show \
+                | grep -E '^[0-9]+: en' \
+                | awk -F': ' '{print $2}' \
+                | grep -v "${lan_iface_actual}" \
+                | head -1)"
+        fi
+        if [[ -z "${ROBOT_IFACE}" ]]; then
+            fail "Robot ethernet interfész nem található. Ellenőrizd: ip link show"
+        fi
+        warn "Auto-detect: robot interfész = ${ROBOT_IFACE}"
+    fi
+    log "INFO" "Robot interfész: ${ROBOT_IFACE} → 10.0.10.1/24"
+    log "INFO" "LAN interfész:   ${LAN_IFACE}   → DHCP"
+
+    # LAN interfész (enP8p1s0): NetworkManager automatikusan kezeli DHCP-vel.
+    # Ha valamilyen okból nincs aktív DHCP kapcsolata, létrehozzuk.
+    if ! nmcli -g GENERAL.STATE connection show "${LAN_IFACE}" &>/dev/null 2>&1; then
+        if nmcli connection show | grep -q "${LAN_IFACE}"; then
+            step "LAN kapcsolat (${LAN_IFACE}) aktiválása..."
+            run sudo nmcli connection up "$(nmcli -g NAME,DEVICE connection show | grep "${LAN_IFACE}" | cut -d: -f1 | head -1)" || true
+        else
+            step "LAN kapcsolat létrehozása: ${LAN_IFACE} → DHCP..."
+            run sudo nmcli connection add \
+                type ethernet \
+                ifname "${LAN_IFACE}" \
+                con-name lan-external \
+                ipv4.method auto \
+                ipv6.method auto
+            run sudo nmcli connection up lan-external || true
+        fi
+    else
+        skip "LAN kapcsolat (${LAN_IFACE}): aktív"
+    fi
+
+    # Robot interfész (enP1p1s0): static 10.0.10.1/24, no default route.
     if nmcli connection show robot-internal &>/dev/null 2>&1; then
         local current_ip
         current_ip="$(nmcli -g ipv4.addresses connection show robot-internal 2>/dev/null || echo '')"
-        if [[ "${current_ip}" == *"10.0.10.1"* ]]; then
-            skip "robot-internal kapcsolat már létezik: 10.0.10.1/24"
+        local current_iface
+        current_iface="$(nmcli -g connection.interface-name connection show robot-internal 2>/dev/null || echo '')"
+        if [[ "${current_ip}" == *"10.0.10.1"* ]] && [[ "${current_iface}" == "${ROBOT_IFACE}" ]]; then
+            skip "robot-internal kapcsolat naprakész: ${ROBOT_IFACE} → 10.0.10.1/24"
+            run sudo nmcli connection up robot-internal || true
             return 0
         else
-            warn "robot-internal kapcsolat létezik, de más IP-vel: ${current_ip}"
-            warn "Törli és újra létrehozza..."
+            warn "robot-internal újrakonfigurálás: volt=${current_iface}/${current_ip} → lesz=${ROBOT_IFACE}/10.0.10.1/24"
             run sudo nmcli connection delete robot-internal
         fi
     fi
 
-    # Robot interfész detektálása:
-    # A LAN interfész az, amelyiken a default route van.
-    # A robot interfész a másik ethernet (nincs default route).
-    local lan_iface
-    lan_iface="$(ip route show default | awk '{print $5}' | head -1)"
-    if [[ -z "${lan_iface}" ]]; then
-        fail "Nincs default route — Jetson ETH1 (lab LAN) nincs csatlakoztatva?"
-    fi
-    log "INFO" "LAN interfész (default route): ${lan_iface}"
-
-    local robot_iface
-    robot_iface="$(ip link show \
-        | grep -E '^[0-9]+: en' \
-        | awk -F': ' '{print $2}' \
-        | grep -v "${lan_iface}" \
-        | head -1)"
-
-    if [[ -z "${robot_iface}" ]]; then
-        fail "Robot ethernet interfész nem található. Ellenőrizd: ip link show"
-    fi
-    ok "Robot interfész: ${robot_iface} (nem default route interfész)"
-
-    step "NetworkManager kapcsolat létrehozása: ${robot_iface} → 10.0.10.1/24..."
+    step "robot-internal kapcsolat létrehozása: ${ROBOT_IFACE} → 10.0.10.1/24..."
     run sudo nmcli connection add \
         type ethernet \
-        ifname "${robot_iface}" \
+        ifname "${ROBOT_IFACE}" \
         con-name robot-internal \
         ipv4.method manual \
         ipv4.addresses 10.0.10.1/24 \
@@ -351,13 +407,17 @@ setup_network() {
     run sudo nmcli connection up robot-internal
 
     # Ellenőrzés
-    if ip addr show "${robot_iface}" | grep -q "10.0.10.1"; then
-        ok "Hálózat konfigurálva: ${robot_iface} → 10.0.10.1/24"
+    if ip addr show "${ROBOT_IFACE}" 2>/dev/null | grep -q "10.0.10.1"; then
+        ok "Robot hálózat: ${ROBOT_IFACE} → 10.0.10.1/24"
     else
-        fail "IP nem jelent meg ${robot_iface}-n — nmcli connection up sikertelen?"
+        fail "IP nem jelent meg ${ROBOT_IFACE}-n — nmcli connection up sikertelen?"
     fi
 
-    log "INFO" "Hálózat konfiguráció kész: ${robot_iface} → 10.0.10.1/24"
+    # Routing tábla log
+    log "INFO" "Routing tábla: $(ip route show 2>/dev/null)"
+    ok "Hálózat konfiguráció kész"
+    info "  LAN:   ${LAN_IFACE} → 192.168.68.x (DHCP)"
+    info "  Robot: ${ROBOT_IFACE} → 10.0.10.1/24 (static)"
 }
 
 # ── 4. vcstool telepítés ──────────────────────────────────────────────────────
@@ -771,26 +831,389 @@ BASHRC_BLOCK
     log "INFO" "Systemd + aliases telepítés kész"
 }
 
-# ── 9. Jetson jetson_clocks (Power Mode manuálisan beállítva) ──────────────────
+# ── 9. Jetson Power Mode (nvpmodel MAXN_SUPER + jetson_clocks) ────────────────
 setup_jetson_power() {
-    section "9. Fázis: jetson_clocks"
+    section "9. Fázis: Power Mode (MAXN_SUPER + jetson_clocks)"
 
-    # MEGJEGYZÉS: nvpmodel MAXN beállítás manuálisan történik
-    # Lásd: docs/backlog.md — Power Mode MAXN (2026-03-22) jelölés
+    # nvpmodel MAXN_SUPER (mode 2)
+    if command -v nvpmodel &>/dev/null; then
+        local current_mode
+        current_mode="$(nvpmodel -q 2>/dev/null | grep 'NV Power Mode' | awk '{print $NF}')"
+        if [[ "${current_mode}" == "MAXN_SUPER" ]]; then
+            skip "nvpmodel: már MAXN_SUPER"
+        else
+            step "nvpmodel beállítása: MAXN_SUPER (mode 2)..."
+            if ! sudo nvpmodel -m 2 >> "${LOG_FILE}" 2>&1; then
+                warn "nvpmodel -m 2 sikertelen (reboot szükséges lehet)"
+            else
+                ok "nvpmodel: MAXN_SUPER (mode 2)"
+            fi
+        fi
+    else
+        warn "nvpmodel nem található — NVIDIA L4T tools hiányzik?"
+    fi
 
-    # jetson_clocks: (1) service enable vagy (2) manual script hozzáadása
+    # jetson_clocks
     if command -v jetson_clocks &>/dev/null; then
         step "jetson_clocks futtatása..."
         if ! sudo jetson_clocks >> "${LOG_FILE}" 2>&1; then
             warn "jetson_clocks futtatás sikertelen"
         else
-            ok "jetson_clocks: futott"
+            ok "jetson_clocks: OK"
         fi
     else
-        warn "jetson_clocks parancs nem található — NVIDIA tools telepítés szükséges"
+        warn "jetson_clocks nem található"
     fi
 
-    log "INFO" "jetson_clocks beállítás kész"
+    log "INFO" "Power mode beállítás kész"
+}
+
+# ── 0. Pendrive detektálás + felcsatolás ──────────────────────────────────────
+detect_pendrive() {
+    section "0. Fázis: Backup Pendrive Detektálás"
+
+    if [[ "${FROM_BACKUP}" != true ]]; then
+        info "Pendrive nem szükséges (--from-backup nincs megadva)"
+        return 0
+    fi
+
+    # Kézi mount pont megadva?
+    if [[ -n "${PENDRIVE_MOUNT}" ]]; then
+        if [[ -d "${PENDRIVE_MOUNT}" ]] && mountpoint -q "${PENDRIVE_MOUNT}"; then
+            ok "Pendrive már felcsatolva: ${PENDRIVE_MOUNT}"
+            return 0
+        fi
+    fi
+
+    # Auto-detect: JETSON_BACKUP label keresése
+    step "JETSON_BACKUP label keresése..."
+    local pendrive_dev
+    pendrive_dev="$(blkid -L JETSON_BACKUP 2>/dev/null || true)"
+
+    if [[ -z "${pendrive_dev}" ]]; then
+        # Fallback: bármely sda/sdb ext4
+        pendrive_dev="$(lsblk -rn -o NAME,FSTYPE | grep -E '^sd.* ext4' | awk '{print "/dev/"$1}' | head -1)"
+    fi
+
+    if [[ -z "${pendrive_dev}" ]]; then
+        fail "Backup pendrive nem található! Dugd be a JETSON_BACKUP pendrive-ot, majd futtasd újra."
+    fi
+
+    PENDRIVE_MOUNT="/mnt/pendrive"
+    run sudo mkdir -p "${PENDRIVE_MOUNT}"
+
+    if mountpoint -q "${PENDRIVE_MOUNT}" 2>/dev/null; then
+        ok "Már felcsatolva: ${PENDRIVE_MOUNT}"
+    else
+        step "Pendrive felcsatolása: ${pendrive_dev} → ${PENDRIVE_MOUNT}..."
+        run sudo mount "${pendrive_dev}" "${PENDRIVE_MOUNT}"
+        run sudo chown "${USER}:${USER}" "${PENDRIVE_MOUNT}"
+        ok "Pendrive felcsatolva: ${pendrive_dev} → ${PENDRIVE_MOUNT}"
+    fi
+
+    # Ellenőrzés: backup fájlok megvannak-e?
+    if [[ ! -d "${PENDRIVE_MOUNT}/ssh_backup" ]]; then
+        fail "ssh_backup mappa nem található a pendrive-on: ${PENDRIVE_MOUNT}/ssh_backup"
+    fi
+    ok "Pendrive tartalom ellenőrzés: OK"
+    log "INFO" "Pendrive: ${pendrive_dev} → ${PENDRIVE_MOUNT}"
+}
+
+# ── 1b. SSH kulcs visszaállítás pendrive-ról ──────────────────────────────────
+restore_ssh_keys() {
+    section "1b. Fázis: SSH Kulcs Visszaállítás"
+
+    if [[ "${FROM_BACKUP}" != true ]]; then
+        info "SSH restore kihagyva (--from-backup nincs megadva)"
+        return 0
+    fi
+
+    local ssh_src="${PENDRIVE_MOUNT}/ssh_backup"
+    local ssh_dst="${HOME}/.ssh"
+
+    run mkdir -p "${ssh_dst}"
+    run chmod 700 "${ssh_dst}"
+
+    if [[ ! -f "${ssh_src}/id_ed25519" ]]; then
+        fail "SSH privát kulcs nem található: ${ssh_src}/id_ed25519"
+    fi
+
+    if [[ -f "${ssh_dst}/id_ed25519" ]]; then
+        skip "SSH kulcs már létezik: ${ssh_dst}/id_ed25519"
+    else
+        step "SSH kulcs visszaállítása..."
+        run cp "${ssh_src}/id_ed25519"     "${ssh_dst}/id_ed25519"
+        run cp "${ssh_src}/id_ed25519.pub" "${ssh_dst}/id_ed25519.pub"
+        run chmod 600 "${ssh_dst}/id_ed25519"
+        run chmod 644 "${ssh_dst}/id_ed25519.pub"
+        ok "SSH kulcs visszaállítva"
+    fi
+
+    # GitHub kapcsolat teszt
+    step "GitHub SSH kapcsolat ellenőrzése..."
+    if ssh -T -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
+            git@github.com 2>&1 | grep -q "successfully authenticated"; then
+        ok "GitHub SSH: hitelesítve"
+    else
+        warn "GitHub SSH: nem sikerült azonosítani (internet hiánya vagy kulcs probléma?)"
+        warn "Ha internet nincs, a git clone meg fog bukni"
+    fi
+
+    # gitconfig visszaállítás
+    if [[ -f "${ssh_src}/gitconfig" ]]; then
+        if [[ -f "${HOME}/.gitconfig" ]]; then
+            skip ".gitconfig már létezik"
+        else
+            run cp "${ssh_src}/gitconfig" "${HOME}/.gitconfig"
+            ok ".gitconfig visszaállítva: $(git config --global user.name 2>/dev/null)"
+        fi
+    fi
+
+    log "INFO" "SSH kulcs visszaállítás kész"
+}
+
+# ── 6c. Docker képek visszaállítás pendrive-ról ───────────────────────────────
+restore_docker_images() {
+    section "6c. Fázis: Docker Képek Visszaállítás (pendrive)"
+
+    if [[ "${FROM_BACKUP}" != true ]]; then
+        info "Docker image restore kihagyva (--from-backup nincs megadva)"
+        return 0
+    fi
+
+    # Custom képek (robot + foxglove)
+    local custom_backup
+    custom_backup="$(ls "${PENDRIVE_MOUNT}"/talicska-docker-custom-*.tar.gz 2>/dev/null | sort -r | head -1)"
+
+    if [[ -z "${custom_backup}" ]]; then
+        warn "Nem találtam talicska-docker-custom-*.tar.gz a pendrive-on — build fog futni"
+        return 0
+    fi
+
+    # robot-robot image megvan?
+    if docker images --format "{{.Repository}}:{{.Tag}}" 2>/dev/null | grep -q "robot-robot:latest"; then
+        skip "robot-robot:latest image már megvan"
+    else
+        step "robot + foxglove képek betöltése: $(basename "${custom_backup}")..."
+        info "Ez eltarthat néhány percig..."
+        run docker load < "${custom_backup}"
+        ok "robot + foxglove képek betöltve"
+    fi
+
+    # RealSense kép
+    local realsense_backup
+    realsense_backup="$(ls "${PENDRIVE_MOUNT}"/talicska-docker-realsense-*.tar.gz 2>/dev/null | sort -r | head -1)"
+
+    if [[ -z "${realsense_backup}" ]]; then
+        warn "Nem találtam talicska-docker-realsense-*.tar.gz — build fog futni"
+        return 0
+    fi
+
+    if docker images --format "{{.Repository}}:{{.Tag}}" 2>/dev/null | grep -q "ros2-realsense:jazzy-isaac"; then
+        skip "ros2-realsense:jazzy-isaac image már megvan"
+    else
+        step "RealSense kép betöltése: $(basename "${realsense_backup}")..."
+        info "Ez eltarthat 5-10 percig..."
+        run docker load < "${realsense_backup}"
+        ok "RealSense kép betöltve"
+    fi
+
+    log "INFO" "Docker képek visszaállítás kész"
+}
+
+# ── 10. udev rules telepítés ──────────────────────────────────────────────────
+install_udev_rules() {
+    section "10. Fázis: udev Rules (rplidar, realsense)"
+
+    local udev_src="${ROBOT_DIR}/docs/backup/udev"
+    local udev_dst="/etc/udev/rules.d"
+
+    if [[ ! -d "${udev_src}" ]]; then
+        warn "udev backup könyvtár nem található: ${udev_src} — kihagyva"
+        return 0
+    fi
+
+    local changed=0
+    for rule in 99-rplidar.rules 99-realsense-libusb.rules 99-realsense-unbind.rules; do
+        local src="${udev_src}/${rule}"
+        local dst="${udev_dst}/${rule}"
+        if [[ ! -f "${src}" ]]; then
+            warn "Hiányzó udev rule: ${src} — kihagyva"
+            continue
+        fi
+        if [[ -f "${dst}" ]] && diff -q "${src}" "${dst}" &>/dev/null; then
+            skip "${rule}: naprakész"
+        else
+            step "${rule} telepítése → ${dst}..."
+            run sudo cp "${src}" "${dst}"
+            ok "${rule}: telepítve"
+            changed=1
+        fi
+    done
+
+    if [[ ${changed} -eq 1 ]]; then
+        step "udev reload..."
+        run sudo udevadm control --reload-rules
+        run sudo udevadm trigger
+        ok "udev újratöltve"
+    fi
+
+    log "INFO" "udev rules telepítés kész"
+}
+
+# ── 11. rplidar_ros egyedi patch alkalmazása ──────────────────────────────────
+apply_rplidar_patch() {
+    section "11. Fázis: rplidar_ros Patch (SIGTERM + motor stability gate)"
+
+    local rplidar_dir="${SRC}/robot/rplidar_ros"
+    local patch_file="${ROBOT_DIR}/docs/backup/patches/0001-fix-rplidar-SIGTERM-handler-motor-stability-gate.patch"
+
+    if [[ ! -d "${rplidar_dir}/.git" ]]; then
+        warn "rplidar_ros repo nem található: ${rplidar_dir} — patch kihagyva"
+        return 0
+    fi
+
+    if [[ ! -f "${patch_file}" ]]; then
+        warn "Patch fájl nem található: ${patch_file} — kihagyva"
+        return 0
+    fi
+
+    # Megvan-e már a patch? (commit üzenet alapján)
+    if git -C "${rplidar_dir}" log --oneline 2>/dev/null | grep -q "SIGTERM handler"; then
+        skip "rplidar_ros patch: már alkalmazva"
+        return 0
+    fi
+
+    step "rplidar_ros patch alkalmazása..."
+    if git -C "${rplidar_dir}" am "${patch_file}" >> "${LOG_FILE}" 2>&1; then
+        ok "rplidar_ros patch: alkalmazva (SIGTERM + motor stability gate)"
+    else
+        warn "Patch alkalmazás sikertelen — esetleg már részben megvan?"
+        run git -C "${rplidar_dir}" am --abort || true
+        warn "Manuálisan: cd ${rplidar_dir} && git am ${patch_file}"
+    fi
+
+    log "INFO" "rplidar_ros patch kész"
+}
+
+# ── 12. Tailscale VPN telepítés ───────────────────────────────────────────────
+install_tailscale() {
+    section "12. Fázis: Tailscale VPN"
+
+    if command -v tailscale &>/dev/null; then
+        skip "Tailscale már telepítve: $(tailscale version 2>/dev/null | head -1)"
+    else
+        if [[ "${OFFLINE}" == true ]]; then
+            warn "Tailscale telepítés kihagyva (--offline mód)"
+            warn "Telepítés után futtasd manuálisan: curl -fsSL https://tailscale.com/install.sh | sudo sh"
+            return 0
+        fi
+        step "Tailscale telepítése..."
+        run bash -c "curl -fsSL https://tailscale.com/install.sh | sudo sh"
+        ok "Tailscale telepítve: $(tailscale version 2>/dev/null | head -1)"
+    fi
+
+    # IP forwarding (subnet router-hez kötelező)
+    local sysctl_conf="/etc/sysctl.d/99-talicska-tailscale.conf"
+    if [[ -f "${sysctl_conf}" ]] && grep -q "ip_forward" "${sysctl_conf}" 2>/dev/null; then
+        skip "IP forwarding: már beállítva"
+    else
+        step "IP forwarding engedélyezése (subnet router)..."
+        run bash -c "echo 'net.ipv4.ip_forward = 1' | sudo tee ${sysctl_conf} > /dev/null"
+        run bash -c "echo 'net.ipv6.conf.all.forwarding = 1' | sudo tee -a ${sysctl_conf} > /dev/null"
+        run sudo sysctl -p "${sysctl_conf}"
+        ok "IP forwarding: engedélyezve"
+    fi
+
+    # tailscaled service fut?
+    if sudo systemctl is-active --quiet tailscaled 2>/dev/null; then
+        skip "tailscaled: fut"
+    else
+        step "tailscaled indítása..."
+        run sudo systemctl enable --now tailscaled
+        ok "tailscaled: fut"
+    fi
+
+    # Tailscale up — csak ha még nincs bejelentkezve
+    if tailscale status 2>/dev/null | grep -q "^[0-9]"; then
+        skip "Tailscale: már be van jelentkezve"
+    else
+        warn "Tailscale bejelentkezés szükséges:"
+        warn "  sudo tailscale up --advertise-routes=10.0.10.0/24 --accept-dns=false"
+        warn "Admin konzolon: https://login.tailscale.com/admin/machines"
+        warn "  → synapse → Edit route settings → engedélyezd: 10.0.10.0/24"
+    fi
+
+    log "INFO" "Tailscale telepítés kész"
+}
+
+# ── 13. rclone konfig visszaállítás ───────────────────────────────────────────
+restore_rclone() {
+    section "13. Fázis: rclone konfig visszaállítás"
+
+    if [[ "${FROM_BACKUP}" != true ]]; then
+        info "rclone restore kihagyva (--from-backup nincs megadva)"
+        return 0
+    fi
+
+    local rclone_src="${PENDRIVE_MOUNT}/ssh_backup/rclone.conf"
+    local rclone_dst="${HOME}/.config/rclone/rclone.conf"
+
+    if [[ ! -f "${rclone_src}" ]]; then
+        warn "rclone.conf nem található pendrive-on — kihagyva"
+        return 0
+    fi
+
+    if [[ -f "${rclone_dst}" ]]; then
+        skip "rclone.conf már létezik"
+        return 0
+    fi
+
+    run mkdir -p "${HOME}/.config/rclone"
+    run cp "${rclone_src}" "${rclone_dst}"
+    run chmod 600 "${rclone_dst}"
+    ok "rclone.conf visszaállítva"
+
+    log "INFO" "rclone konfig visszaállítás kész"
+}
+
+# ── 14. Portainer adatok visszaállítás ────────────────────────────────────────
+restore_portainer() {
+    section "14. Fázis: Portainer adatok visszaállítás"
+
+    if [[ "${FROM_BACKUP}" != true ]]; then
+        info "Portainer restore kihagyva (--from-backup nincs megadva)"
+        return 0
+    fi
+
+    local portainer_backup
+    portainer_backup="$(ls "${PENDRIVE_MOUNT}"/portainer_data_*.tar.gz 2>/dev/null | sort -r | head -1)"
+
+    if [[ -z "${portainer_backup}" ]]; then
+        warn "portainer_data_*.tar.gz nem található a pendrive-on — kihagyva"
+        return 0
+    fi
+
+    local portainer_vol="/var/lib/docker/volumes/tools_portainer_data/_data"
+
+    # Volume létezik-e (docker compose tools stack kell hozzá)?
+    if [[ ! -d "${portainer_vol}" ]]; then
+        step "Portainer volume létrehozása (tools stack indítása)..."
+        run docker compose -f "${ROBOT_DIR}/docker-compose.tools.yml" up -d portainer
+        sleep 3
+        run docker compose -f "${ROBOT_DIR}/docker-compose.tools.yml" stop portainer
+    fi
+
+    if [[ ! -d "${portainer_vol}" ]]; then
+        warn "Portainer volume nem jött létre — kihagyva"
+        return 0
+    fi
+
+    step "Portainer adatok visszaállítása: $(basename "${portainer_backup}")..."
+    run sudo tar -xzf "${portainer_backup}" -C "${portainer_vol}"
+    ok "Portainer adatok visszaállítva"
+
+    log "INFO" "Portainer visszaállítás kész"
 }
 
 # ── Összesítő ─────────────────────────────────────────────────────────────────
@@ -856,22 +1279,91 @@ main() {
 
     log "INFO" "Telepítés kezdete: $(date)"
 
-    check_prerequisites      # 1. git, internet, helyes könyvtár
-    install_docker           # 2. Docker Engine + Compose + Jetson fix
-    setup_network            # 3. robot belső hálózat (10.0.10.1/24)
-    install_vcstool          # 4. vcstool
-    setup_workspace          # 5. workspace + vcs import/pull
-    build_docker_image       # 6. docker compose build (robot + microros)
-    build_realsense_image    # 6b. RealSense image build (dustynv base)
-    run_validation           # 7. validáció
-    install_systemd          # 8. systemd services + bash aliases
-    setup_jetson_power       # 9. Jetson Power Mode MAXN + jetson_clocks
+    # ── Fázis 0: Pendrive + SSH visszaállítás (--from-backup esetén) ──────────
+    if [[ "${FROM_BACKUP}" == true ]]; then
+        section "Fázis 0 — Pendrive detektálás"
+        detect_pendrive          # pendrive megtalálása + mount
+
+        section "Fázis 0a — SSH kulcs visszaállítás"
+        restore_ssh_keys         # id_ed25519 + gitconfig a pendrive-ról
+    fi
+
+    # ── Fázis 1: Előfeltételek + Docker ───────────────────────────────────────
+    section "Fázis 1 — Előfeltételek"
+    check_prerequisites          # git, internet (ha nem --offline), helyes könyvtár
+
+    section "Fázis 2 — Docker"
+    install_docker               # Docker Engine + Compose + Jetson fix
+
+    # ── Fázis 2: Hálózat + Jetson teljesítmény ───────────────────────────────
+    section "Fázis 3 — Hálózat"
+    setup_network                # enP1p1s0 robot belső (10.0.10.1/24) + enP8p1s0 LAN DHCP
+
+    section "Fázis 4 — Jetson Power"
+    setup_jetson_power           # nvpmodel MAXN_SUPER + jetson_clocks
+
+    # ── Fázis 3: udev szabályok ───────────────────────────────────────────────
+    section "Fázis 5 — udev szabályok"
+    install_udev_rules           # RPLidar + RealSense udev rules
+
+    # ── Fázis 4: Workspace ────────────────────────────────────────────────────
+    section "Fázis 6 — vcstool"
+    install_vcstool              # vcstool
+
+    section "Fázis 7 — Workspace"
+    setup_workspace              # workspace + vcs import/pull
+
+    # ── Fázis 5: rplidar patch ────────────────────────────────────────────────
+    section "Fázis 8 — rplidar_ros patch"
+    apply_rplidar_patch          # SIGTERM handler + motor stability gate patch
+
+    # ── Fázis 6: Docker image-ek ─────────────────────────────────────────────
+    section "Fázis 9 — Docker image-ek"
+    if [[ "${FROM_BACKUP}" == true ]] && [[ -n "${PENDRIVE_MOUNT}" ]]; then
+        restore_docker_images    # docker load pendrive-ról
+    else
+        build_docker_image       # docker compose build (robot + microros)
+        build_realsense_image    # RealSense image build (dustynv base)
+    fi
+
+    # ── Fázis 7: Validáció + systemd ─────────────────────────────────────────
+    section "Fázis 10 — Validáció"
+    run_validation               # konténer indíthatóság ellenőrzés
+
+    section "Fázis 11 — systemd + aliases"
+    install_systemd              # systemd services + bash aliases
+
+    # ── Fázis 8: Portainer visszaállítás ─────────────────────────────────────
+    if [[ "${FROM_BACKUP}" == true ]] && [[ -n "${PENDRIVE_MOUNT}" ]]; then
+        section "Fázis 12 — Portainer adat visszaállítás"
+        restore_portainer        # portainer_data volume tar visszaállítás
+    fi
+
+    # ── Fázis 9: Tailscale ───────────────────────────────────────────────────
+    section "Fázis 13 — Tailscale VPN"
+    install_tailscale            # telepítés + subnet router konfig
+
+    # ── Fázis 10: rclone / Dropbox ───────────────────────────────────────────
+    if [[ "${FROM_BACKUP}" == true ]] && [[ -n "${PENDRIVE_MOUNT}" ]]; then
+        section "Fázis 14 — rclone / Dropbox"
+        restore_rclone           # rclone.conf visszaállítás pendrive-ról
+    fi
+
+    # ── Összesítő ─────────────────────────────────────────────────────────────
     print_summary
 
     echo ""
     echo -e "${BOLD}${GREEN}  ✓ TELEPÍTÉS KÉSZ!${NC}"
     echo ""
-    echo -e "  Indítás: ${CYAN}cd ${ROBOT_DIR} && docker compose up -d${NC}"
+    if [[ "${FROM_BACKUP}" == true ]]; then
+        echo -e "  ${YELLOW}Hátralévő manuális lépések:${NC}"
+        echo -e "  • Tailscale auth: kövesd a fenti URL-t (ha még nem kész)"
+        echo -e "  • nvpmodel ellenőrzés: ${CYAN}nvpmodel -q${NC}"
+        echo -e "  • Stack indítás: ${CYAN}cd ${ROBOT_DIR} && docker compose up -d${NC}"
+        echo -e "  • Tools stack:   ${CYAN}docker compose -f docker-compose.tools.yml up -d${NC}"
+    else
+        echo -e "  Indítás: ${CYAN}cd ${ROBOT_DIR} && docker compose up -d${NC}"
+    fi
     echo ""
 }
 
