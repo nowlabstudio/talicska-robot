@@ -1319,8 +1319,12 @@ restore_rclone() {
             warn "Telepítés után: curl https://rclone.org/install.sh | sudo bash"
         else
             step "rclone telepítése..."
-            run bash -c "curl -fsSL https://rclone.org/install.sh | sudo bash"
-            ok "rclone telepítve: $(rclone version 2>/dev/null | head -1)"
+            if bash -c "curl -fsSL https://rclone.org/install.sh | sudo bash" >> "${LOG_FILE}" 2>&1; then
+                ok "rclone telepítve: $(rclone version 2>/dev/null | head -1)"
+            else
+                warn "rclone telepítés sikertelen — Dropbox nem fog működni"
+                warn "Manuálisan: curl https://rclone.org/install.sh | sudo bash"
+            fi
         fi
     fi
 
@@ -1518,7 +1522,8 @@ setup_user_groups() {
 install_system_tools() {
     section "Fázis: Rendszer eszközök (tmux, curl...)"
 
-    local tools=(tmux curl ca-certificates lsb-release fuse3 fuse)
+    # make: startup.sh hívja 'exec make up'-t — kritikus, explicit kell
+    local tools=(tmux curl ca-certificates lsb-release fuse3 fuse make)
     local to_install=()
 
     for tool in "${tools[@]}"; do
@@ -1639,10 +1644,10 @@ main() {
 
     # ── Fázis 7: udev szabályok ───────────────────────────────────────────────
     section "Fázis 7 — WiFi driver"
-    install_wifi_driver          # Ralink RT5370 USB adapter — rt2800usb DKMS
+    install_wifi_driver || warn "WiFi driver telepítés sikertelen — robot WiFi nélkül is indul"
 
     section "Fázis 7b — WiFi kapcsolat"
-    setup_wifi                   # T61 SSID konfigurálás + autoconnect
+    setup_wifi || warn "WiFi kapcsolat konfig sikertelen — kézzel: nmcli device wifi connect T61"
 
     section "Fázis 8 — udev szabályok"
     install_udev_rules           # RPLidar + RealSense udev rules
@@ -1682,7 +1687,7 @@ main() {
 
     # ── Fázis 15: Tailscale ───────────────────────────────────────────────────
     section "Fázis 15 — Tailscale VPN"
-    install_tailscale            # telepítés + IP forwarding + subnet router konfig
+    install_tailscale || warn "Tailscale telepítés sikertelen — robot Tailscale nélkül is indul"
 
     # ── Fázis 16: rclone / Dropbox ───────────────────────────────────────────
     section "Fázis 16 — rclone / Dropbox"
