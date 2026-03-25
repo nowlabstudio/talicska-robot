@@ -1,0 +1,9 @@
+{
+  "id": "1",
+  "subject": "Pre-start logika: RoboClaw + bridge elérhetőség ellenőrzés indítás előtt",
+  "description": "A robot service jelenleg azonnal elindítja a ros2_control_node-t, ami crashel ha a RoboClaw (10.0.10.24:8234) TCP-n nem elérhető on_configure() idején.\n\nMegvalósítandó: `scripts/start.sh` — a docker-compose `command`-ja ezt hívja a jelenlegi `ros2 launch` helyett.\n\nEllenőrzési logika indítás előtt (timeout + retry):\n1. RoboClaw TCP: `nc -z 10.0.10.24 8234` — ha nem elérhető, várjon és próbálkozzon újra (pl. 30s timeout, 2s interval)\n2. E-Stop bridge ping: `ping -c1 -W1 10.0.10.23` — ha nem elérhető, log warning (de ne blokkoljon — a safety_supervisor safe-by-default kezel)\n3. RC bridge ping: `ping -c1 -W1 10.0.10.22` — ugyanígy, warning only\n4. Ha RoboClaw nem jön fel a timeouton belül: exit 1 (Docker restart policy újrapróbálja)\n\nEzután: `exec ros2 launch robot_bringup hardware.launch.py tcp_host:=${ROBOCLAW_HOST}`\n\nVáltozások:\n- `scripts/start.sh` (új fájl)\n- `Dockerfile`: COPY start.sh, chmod +x\n- `docker-compose.yml`: command → `start.sh` helyett `ros2 launch ...`\n\nReferencia: Task #1 (install script) stílusában: színes output, timestamps, egyértelmű hibaüzenetek.",
+  "activeForm": "Pre-start logika implementálása",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

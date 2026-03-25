@@ -1,0 +1,8 @@
+{
+  "id": "2",
+  "subject": "EKF covariance finomhangolás éles tesztelés után",
+  "description": "Az ekf.yaml process_noise_covariance értékei kezdeti becslések. Éles tesztelés után finomhangolás szükséges a RealSense D435i IMU drift karakterisztikája alapján. Módszer: robot egyenes vonalban és helyben forogva, /odometry/filtered vs ground truth összehasonlítás. Fájl: robot_bringup/config/ekf.yaml",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

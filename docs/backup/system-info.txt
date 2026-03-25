@@ -1,0 +1,69 @@
+# Talicska Robot — System Snapshot
+# Dátum: 2026-03-25 21:19:11
+
+=== Hardver ===
+NVIDIA Jetson Orin Nano Seeed recomputer classic Super
+Seeed image: mfi_recomputer-super-orin-nano-8g-j401-6.2-36.4.3-2025-05-22.tar.gz
+
+=== L4T / OS ===
+# R36 (release), REVISION: 4.3, GCID: 38968081, BOARD: generic, EABI: aarch64, DATE: Wed Jan  8 01:49:37 UTC 2025
+# KERNEL_VARIANT: oot
+TARGET_USERSPACE_LIB_DIR=nvidia
+TARGET_USERSPACE_LIB_DIR_PATH=usr/lib/aarch64-linux-gnu/nvidia
+# Seeed Image Name mfi_recomputer-super-orin-nano-8g-j401-6.2-36.4.3-2025-05-22.tar.gz
+# branch R36.4.3
+# commit ID 78ee5a5c45fe344ee1a556cece40c42c94ad9de6
+Linux synapse 5.15.148-tegra #1 SMP PREEMPT Thu Sep 18 15:08:33 PDT 2025 aarch64 aarch64 aarch64 GNU/Linux
+Distributor ID:	Ubuntu
+Description:	Ubuntu 22.04.5 LTS
+Release:	22.04
+Codename:	jammy
+
+=== Power Mode ===
+NV Power Mode: MAXN_SUPER
+2
+
+=== Tailscale ===
+100.71.242.128  synapse  nowlabstudio@  linux    -  
+100.70.206.39   hello    nowlabstudio@  android  -  
+
+# Health check:
+#     - enabling connmark rules: adding [-m conntrack --ctstate ESTABLISHED,RELATED -j CONNMARK --restore-mark --nfmask 0xff0000 --ctmask 0xff0000] in mangle/PREROUTING: running [/usr/sbin/iptables -t mangle -I PREROUTING 1 -m conntrack --ctstate ESTABLISHED,RELATED -j CONNMARK --restore-mark --nfmask 0xff0000 --ctmask 0xff0000 --wait]: exit status 2: iptables v1.8.7 (legacy): unknown option "--restore-mark"
+Tailscale IP: 100.71.242.128
+fd7a:115c:a1e0::7001:f28d
+
+=== Hálózat ===
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+enP1p1s0         DOWN           
+can0             DOWN           
+enP8p1s0         DOWN           192.168.68.123/24 
+l4tbr0           DOWN           
+usb0             DOWN           
+usb1             DOWN           
+tailscale0       UNKNOWN        100.71.242.128/32 fe80::bc64:8e47:8ac:8abd/64 
+docker0          DOWN           172.17.0.1/16 
+br-fa2ca0be8e59  DOWN           172.18.0.1/16 
+usb2             UNKNOWN        10.110.101.128/24 fe80::2477:55ff:fe09:f78e/64 
+
+=== Tárhely ===
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p1  233G  179G   44G  81% /
+
+=== Docker ===
+Docker version 29.3.0, build 5927d80
+Docker Compose version v5.1.1
+robot-robot:latest 5.63GB
+tools-foxglove_bridge:latest 2.66GB
+ros2-realsense:jazzy-isaac 18.5GB
+talicska-robot-robot:latest 5.61GB
+osrf/ros:jazzy-desktop 5.61GB
+portainer/portainer-ce:latest 230MB
+ros:jazzy 1.32GB
+python:3-alpine 77.1MB
+microros/micro-ros-agent:jazzy 755MB
+hello-world:latest 22.5kB
+dustynv/ros:jazzy-ros-base-r36.4.0-cu128-24.04 17.3GB
+
+=== Fontos csomagok ===
+python3-vcstool 0.3.0-1
+tailscale 1.96.2

@@ -1,0 +1,10 @@
+# RealSense D435i — unbind uvcvideo/usbhid for RSUSB (libusb) backend
+# A Jetson Docker RSUSB backend-nek közvetlen libusb hozzáférés kell.
+# Ha a kernel uvcvideo/usbhid driver binddol, libusb nem tudja megnyitni.
+# Ez a rule automatikusan unbindolja őket plug/reset után.
+
+# uvcvideo unbind RealSense D435i interface-ekről
+ACTION=="bind", SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3a", DRIVERS=="uvcvideo", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/uvcvideo/unbind 2>/dev/null || true'"
+
+# usbhid unbind RealSense D435i HID interface-ről
+ACTION=="bind", SUBSYSTEM=="usb", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b3a", DRIVERS=="usbhid", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbhid/unbind 2>/dev/null || true'"

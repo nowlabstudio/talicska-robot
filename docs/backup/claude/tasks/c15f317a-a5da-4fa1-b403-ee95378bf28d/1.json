@@ -1,0 +1,9 @@
+{
+  "id": "1",
+  "subject": "start.sh — pre-start logika robot indítóscripthez",
+  "description": "Írj egy scripts/start.sh scriptet amely a docker compose up előtt ellenőrzi a robot állapotát:\n- Ping sweep: 10.0.10.22 (RC), 10.0.10.23 (E-Stop), 10.0.10.24 (RoboClaw) — figyelmeztetés ha valami nem él\n- TCP teszt: nc -zv 10.0.10.24 8234 (RoboClaw elérhető-e)\n- NetworkManager kapcsolat aktív-e: nmcli connection show robot-internal\n- Docker daemon fut-e\n- Ha minden OK: docker compose up -d\n- Színes output (mint install.sh), nem blokkol ha egy eszköz hiányzik (csak warn), de E-Stop hiánya esetén kérdez vissza",
+  "activeForm": "start.sh létrehozása",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}

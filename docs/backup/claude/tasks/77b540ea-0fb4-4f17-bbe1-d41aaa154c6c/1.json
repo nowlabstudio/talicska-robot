@@ -1,0 +1,8 @@
+{
+  "id": "1",
+  "subject": "Install script — teljes környezet egy lépésből",
+  "description": "A realsense-jetson telepítőjéhez hasonlóan kell egy install script a talicska-robot repóban, ami egy lépésben felállítja a teljes fejlesztői/production környezetet:\n- Docker + docker compose plugin telepítése\n- SSH kulcs + GitHub hozzáférés beállítása\n- vcs import (robot.repos alapján)\n- Minden dependency kezelése ami a stack felállásához kell\n- Cél: fresh gépen egyetlen script futtatásával minden kész legyen\n\nReferencia: realsense-jetson repo telepítője mint minta.",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": []
+}
