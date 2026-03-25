@@ -828,6 +828,43 @@ BASHRC_BLOCK
         ok ".bashrc: Talicska blokk hozzáadva"
     fi
 
+    # ── dropbox_sync.sh + dropbox_sync.conf ───────────────────────────────────
+    # A dropbox-sync.service ezeket a fájlokat keresi ~/dropbox_sync.sh -ban
+    for fname in dropbox_sync.sh dropbox_sync.conf; do
+        local src="${SCRIPT_DIR}/${fname}"
+        local dst="${user_home}/${fname}"
+        if [[ ! -f "${src}" ]]; then
+            warn "Hiányzó fájl: ${src} — kihagyva"
+            continue
+        fi
+        if [[ -f "${dst}" ]] && diff -q "${src}" "${dst}" &>/dev/null; then
+            skip "${fname}: naprakész (${dst})"
+        else
+            run cp "${src}" "${dst}"
+            [[ "${fname}" == *.sh ]] && run chmod +x "${dst}"
+            ok "${fname} → ${dst}"
+        fi
+    done
+
+    # ── /etc/fuse.conf: user_allow_other ──────────────────────────────────────
+    # rclone mount --allow-other igényli; enélkül csak root látja a mount-ot
+    local fuse_conf="/etc/fuse.conf"
+    if grep -q "^user_allow_other" "${fuse_conf}" 2>/dev/null; then
+        skip "fuse.conf: user_allow_other már aktív"
+    else
+        step "fuse.conf: user_allow_other engedélyezése..."
+        run sudo sed -i 's/#user_allow_other/user_allow_other/' "${fuse_conf}"
+        # Ha nincs benne egyáltalán, hozzáadjuk
+        if ! grep -q "^user_allow_other" "${fuse_conf}" 2>/dev/null; then
+            run bash -c "echo 'user_allow_other' | sudo tee -a ${fuse_conf} > /dev/null"
+        fi
+        ok "fuse.conf: user_allow_other engedélyezve"
+    fi
+
+    # ── ~/Dropbox mappa ────────────────────────────────────────────────────────
+    run mkdir -p "${user_home}/Dropbox"
+    ok "~/Dropbox mappa: OK"
+
     log "INFO" "Systemd + aliases telepítés kész"
 }
 
@@ -1359,7 +1396,7 @@ setup_user_groups() {
 install_system_tools() {
     section "Fázis: Rendszer eszközök (tmux, curl...)"
 
-    local tools=(tmux curl ca-certificates lsb-release)
+    local tools=(tmux curl ca-certificates lsb-release fuse3 fuse)
     local to_install=()
 
     for tool in "${tools[@]}"; do
