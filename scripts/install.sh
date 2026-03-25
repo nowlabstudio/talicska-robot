@@ -1147,12 +1147,27 @@ install_tailscale() {
     log "INFO" "Tailscale telepítés kész"
 }
 
-# ── 13. rclone konfig visszaállítás ───────────────────────────────────────────
+# ── 13. rclone telepítés + konfig visszaállítás ───────────────────────────────
 restore_rclone() {
-    section "13. Fázis: rclone konfig visszaállítás"
+    section "13. Fázis: rclone telepítés + konfig visszaállítás"
 
+    # rclone telepítése (ha nincs)
+    if command -v rclone &>/dev/null; then
+        skip "rclone: $(rclone version 2>/dev/null | head -1)"
+    else
+        if [[ "${OFFLINE}" == true ]]; then
+            warn "rclone nincs telepítve, --offline módban kihagyva"
+            warn "Telepítés után: curl https://rclone.org/install.sh | sudo bash"
+        else
+            step "rclone telepítése..."
+            run bash -c "curl -fsSL https://rclone.org/install.sh | sudo bash"
+            ok "rclone telepítve: $(rclone version 2>/dev/null | head -1)"
+        fi
+    fi
+
+    # Konfig visszaállítás
     if [[ "${FROM_BACKUP}" != true ]]; then
-        info "rclone restore kihagyva (--from-backup nincs megadva)"
+        info "rclone konfig restore kihagyva (--from-backup nincs megadva)"
         return 0
     fi
 
@@ -1174,7 +1189,7 @@ restore_rclone() {
     run chmod 600 "${rclone_dst}"
     ok "rclone.conf visszaállítva"
 
-    log "INFO" "rclone konfig visszaállítás kész"
+    log "INFO" "rclone telepítés + konfig visszaállítás kész"
 }
 
 # ── 14. Portainer adatok visszaállítás ────────────────────────────────────────
@@ -1214,6 +1229,155 @@ restore_portainer() {
     ok "Portainer adatok visszaállítva"
 
     log "INFO" "Portainer visszaállítás kész"
+}
+
+# ── Automatikus frissítések letiltása ─────────────────────────────────────────
+# KRITIKUS: a normál apt upgrade felülírhatja a Seeed/Jetson OOT kernel
+# drivert és a hálózati csomagot → ethernet portok eltűnnek.
+disable_auto_updates() {
+    section "Fázis: Automatikus frissítések letiltása (Jetson OOT kernel védelem)"
+
+    # 1. unattended-upgrades daemon letiltása
+    if systemctl is-enabled unattended-upgrades &>/dev/null 2>&1; then
+        step "unattended-upgrades letiltása..."
+        run sudo systemctl disable --now unattended-upgrades
+        ok "unattended-upgrades: letiltva"
+    else
+        skip "unattended-upgrades: már letiltva"
+    fi
+
+    # 2. APT periodic automatikus frissítések kikapcsolása
+    local apt_periodic="/etc/apt/apt.conf.d/20auto-upgrades"
+    if [[ -f "${apt_periodic}" ]] && grep -q 'Update-Package-Lists "0"' "${apt_periodic}" 2>/dev/null; then
+        skip "APT periodic: már kikapcsolva"
+    else
+        step "APT periodic tasks kikapcsolása..."
+        run sudo bash -c "cat > ${apt_periodic} << 'EOF'
+APT::Periodic::Update-Package-Lists \"0\";
+APT::Periodic::Unattended-Upgrade \"0\";
+APT::Periodic::Download-Upgradeable-Packages \"0\";
+APT::Periodic::AutocleanInterval \"0\";
+EOF"
+        ok "APT periodic: kikapcsolva"
+    fi
+
+    # 3. apt-mark hold: unattended-upgrades + update-notifier
+    for pkg in unattended-upgrades update-notifier update-notifier-common; do
+        if dpkg -l "${pkg}" &>/dev/null 2>&1; then
+            run sudo apt-mark hold "${pkg}" 2>/dev/null || true
+            ok "hold: ${pkg}"
+        fi
+    done
+
+    # 4. Futó kernel hold (csak ha dpkg ismeri — OOT kernelnél általában nem)
+    local running_kernel
+    running_kernel="$(uname -r)"
+    local kernel_pkg="linux-image-${running_kernel}"
+    if dpkg -l "${kernel_pkg}" &>/dev/null 2>&1; then
+        run sudo apt-mark hold "${kernel_pkg}" 2>/dev/null || true
+        ok "hold: ${kernel_pkg}"
+    else
+        info "OOT kernel (${running_kernel}) nem apt-ból — apt-mark hold nem szükséges"
+    fi
+
+    # 5. nvidia-l4t-* csomagok hold
+    local l4t_count=0
+    while IFS= read -r pkg; do
+        [[ -z "${pkg}" ]] && continue
+        run sudo apt-mark hold "${pkg}" 2>/dev/null || true
+        ((l4t_count++)) || true
+    done < <(dpkg -l 'nvidia-l4t-*' 2>/dev/null | grep '^ii' | awk '{print $2}')
+    if [[ ${l4t_count} -gt 0 ]]; then
+        ok "nvidia-l4t-* csomagok holdon: ${l4t_count} db"
+    fi
+
+    # 6. apt preferences: kernel frissítés letiltása (biztonság kedvéért)
+    local pref_file="/etc/apt/preferences.d/jetson-hold"
+    if [[ -f "${pref_file}" ]]; then
+        skip "apt preferences jetson-hold: már létezik"
+    else
+        step "apt preferences: kernel + L4T pin írása..."
+        run sudo bash -c "cat > ${pref_file} << 'EOF'
+# Jetson OOT kernel + L4T csomagok — ne frissítse az apt upgrade!
+# A standard Ubuntu kernel felülírja a Seeed OOT drivert → ethernet portok eltűnnek.
+# Ha tudatosan frissíteni kell: sudo apt-mark unhold <csomag>
+
+Package: linux-image-* linux-headers-* linux-modules-*
+Pin: release o=Ubuntu
+Pin-Priority: -10
+
+Package: nvidia-l4t-*
+Pin: release *
+Pin-Priority: -10
+EOF"
+        ok "apt preferences jetson-hold: létrehozva"
+    fi
+
+    log "INFO" "Auto-update letiltás kész — futó kernel: ${running_kernel}"
+    warn "FONTOS: 'apt upgrade' TILOS a Jetsonen Seeed OOT kernel nélkül!"
+    warn "Csak 'apt install <csomag>' egyedi csomagokhoz, és 'apt update' rendszeresen OK."
+}
+
+# ── Felhasználói csoportok ─────────────────────────────────────────────────────
+setup_user_groups() {
+    section "Fázis: Felhasználói csoportok (docker, plugdev, dialout...)"
+
+    # Szükséges csoportok:
+    #   docker   — Docker daemon elérés
+    #   plugdev  — USB eszközök (udev rules GROUP:="plugdev")
+    #   dialout  — Serial/USB eszközök (ttyUSB, ttyACM)
+    #   video    — Jetson GPU, kamera
+    #   i2c      — I2C bus
+    #   gpio     — GPIO
+    local groups_needed=(docker plugdev dialout video i2c gpio)
+    local groups_added=0
+
+    for grp in "${groups_needed[@]}"; do
+        if ! getent group "${grp}" &>/dev/null; then
+            warn "Csoport nem létezik: ${grp} (kihagyva)"
+            continue
+        fi
+        if groups "${USER}" | grep -qw "${grp}"; then
+            skip "Csoport: ${USER} → ${grp} (már tag)"
+        else
+            step "Felhasználó hozzáadása csoporthoz: ${grp}..."
+            run sudo usermod -aG "${grp}" "${USER}"
+            ok "${USER} → ${grp}: OK"
+            ((groups_added++)) || true
+        fi
+    done
+
+    if [[ ${groups_added} -gt 0 ]]; then
+        warn "Csoportok aktiválásához újrabejelentkezés szükséges"
+        warn "  Alternatíva: newgrp docker  (csak az aktuális shellben)"
+    fi
+
+    log "INFO" "Felhasználói csoportok beállítva"
+}
+
+# ── Rendszer eszközök telepítése ───────────────────────────────────────────────
+install_system_tools() {
+    section "Fázis: Rendszer eszközök (tmux, curl...)"
+
+    local tools=(tmux curl ca-certificates lsb-release)
+    local to_install=()
+
+    for tool in "${tools[@]}"; do
+        if ! dpkg -l "${tool}" &>/dev/null 2>&1; then
+            to_install+=("${tool}")
+        else
+            skip "${tool}: már telepítve"
+        fi
+    done
+
+    if [[ ${#to_install[@]} -gt 0 ]]; then
+        step "Telepítés: ${to_install[*]}..."
+        run sudo apt-get update -qq
+        run sudo apt-get install -y -qq "${to_install[@]}"
+        ok "Telepítve: ${to_install[*]}"
+    fi
+
+    log "INFO" "Rendszer eszközök kész"
 }
 
 # ── Összesítő ─────────────────────────────────────────────────────────────────
@@ -1288,66 +1452,76 @@ main() {
         restore_ssh_keys         # id_ed25519 + gitconfig a pendrive-ról
     fi
 
-    # ── Fázis 1: Előfeltételek + Docker ───────────────────────────────────────
+    # ── Fázis 1: Előfeltételek + rendszer eszközök ────────────────────────────
     section "Fázis 1 — Előfeltételek"
     check_prerequisites          # git, internet (ha nem --offline), helyes könyvtár
 
-    section "Fázis 2 — Docker"
+    section "Fázis 2 — Rendszer eszközök"
+    install_system_tools         # tmux, curl, ca-certificates
+
+    # ── Fázis 2b: Auto-frissítések LETILTÁSA ─────────────────────────────────
+    section "Fázis 2b — Auto-frissítések letiltása"
+    disable_auto_updates         # apt hold kernel+L4T + unattended-upgrades off
+
+    # ── Fázis 3: Felhasználói csoportok ──────────────────────────────────────
+    section "Fázis 3 — Felhasználói csoportok"
+    setup_user_groups            # docker, plugdev, dialout, video, i2c, gpio
+
+    # ── Fázis 4: Docker ───────────────────────────────────────────────────────
+    section "Fázis 4 — Docker"
     install_docker               # Docker Engine + Compose + Jetson fix
 
-    # ── Fázis 2: Hálózat + Jetson teljesítmény ───────────────────────────────
-    section "Fázis 3 — Hálózat"
+    # ── Fázis 5: Hálózat + Jetson teljesítmény ───────────────────────────────
+    section "Fázis 5 — Hálózat"
     setup_network                # enP1p1s0 robot belső (10.0.10.1/24) + enP8p1s0 LAN DHCP
 
-    section "Fázis 4 — Jetson Power"
-    setup_jetson_power           # nvpmodel MAXN_SUPER + jetson_clocks
+    section "Fázis 6 — Jetson Power"
+    setup_jetson_power           # nvpmodel MAXN_SUPER + jetson_clocks (boot-kor: talicska-power.service)
 
-    # ── Fázis 3: udev szabályok ───────────────────────────────────────────────
-    section "Fázis 5 — udev szabályok"
+    # ── Fázis 7: udev szabályok ───────────────────────────────────────────────
+    section "Fázis 7 — udev szabályok"
     install_udev_rules           # RPLidar + RealSense udev rules
 
-    # ── Fázis 4: Workspace ────────────────────────────────────────────────────
-    section "Fázis 6 — vcstool"
+    # ── Fázis 8: Workspace ────────────────────────────────────────────────────
+    section "Fázis 8 — vcstool"
     install_vcstool              # vcstool
 
-    section "Fázis 7 — Workspace"
+    section "Fázis 9 — Workspace"
     setup_workspace              # workspace + vcs import/pull
 
-    # ── Fázis 5: rplidar patch ────────────────────────────────────────────────
-    section "Fázis 8 — rplidar_ros patch"
+    # ── Fázis 10: rplidar patch ────────────────────────────────────────────────
+    section "Fázis 10 — rplidar_ros patch"
     apply_rplidar_patch          # SIGTERM handler + motor stability gate patch
 
-    # ── Fázis 6: Docker image-ek ─────────────────────────────────────────────
-    section "Fázis 9 — Docker image-ek"
+    # ── Fázis 11: Docker image-ek ─────────────────────────────────────────────
+    section "Fázis 11 — Docker image-ek"
     if [[ "${FROM_BACKUP}" == true ]] && [[ -n "${PENDRIVE_MOUNT}" ]]; then
-        restore_docker_images    # docker load pendrive-ról
+        restore_docker_images    # docker load pendrive-ról (robot + foxglove + realsense)
     else
         build_docker_image       # docker compose build (robot + microros)
         build_realsense_image    # RealSense image build (dustynv base)
     fi
 
-    # ── Fázis 7: Validáció + systemd ─────────────────────────────────────────
-    section "Fázis 10 — Validáció"
+    # ── Fázis 12: Validáció + systemd ─────────────────────────────────────────
+    section "Fázis 12 — Validáció"
     run_validation               # konténer indíthatóság ellenőrzés
 
-    section "Fázis 11 — systemd + aliases"
-    install_systemd              # systemd services + bash aliases
+    section "Fázis 13 — systemd + aliases"
+    install_systemd              # systemd services + bash aliases (robot, power, watchdog, tmux, dropbox)
 
-    # ── Fázis 8: Portainer visszaállítás ─────────────────────────────────────
+    # ── Fázis 14: Portainer visszaállítás ─────────────────────────────────────
     if [[ "${FROM_BACKUP}" == true ]] && [[ -n "${PENDRIVE_MOUNT}" ]]; then
-        section "Fázis 12 — Portainer adat visszaállítás"
+        section "Fázis 14 — Portainer adat visszaállítás"
         restore_portainer        # portainer_data volume tar visszaállítás
     fi
 
-    # ── Fázis 9: Tailscale ───────────────────────────────────────────────────
-    section "Fázis 13 — Tailscale VPN"
-    install_tailscale            # telepítés + subnet router konfig
+    # ── Fázis 15: Tailscale ───────────────────────────────────────────────────
+    section "Fázis 15 — Tailscale VPN"
+    install_tailscale            # telepítés + IP forwarding + subnet router konfig
 
-    # ── Fázis 10: rclone / Dropbox ───────────────────────────────────────────
-    if [[ "${FROM_BACKUP}" == true ]] && [[ -n "${PENDRIVE_MOUNT}" ]]; then
-        section "Fázis 14 — rclone / Dropbox"
-        restore_rclone           # rclone.conf visszaállítás pendrive-ról
-    fi
+    # ── Fázis 16: rclone / Dropbox ───────────────────────────────────────────
+    section "Fázis 16 — rclone / Dropbox"
+    restore_rclone               # rclone telepítés + konfig visszaállítás (--from-backup esetén)
 
     # ── Összesítő ─────────────────────────────────────────────────────────────
     print_summary

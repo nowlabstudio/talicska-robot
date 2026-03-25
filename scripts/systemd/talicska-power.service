@@ -1,11 +1,14 @@
 [Unit]
-Description=Talicska Robot — jetson_clocks (Power Mode manuálisan beállítva)
+Description=Talicska Robot — Power Mode (nvpmodel MAXN_SUPER + jetson_clocks)
 After=multi-user.target
 Before=talicska-robot.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# nvpmodel MAXN_SUPER (mode 2) — perzisztens beállítás boot-kor
+ExecStart=/usr/sbin/nvpmodel -m 2
+# jetson_clocks — maximális órajel minden magon
 ExecStart=/usr/bin/jetson_clocks
 SuccessExitStatus=0 1
 
