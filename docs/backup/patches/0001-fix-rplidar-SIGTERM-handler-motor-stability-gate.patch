@@ -1,0 +1,146 @@
+From 6e232a16bbe07696320d2a92a41c4eb173f9ba41 Mon Sep 17 00:00:00 2001
+From: Sik Eduard <Eduard@nowlab.eu>
+Date: Tue, 24 Mar 2026 17:59:25 +0100
+Subject: [PATCH] fix(rplidar): SIGTERM handler + motor stability gate
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+SIGTERM handler:
+- signal(SIGTERM, ExitHandler) hozzáadva main()-ben
+- ExitHandler: g_drv globális pointer via drv->stop() + setMotorSpeed(0)
+- Root cause: docker compose stop SIGTERM csak PID 1-et érte el, rplidar_node
+  csak SIGINT-et kezelt
+
+Motor stability gate:
+- scan publishing csak ha actual_hz >= motor_min_hz_ (5.0 Hz)
+- scan_duration alapján: 1/scan_duration = aktuális scan frekvencia
+- Warmup alatt scan_received_ false marad → safety_supervisor watchdog nem indul
+- Log: "LiDAR motor stable at X.X Hz — scan publishing starts"
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+---
+ src/rplidar_node.cpp | 62 ++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 60 insertions(+), 2 deletions(-)
+
+diff --git a/src/rplidar_node.cpp b/src/rplidar_node.cpp
+index ee7e7cf..ee110b7 100644
+--- a/src/rplidar_node.cpp
++++ b/src/rplidar_node.cpp
+@@ -57,6 +57,7 @@ enum {
+ using namespace sl;
+ 
+ bool need_exit = false;
++static sl::ILidarDriver* g_drv = nullptr;
+ 
+ class RPlidarNode : public rclcpp::Node
+ {
+@@ -105,6 +106,13 @@ class RPlidarNode : public rclcpp::Node
+             this->get_parameter_or<float>("scan_frequency", scan_frequency, 20.0);
+         else
+             this->get_parameter_or<float>("scan_frequency", scan_frequency, 10.0);
++
++        // Publish throttle: limit /scan output rate to scan_frequency Hz.
++        // grabScanDataHq() still runs every motor revolution to drain the HW
++        // buffer, but ROS publish is skipped when the interval is too short.
++        if (scan_frequency > 0.0f) {
++            min_publish_interval_ns = static_cast<int64_t>(1.0e9 / scan_frequency);
++        }
+     }
+ 
+     bool getRPLIDARDeviceInfo(ILidarDriver * drv)
+@@ -382,6 +390,7 @@ public:
+             RCLCPP_ERROR(this->get_logger(), "Failed to construct driver");
+             return -1;
+         }
++        g_drv = drv;
+         IChannel* _channel;
+         if(channel_type == "tcp"){
+             _channel = *createTcpChannel(tcp_ip, tcp_port);
+@@ -472,10 +481,43 @@ public:
+             if (op_result == SL_RESULT_OK) {
+                 if(scan_frequency_tunning_after_scan) { //Set scan frequency(For Slamtec Tof lidar)
+                     RCLCPP_INFO(this->get_logger(), "set lidar scan frequency to %.1f Hz(%.1f Rpm) ",scan_frequency,scan_frequency*60);
+-                    drv->setMotorSpeed(scan_frequency*60); //rpm 
++                    drv->setMotorSpeed(scan_frequency*60); //rpm
+                     scan_frequency_tunning_after_scan = false;
+                     continue;
+                 }
++                // Motor stability gate — don't publish scans until motor reaches operating speed.
++                // scan_duration is the wall-clock time for one full 360° rotation; its reciprocal
++                // is the actual scan frequency.  Publishing below motor_min_hz_ would cause the
++                // safety_supervisor scan-dropout watchdog to fire (intermittent data at low RPM).
++                if (scan_duration > 0.0) {
++                    const float actual_hz = (float)(1.0 / scan_duration);
++                    if (!motor_stable_) {
++                        if (actual_hz >= motor_min_hz_) {
++                            motor_stable_ = true;
++                            RCLCPP_INFO(this->get_logger(),
++                                "LiDAR motor stable at %.1f Hz — scan publishing starts", actual_hz);
++                        } else {
++                            RCLCPP_DEBUG(this->get_logger(),
++                                "LiDAR motor warming up: %.1f Hz (min: %.1f Hz)", actual_hz, motor_min_hz_);
++                            rclcpp::spin_some(shared_from_this());
++                            continue;
++                        }
++                    }
++                }
++                // Publish throttle: skip ROS publish if not enough time has
++                // elapsed since the last one.  grabScanDataHq() above already
++                // drained the HW buffer, so the LiDAR keeps running normally.
++                {
++                    int64_t now_ns = this->now().nanoseconds();
++                    if (min_publish_interval_ns > 0 &&
++                        (now_ns - last_publish_time_ns) < min_publish_interval_ns)
++                    {
++                        rclcpp::spin_some(shared_from_this());
++                        continue;  // skip ascend + publish, back to grabScanDataHq
++                    }
++                    last_publish_time_ns = now_ns;
++                }
++
+                 op_result = drv->ascendScanData(nodes, count);
+                 float angle_min = DEG2RAD(0.0f);
+                 float angle_max = DEG2RAD(359.0f);
+@@ -576,13 +618,28 @@ public:
+     /* State */
+     bool is_scanning = false;
+ 
++    // Publish throttle: skip publish if less than min_publish_interval_ns has
++    // elapsed since the last publish.  grabScanDataHq() still runs every cycle
++    // to drain the driver's internal buffer — only the ROS publish is skipped.
++    // This avoids unnecessary DDS serialization on resource-constrained systems.
++    int64_t min_publish_interval_ns = 0;  // 0 = no throttle (publish every scan)
++    int64_t last_publish_time_ns = 0;
++
+     ILidarDriver *drv = nullptr;
++
++    // Motor stability gate
++    bool  motor_stable_ = false;
++    float motor_min_hz_ = 5.0f;   // A2 typical: 6-7 Hz; below this = warming up
+ };
+ 
+ void ExitHandler(int sig)
+ {
+     (void)sig;
+     need_exit = true;
++    if (g_drv) {
++        g_drv->stop();
++        g_drv->setMotorSpeed(0);
++    }
+ }
+ 
+ 
+@@ -590,7 +647,8 @@ int main(int argc, char * argv[])
+ {
+   rclcpp::init(argc, argv);  
+   auto rplidar_node = std::make_shared<RPlidarNode>(rclcpp::NodeOptions());
+-  signal(SIGINT,ExitHandler);
++  signal(SIGINT, ExitHandler);
++  signal(SIGTERM, ExitHandler);
+   int ret = rplidar_node->work_loop();
+   rclcpp::shutdown();
+   return ret;
+-- 
+2.34.1
+
