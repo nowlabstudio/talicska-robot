@@ -868,6 +868,116 @@ BASHRC_BLOCK
     log "INFO" "Systemd + aliases telepítés kész"
 }
 
+# ── WiFi driver (rt2800usb DKMS) ─────────────────────────────────────────────
+# Ralink RT5370 USB WiFi adapter — nem része a Jetson OOT kernelnek,
+# Ubuntu jammy linux-source-5.15.0-ból buildeljük DKMS-szel.
+install_wifi_driver() {
+    section "Fázis: WiFi driver (rt2800usb DKMS — Ralink RT5370)"
+
+    local dkms_src="${ROBOT_DIR}/drivers/rt2800usb"
+    local dkms_dst="/usr/src/rt2800usb-1.0"
+
+    # Már telepítve?
+    if dkms status rt2800usb 2>/dev/null | grep -q "installed"; then
+        skip "rt2800usb DKMS: már telepítve"
+        # Modul betöltése ha nincs (pl. reboot előtt)
+        lsmod | grep -q rt2800usb || sudo modprobe rt2800usb 2>/dev/null || true
+        return 0
+    fi
+
+    if [[ "${OFFLINE}" == true ]]; then
+        warn "WiFi driver: --offline módban kihagyva (linux-source letöltés szükséges)"
+        return 0
+    fi
+
+    # Szükséges csomagok
+    step "dkms + build-essential + linux-source-5.15.0 telepítése..."
+    run sudo apt-get install -y -qq dkms build-essential linux-source-5.15.0
+
+    # DKMS forrás könyvtár
+    run sudo mkdir -p "${dkms_dst}"
+
+    # rt2x00 forrás kicsomagolása
+    step "rt2x00 forrás kicsomagolása a kernel source-ból..."
+    run sudo tar -xjf /usr/src/linux-source-5.15.0/linux-source-5.15.0.tar.bz2 \
+        -C /tmp/ "linux-source-5.15.0/drivers/net/wireless/ralink/rt2x00/"
+    run sudo cp /tmp/linux-source-5.15.0/drivers/net/wireless/ralink/rt2x00/* "${dkms_dst}/"
+
+    # Repo-ból a DKMS Makefile + dkms.conf felülírja az eredetit
+    run sudo cp "${dkms_src}/Makefile"  "${dkms_dst}/Makefile"
+    run sudo cp "${dkms_src}/dkms.conf" "${dkms_dst}/dkms.conf"
+
+    # DKMS build + install
+    step "rt2800usb DKMS build (ez eltarthat 2-3 percig)..."
+    run sudo dkms add rt2800usb/1.0
+    if ! sudo dkms build rt2800usb/1.0 -k "$(uname -r)" >> "${LOG_FILE}" 2>&1; then
+        error "rt2800usb DKMS build sikertelen — részletek: ${LOG_FILE}"
+        return 1
+    fi
+    run sudo dkms install rt2800usb/1.0 -k "$(uname -r)"
+    ok "rt2800usb DKMS: telepítve"
+
+    # Azonnali betöltés
+    step "rt2800usb modul betöltése..."
+    run sudo modprobe rt2800usb
+    ok "rt2800usb: betöltve — $(ip link show | grep -E 'wlx|wlan' | awk '{print $2}' | tr -d ':' | head -1)"
+
+    log "INFO" "rt2800usb DKMS driver telepítve"
+}
+
+# ── WiFi kapcsolat konfigurálása ───────────────────────────────────────────────
+setup_wifi() {
+    section "Fázis: WiFi kapcsolat (T61)"
+
+    local WIFI_SSID="T61"
+    local WIFI_PSK="Hell0bell0"
+
+    # Van-e WiFi interface?
+    local wifi_iface
+    wifi_iface="$(ip link show | grep -E 'wlx|wlan' | awk '{print $2}' | tr -d ':' | head -1)"
+
+    if [[ -z "${wifi_iface}" ]]; then
+        warn "WiFi interface nem található — rt2800usb modul betöltve?"
+        warn "Manuálisan: sudo modprobe rt2800usb && nmcli device wifi connect '${WIFI_SSID}' password '${WIFI_PSK}'"
+        return 0
+    fi
+    log "INFO" "WiFi interface: ${wifi_iface}"
+
+    # Kapcsolat már konfigurálva?
+    if nmcli connection show "${WIFI_SSID}" &>/dev/null 2>&1; then
+        skip "WiFi kapcsolat már konfigurálva: ${WIFI_SSID}"
+        run nmcli connection up "${WIFI_SSID}" 2>/dev/null || true
+        return 0
+    fi
+
+    # NetworkManager fut?
+    if ! systemctl is-active --quiet NetworkManager 2>/dev/null; then
+        run sudo systemctl unmask NetworkManager 2>/dev/null || true
+        run sudo systemctl start NetworkManager
+        sleep 3
+    fi
+
+    # Scan + kapcsolódás
+    step "WiFi scan és kapcsolódás: ${WIFI_SSID}..."
+    sudo nmcli device wifi rescan ifname "${wifi_iface}" 2>/dev/null || true
+    sleep 2
+
+    if sudo nmcli device wifi connect "${WIFI_SSID}" password "${WIFI_PSK}" ifname "${wifi_iface}" >> "${LOG_FILE}" 2>&1; then
+        # BSSID lock eltávolítása — bármely AP-hoz csatlakozhat
+        run sudo nmcli connection modify "${WIFI_SSID}" 802-11-wireless.bssid ""
+        run sudo nmcli connection modify "${WIFI_SSID}" connection.autoconnect yes
+        run sudo nmcli connection modify "${WIFI_SSID}" connection.autoconnect-priority 10
+        local wifi_ip
+        wifi_ip="$(ip addr show "${wifi_iface}" 2>/dev/null | awk '/inet /{print $2}' | head -1)"
+        ok "WiFi: ${WIFI_SSID} → ${wifi_ip}"
+    else
+        warn "WiFi kapcsolódás sikertelen — háló elérhető? SSID/jelszó helyes?"
+        warn "Manuálisan: nmcli device wifi connect '${WIFI_SSID}' password '${WIFI_PSK}'"
+    fi
+
+    log "INFO" "WiFi konfiguráció kész"
+}
+
 # ── 9. Jetson Power Mode (nvpmodel MAXN_SUPER + jetson_clocks) ────────────────
 setup_jetson_power() {
     section "9. Fázis: Power Mode (MAXN_SUPER + jetson_clocks)"
@@ -1516,7 +1626,13 @@ main() {
     setup_jetson_power           # nvpmodel MAXN_SUPER + jetson_clocks (boot-kor: talicska-power.service)
 
     # ── Fázis 7: udev szabályok ───────────────────────────────────────────────
-    section "Fázis 7 — udev szabályok"
+    section "Fázis 7 — WiFi driver"
+    install_wifi_driver          # Ralink RT5370 USB adapter — rt2800usb DKMS
+
+    section "Fázis 7b — WiFi kapcsolat"
+    setup_wifi                   # T61 SSID konfigurálás + autoconnect
+
+    section "Fázis 8 — udev szabályok"
     install_udev_rules           # RPLidar + RealSense udev rules
 
     # ── Fázis 8: Workspace ────────────────────────────────────────────────────
