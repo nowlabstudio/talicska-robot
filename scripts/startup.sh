@@ -5,7 +5,7 @@
 # Systemd ExecStart hívja (talicska-robot.service, User=root)
 #
 # Sorrend:
-#   nvpmodel -m 0 → jetson_clocks → prestart.sh (60s timeout) → exec make up
+#   nvpmodel -m 2 → jetson_clocks → prestart.sh (60s timeout) → exec make up
 #
 # exec make up: systemd a make process PID-jét trackeli (Type=simple)
 # =============================================================================
@@ -31,11 +31,13 @@ log "ROBOT_DIR: ${ROBOT_DIR}"
 log "Felhasználó: $(whoami)"
 
 # ── 1. Power mode ─────────────────────────────────────────────────────────────
-log "nvpmodel -m 0 (MaxN mód)..."
-if /usr/bin/nvpmodel -m 0 >> "${LOG_FILE}" 2>&1; then
-    log "nvpmodel: OK"
+# MAXN_SUPER (mode 2) — talicska-power.service már beállítja, itt megerősítjük.
+# Helyes path: /usr/sbin/nvpmodel
+log "nvpmodel -m 2 (MAXN_SUPER)..."
+if /usr/sbin/nvpmodel -m 2 >> "${LOG_FILE}" 2>&1; then
+    log "nvpmodel: OK (MAXN_SUPER mode 2)"
 else
-    log "WARN: nvpmodel -m 0 sikertelen (exit: $?) — folytatás"
+    log "WARN: nvpmodel -m 2 sikertelen (exit: $?) — folytatás"
 fi
 
 # ── 2. jetson_clocks ──────────────────────────────────────────────────────────

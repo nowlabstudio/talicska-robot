@@ -6,10 +6,10 @@ Before=talicska-robot.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# nvpmodel MAXN_SUPER (mode 2) — perzisztens beállítás boot-kor
-ExecStart=/usr/sbin/nvpmodel -m 2
+# nvpmodel MAXN_SUPER (mode 2) — a '-' prefix: hiba esetén NEM töri le a service-t
+ExecStart=-/usr/sbin/nvpmodel -m 2
 # jetson_clocks — maximális órajel minden magon
-ExecStart=/usr/bin/jetson_clocks
+ExecStart=-/usr/bin/jetson_clocks
 SuccessExitStatus=0 1
 
 [Install]
