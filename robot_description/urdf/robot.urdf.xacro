@@ -287,6 +287,32 @@
   </joint>
 
   <!-- ============================================================
+       IMU — BNO085 (GY-BM0085)
+       Dedikált 9-DOF IMU, I2C (i2c-7, 0x4B).
+       Pozíció: robot hossztengelyén középen, LiDAR magasságán (X=0, Y=0, Z=0.295).
+         X=0: tengelyközép (base_link origó)
+         Y=0: szimmetriatengelyen
+         Z=0.295: LiDAR magassága (lidar_joint Z)
+       TODO: rpy — az IMU chip X/Y/Z tengelyeinek base_link-hez képesti forgatása.
+             Helytelen rpy → EKF hibás orientáció-korrekció.
+       ============================================================ -->
+  <link name="imu_link">
+    <visual>
+      <geometry><box size="0.02 0.02 0.005"/></geometry>
+    </visual>
+    <inertial>
+      <mass value="0.003"/>
+      <inertia ixx="0.0000001" iyy="0.0000001" izz="0.0000001" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="imu_link"/>
+    <!-- xyz mérve (2026-03-26). rpy TODO: mérés után frissítendő! -->
+    <origin xyz="0.0 0.0 0.295" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============================================================
        TILT PLATFORM (felépítmény)
        Hinge at chassis top (Z=0.26), 20 mm from chassis front (X=+0.305).
        Platform 1100×750×300 mm, bottom at 450 mm when level.

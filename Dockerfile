@@ -24,6 +24,7 @@ RUN rosdep update --rosdistro jazzy
 # Build context root = ~/talicska-robot-ws/src/
 COPY robot/ROS2_RoboClaw/           /root/talicska-ws/src/ROS2_RoboClaw/
 COPY robot/rplidar_ros/             /root/talicska-ws/src/rplidar_ros/
+COPY robot/bno08x_ros2_driver/      /root/talicska-ws/src/bno08x_ros2_driver/
 COPY robot/talicska-robot/robot_description/ /root/talicska-ws/src/robot_description/
 COPY robot/talicska-robot/robot_bringup/     /root/talicska-ws/src/robot_bringup/
 COPY robot/talicska-robot/robot_safety/      /root/talicska-ws/src/robot_safety/

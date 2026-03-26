@@ -1,5 +1,5 @@
 """
-sensors.launch.py — RPLidar A2M12 + EKF for Talicska robot
+sensors.launch.py — RPLidar A2M12 + BNO085 IMU + EKF for Talicska robot
 
 RPLidar A2M12 scan modes:
   Standard:    4 KHz → ~296 raw pts/rev → 720 output (angle_compensate 2×)
@@ -63,7 +63,25 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
     )
 
-    return [rplidar, ekf]
+    # BNO085 dedikált IMU (i2c-7, 0x4B)
+    # Publishes /imu → remappelve /sensors/imu/data-ra
+    # frame_id: imu_link (robot.urdf.xacro imu_joint)
+    bno085_params = all_params.get("bno08x_driver", {}).get("ros__parameters", {})
+    bno085 = Node(
+        package="bno08x_driver",
+        executable="bno08x_driver",
+        name="bno08x_driver",
+        parameters=[bno085_params],
+        remappings=[
+            ("/imu",            "/sensors/imu/data"),
+            ("/magnetic_field", "/sensors/imu/magnetic_field"),
+        ],
+        output="screen",
+        respawn=True,
+        respawn_delay=3.0,
+    )
+
+    return [rplidar, bno085, ekf]
 
 
 def generate_launch_description():

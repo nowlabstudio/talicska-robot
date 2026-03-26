@@ -49,9 +49,9 @@ diff_drive_controller:
 
     odom_frame_id: odom
     base_frame_id: base_link
-    # EKF kikapcsolva (egyetlen szenzor, IMU nincs) → controller publikálja az odom TF-et.
-    # Ha EKF visszakapcsol (IMU fix után): false-ra állítani, különben dupla TF!
-    enable_odom_tf: true
+    # EKF aktív (BNO085 IMU bekötve) → EKF publikálja az odom→base_link TF-et.
+    # Ha EKF kikapcsol: true-ra visszaállítani, különben nincs odom TF!
+    enable_odom_tf: false
 
     pose_covariance_diagonal:  [0.001, 0.001, 0.001, 0.001, 0.001, 0.01]
     twist_covariance_diagonal: [0.001, 0.001, 0.001, 0.001, 0.001, 0.01]

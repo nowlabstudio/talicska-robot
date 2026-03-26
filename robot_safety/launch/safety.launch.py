@@ -28,7 +28,10 @@ def launch_setup(context, *args, **kwargs):
         executable="startup_supervisor",
         name="startup_supervisor",
         output="screen",
-        parameters=[startup_params])
+        parameters=[startup_params],
+        remappings=[
+            ("/camera/camera/imu", "/sensors/imu/data"),
+        ])
 
     safety_node = Node(
         package="robot_safety",
@@ -36,7 +39,10 @@ def launch_setup(context, *args, **kwargs):
         name="safety_supervisor",
         output="screen",
         parameters=[safety_params],
-        remappings=[("cmd_vel", "/diff_drive_controller/cmd_vel")])
+        remappings=[
+            ("cmd_vel",            "/diff_drive_controller/cmd_vel"),
+            ("/camera/camera/imu", "/sensors/imu/data"),
+        ])
 
     return [startup_node, safety_node]
 

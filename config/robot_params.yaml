@@ -229,19 +229,35 @@ diff_drive_controller:
     pose_covariance_diagonal:  [0.001, 0.001, 0.001, 0.001, 0.001, 0.01]
     twist_covariance_diagonal: [0.001, 0.001, 0.001, 0.001, 0.001, 0.01]
 
+# ── BNO085 dedikált IMU driver ────────────────────────────────────────────────
+# GY-BM0085 modul, I2C-7 busz, 0x4B cím (ADDR pin HIGH a modulon)
+# Topic: /imu → sensors.launch.py remapeli /sensors/imu/data-ra
+# Magnetic field: /magnetic_field → /sensors/imu/magnetic_field
+bno08x_driver:
+  ros__parameters:
+    frame_id: "imu_link"
+    i2c:
+      enabled: true
+      bus: "/dev/i2c-7"
+      address: "0x4B"
+    publish:
+      imu:
+        enabled: true
+        rate: 100
+      magnetic_field:
+        enabled: true
+        rate: 100
+
 # ── robot_localization EKF ─────────────────────────────────────────────────────
-# Fuses /odom (diff_drive) + /camera/camera/imu (RealSense D435i — jelenleg ki)
-# Publishes /odometry/filtered és odom→base_link TF (ha publish_tf: true)
-# MEGJEGYZÉS: publish_tf most false — diff_drive_controller publikálja a TF-et.
-# Ha IMU visszakapcsol: publish_tf: true + diff_drive_controller enable_odom_tf: false
+# Fuses /odom (diff_drive) + /sensors/imu/data (BNO085 dedikált IMU)
+# Publishes /odometry/filtered és odom→base_link TF
+# MEGJEGYZÉS: publish_tf: true — EKF publikálja a TF-et (controllers.yaml enable_odom_tf: false)
 ekf_filter_node:
   ros__parameters:
     frequency:      50.0
     sensor_timeout: 0.1
     two_d_mode:     true
-    # KIKAPCSOLVA: egyetlen szenzor (wheel odom) → EKF random walk driftet okozna.
-    # IMU visszakapcsolásakor: true-ra + controllers.yaml enable_odom_tf: false!
-    publish_tf: false
+    publish_tf: true
     map_frame:       map
     odom_frame:      odom
     base_link_frame: base_link
@@ -258,42 +274,41 @@ ekf_filter_node:
     odom0_queue_size: 10
     odom0_differential: false
 
-    # RealSense D435i IMU — KIKAPCSOLVA
-    # A kamera fizikai orientációja nem egyezik a robot base_link frame-jével.
-    # Visszakapcsolás: backlog → "IMU tilt check — RealSense kamera frame orientáció"
-    #
-    # imu0: /camera/camera/imu
-    # imu0_config:
-    #   [false, false, false,
-    #    true,  true,  true,
-    #    false, false, false,
-    #    true,  true,  true,
-    #    true,  true,  false]
-    # imu0_queue_size: 20
-    # imu0_differential: false
-    # imu0_relative: false
-    # imu0_remove_gravitational_acceleration: true
+    # BNO085 dedikált IMU — /sensors/imu/data (sensor_msgs/Imu)
+    # Orientáció (roll/pitch/yaw) + szögsebességek + gyorsulás
+    # imu0_relative: false — abszolút orientáció (BNO085 on-chip fúzió)
+    # imu0_remove_gravitational_acceleration: true — EKF ax/ay/az-t kapja, g nélkül
+    imu0: /sensors/imu/data
+    imu0_config:
+      [false, false, false,
+       true,  true,  true,
+       false, false, false,
+       true,  true,  true,
+       true,  true,  false]
+    imu0_queue_size: 20
+    imu0_differential: false
+    imu0_relative: false
+    imu0_remove_gravitational_acceleration: true
 
     # Process noise covariance — 15×15 mátrix (flat list, row-major)
     # Állapotvektor: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
-    # Alacsony értékek: egyetlen szenzor (wheel odom), IMU kikapcsolva.
-    # IMU visszakapcsolásakor növelni kell (0.01-0.05 tartomány).
+    # Értékek odom + IMU fúzióhoz hangolva.
     process_noise_covariance:
-      [0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001,  0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.001,  0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.001,  0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.001,  0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.001,  0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.001,  0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.001, 0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.001, 0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.001]
+      [0.05,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.05,  0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.06,  0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.03,  0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.03,  0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.06,  0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.025,  0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.025,  0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.04,   0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.01,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.01,   0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.02,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.01,  0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.01,  0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.015]
 
     # Initial estimate covariance — 15×15 mátrix (flat list, row-major)
     # Nagy kezdeti bizonytalanság: az EKF az első mérések alapján konvergál.
@@ -377,11 +392,10 @@ safety_supervisor:
     realsense_timeout_s:  3.0
     # Latch perzisztencia — node crash + ROS2 restart után is megmarad a FAULT állapot
     latch_state_path:     "/tmp/safety_latch_state"
-    # TILT: 90° = kikapcsolva
-    # Éles robot: 25.0/20.0 — csak a kamera→base_link transzformáció fix után!
-    # Backlog: "IMU tilt check — RealSense kamera frame orientáció"
-    tilt_roll_limit_deg:  90.0
-    tilt_pitch_limit_deg: 90.0
+    # TILT: BNO085 dedikált IMU aktív — éles limitek bekapcsolva.
+    # TODO: rpy orientáció URDF-ben (imu_joint) véglegesítése után validálni!
+    tilt_roll_limit_deg:  25.0
+    tilt_pitch_limit_deg: 20.0
     # PROXIMITY: 0.0 = kikapcsolva
     # Visszakapcsoláshoz előfeltétel: LiDAR szögmaszk (alkatrészek kitakarása)
     # Backlog: "LiDAR szögmaszk — robot saját alkatrészeinek kitakarása"
@@ -404,7 +418,7 @@ safety_supervisor:
     sensor_recovery_stable_s:        2.0   # ennyi stabil adat → [recovered] jelölés (latch MEGMARAD)
     scan_watchdog_startup_grace_s:   5.0   # motor warmup grace backup: első scan után N mp-ig watchdog inaktív
     enable_scan_watchdog:            true  # LiDAR dropout → scan_dropout_latch → ERROR
-    enable_imu_watchdog:      false  # explicit ON (tilt=90° esetén is)
+    enable_imu_watchdog:      true   # BNO085 aktív — dropout → imu_dropout_latch → ERROR
     # PLACEHOLDER (disabled) — ZED 2i és külső IMU watchdog
     # enable_zed_watchdog:      false
     # enable_ext_imu_watchdog:  false
@@ -418,10 +432,10 @@ startup_supervisor:
     # CHECK_MOTION: true — robot mozdulatlanul áll indítás előtt
     # CHECK_ESTOP: true — E-Stop bridge online és nem aktív
     check_motion_enabled:  true
-    check_tilt_enabled:    false
+    check_tilt_enabled:    true
     check_estop_enabled:   true
-    tilt_roll_limit_deg:   90.0
-    tilt_pitch_limit_deg:  90.0
+    tilt_roll_limit_deg:   25.0
+    tilt_pitch_limit_deg:  20.0
     motion_stable_s:       2.0
     motion_timeout_s:      30.0
     # TILT_TIMEOUT: 30s — RealSense lassan indul (20-30s)
