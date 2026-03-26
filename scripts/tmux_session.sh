@@ -19,6 +19,7 @@ set -euo pipefail
 
 ROBOT_DIR="/home/eduard/talicska-robot-ws/src/robot/talicska-robot"
 SESSION="talicska"
+TMUX_CONF="${ROBOT_DIR}/scripts/tmux.conf"
 
 # Idempotent guard
 if tmux has-session -t "${SESSION}" 2>/dev/null; then
@@ -27,7 +28,7 @@ if tmux has-session -t "${SESSION}" 2>/dev/null; then
 fi
 
 # 1. ablak: status (érkezési képernyő)
-tmux new-session -d -s "${SESSION}" -n "status" -x 220 -y 50 -c "${ROBOT_DIR}"
+tmux -f "${TMUX_CONF}" new-session -d -s "${SESSION}" -n "status" -x 220 -y 50 -c "${ROBOT_DIR}"
 tmux send-keys -t "${SESSION}:status" "bash scripts/status_monitor.sh" Enter
 
 # 2. ablak: claude

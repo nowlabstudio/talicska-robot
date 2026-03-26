@@ -805,6 +805,22 @@ install_systemd() {
     done
     ok "Script-ek: +x beállítva"
 
+    # ── tmux.conf másolása ────────────────────────────────────────────────────
+    local tmux_conf_src="${SCRIPT_DIR}/tmux.conf"
+    local tmux_conf_dst="${user_home}/.tmux.conf"
+
+    if [[ ! -f "${tmux_conf_src}" ]]; then
+        warn "tmux.conf forrás nem található: ${tmux_conf_src} — kihagyva"
+    else
+        if [[ -f "${tmux_conf_dst}" ]] && diff -q "${tmux_conf_src}" "${tmux_conf_dst}" &>/dev/null; then
+            skip "~/.tmux.conf: már naprakész"
+        else
+            step "~/.tmux.conf másolása..."
+            run cp "${tmux_conf_src}" "${tmux_conf_dst}"
+            ok "~/.tmux.conf: telepítve"
+        fi
+    fi
+
     # ── bash_aliases másolása ──────────────────────────────────────────────────
     local aliases_src="${SCRIPT_DIR}/bash_aliases"
     local aliases_dst="${user_home}/.bash_aliases"
