@@ -5,9 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStartPre=-/usr/bin/fusermount -u /home/eduard/Dropbox
+KillMode=process
+RemainAfterExit=yes
+ExecStartPre=-/usr/bin/fusermount -uz /home/eduard/Dropbox
 ExecStart=/bin/bash /home/eduard/dropbox_sync.sh
-ExecStop=-/usr/bin/fusermount -u /home/eduard/Dropbox
+ExecStop=-/usr/bin/fusermount -uz /home/eduard/Dropbox
 Restart=on-failure
 RestartSec=30s
 

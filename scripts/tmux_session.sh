@@ -31,8 +31,9 @@ fi
 tmux -f "${TMUX_CONF}" new-session -d -s "${SESSION}" -n "status" -x 220 -y 50 -c "${ROBOT_DIR}"
 tmux send-keys -t "${SESSION}:status" "bash scripts/status_monitor.sh" Enter
 
-# 2. ablak: jetson (üres bash — jtop vagy tegrastats manuálisan indítható)
+# 2. ablak: jetson — jtop automatikusan indul
 tmux new-window -t "${SESSION}" -n "jetson" -c "${ROBOT_DIR}"
+tmux send-keys -t "${SESSION}:jetson" "jtop" Enter
 
 # 3. ablak: docker — felső: konténer státusz, alsó: resource terhelés (CPU, mem)
 tmux new-window -t "${SESSION}" -n "docker" -c "${ROBOT_DIR}"

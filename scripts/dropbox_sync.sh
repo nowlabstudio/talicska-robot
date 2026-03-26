@@ -12,7 +12,6 @@ echo "Előző csatolások felszabadítása..."
 killall rclone 2>/dev/null
 # Leválasztjuk a mappát akkor is, ha be van ragadva
 fusermount -u $MOUNT_POINT 2>/dev/null
-sudo umount -l $MOUNT_POINT 2>/dev/null
 
 # Mappa biztosítása
 mkdir -p $MOUNT_POINT

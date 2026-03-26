@@ -21,11 +21,6 @@ find_package(ament_cmake REQUIRED)
 # add_executable(follow_me src/follow_me_node.cpp)
 
 install(
-  DIRECTORY include/
-  DESTINATION include
-)
-
-install(
   DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
 )

@@ -864,6 +864,7 @@ BASHRC_BLOCK
 
     # ── dropbox_sync.sh + dropbox_sync.conf ───────────────────────────────────
     # A dropbox-sync.service ezeket a fájlokat keresi ~/dropbox_sync.sh -ban
+    local dropbox_script_changed=false
     for fname in dropbox_sync.sh dropbox_sync.conf; do
         local src="${SCRIPT_DIR}/${fname}"
         local dst="${user_home}/${fname}"
@@ -877,8 +878,16 @@ BASHRC_BLOCK
             run cp "${src}" "${dst}"
             [[ "${fname}" == *.sh ]] && run chmod +x "${dst}"
             ok "${fname} → ${dst}"
+            dropbox_script_changed=true
         fi
     done
+    # Ha a script megváltozott, service újraindítása
+    if [[ "${dropbox_script_changed}" == true ]] && systemctl --user is-enabled dropbox-sync.service &>/dev/null; then
+        step "dropbox-sync.service újraindítása (script változott)..."
+        run systemctl --user daemon-reload
+        run systemctl --user restart dropbox-sync.service
+        ok "dropbox-sync.service: újraindítva"
+    fi
 
     # ── /etc/fuse.conf: user_allow_other ──────────────────────────────────────
     # rclone mount --allow-other igényli; enélkül csak root látja a mount-ot
