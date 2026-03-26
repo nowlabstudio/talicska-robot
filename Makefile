@@ -30,6 +30,9 @@ down:
 	@echo "RPLidar motor leállítás..."
 	@sudo docker compose exec -T robot pkill -SIGINT -f rplidar_node 2>/dev/null || true
 	@sleep 1
+	@echo "Launch folyamat leállítása (respawn tiltás)..."
+	@sudo docker compose exec -T robot pkill -SIGTERM -f "ros2 launch" 2>/dev/null || true
+	@sleep 1
 	@echo "Safety latch állapot törlése (intentional shutdown — clean restart state)..."
 	@sudo docker compose exec -T robot bash -c "rm -f /tmp/safety_latch_state" 2>/dev/null || true
 	@sudo docker compose stop
