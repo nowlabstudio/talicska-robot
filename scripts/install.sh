@@ -1529,6 +1529,30 @@ EOF"
         ok "apt preferences jetson-hold: létrehozva"
     fi
 
+    # 7. apt-daily timer-ek letiltása + maskolása
+    # Ezek triggerelnek háttérben és kikapcsoláskor is — ez okozza a shutdown promptot.
+    for timer in apt-daily.timer apt-daily-upgrade.timer; do
+        if systemctl is-enabled "${timer}" &>/dev/null 2>&1; then
+            step "${timer} letiltása és maskolása..."
+            run sudo systemctl disable --now "${timer}" 2>/dev/null || true
+            run sudo systemctl mask "${timer}"
+            ok "${timer}: letiltva + maskolva"
+        else
+            skip "${timer}: már letiltva"
+        fi
+    done
+
+    # 8. update-notifier eltávolítása — ez dobja fel a kikapcsoláskori "upgrade" ablakot
+    for pkg in update-notifier update-notifier-common update-manager update-manager-core; do
+        if dpkg -l "${pkg}" &>/dev/null 2>&1; then
+            step "${pkg} eltávolítása..."
+            run sudo apt-get purge -y -qq "${pkg}"
+            ok "${pkg}: eltávolítva"
+        else
+            skip "${pkg}: nincs telepítve"
+        fi
+    done
+
     log "INFO" "Auto-update letiltás kész — futó kernel: ${running_kernel}"
     warn "FONTOS: 'apt upgrade' TILOS a Jetsonen Seeed OOT kernel nélkül!"
     warn "Csak 'apt install <csomag>' egyedi csomagokhoz, és 'apt update' rendszeresen OK."
