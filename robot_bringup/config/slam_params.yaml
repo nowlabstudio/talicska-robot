@@ -13,7 +13,10 @@ slam_toolbox:
 
     # ── Map persistence ───────────────────────────────────────────────────
     map_file_name: /data/maps/talicska_map
-    map_start_at_dock: false
+    # map_start_at_dock: false + hiányzó map_start_pose → LocalizationSlamToolbox
+    # error + nem-nulla kezdeti map→odom (robot már mozgott a 6s delay alatt).
+    # true → térkép origója = robot indulási pozíciója (odom origó) → map→odom=0 induláskor.
+    map_start_at_dock: true
 
     # ── Scan matching ─────────────────────────────────────────────────────
     minimum_travel_distance: 0.3        # m — don't update if robot hasn't moved

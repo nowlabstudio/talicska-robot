@@ -221,8 +221,9 @@ diff_drive_controller:
 
     odom_frame_id: odom
     base_frame_id: base_link
-    # EKF publikálja az odom→base_link TF-et (publish_tf: true az ekf.yaml-ban).
-    enable_odom_tf: false
+    # EKF kikapcsolva (IMU rpy nincs kalibrálva) → diff_drive publikálja az odom TF-et.
+    # Visszakapcsoláshoz: false + ekf_filter_node publish_tf: true + imu0 kalibrálás
+    enable_odom_tf: true
 
     # Odometria kovariancia (alacsony: zárt hurkú enkóder alapú odometria)
     pose_covariance_diagonal:  [0.001, 0.001, 0.001, 0.001, 0.001, 0.01]
@@ -248,15 +249,17 @@ bno08x_driver:
         rate: 100
 
 # ── robot_localization EKF ─────────────────────────────────────────────────────
-# Fuses /odom (diff_drive) + /sensors/imu/data (BNO085 dedikált IMU)
-# Publishes /odometry/filtered és odom→base_link TF
-# MEGJEGYZÉS: publish_tf: true — EKF publikálja a TF-et (controllers.yaml enable_odom_tf: false)
+# STÁTUSZ: IMU KIKAPCSOLVA — imu_joint rpy nincs kalibrálva (URDF TODO).
+# Kalibrálatlan IMU az EKF-ben jumping yaw-t és köríves odometriát okoz.
+# Jelenlegi mód: csak wheel odom (odom0), publish_tf: false (diff_drive publikál).
+# IMU visszakapcsolásához: 1. rpy mérés+URDF frissítés, 2. imu0 blokk visszakapcsolása,
+#   3. enable_odom_tf: false, 4. publish_tf: true.
 ekf_filter_node:
   ros__parameters:
     frequency:      50.0
     sensor_timeout: 0.1
     two_d_mode:     true
-    publish_tf: true
+    publish_tf: false
     map_frame:       map
     odom_frame:      odom
     base_link_frame: base_link
@@ -273,41 +276,36 @@ ekf_filter_node:
     odom0_queue_size: 10
     odom0_differential: false
 
-    # BNO085 dedikált IMU — /sensors/imu/data (sensor_msgs/Imu)
-    # Orientáció (roll/pitch/yaw) + szögsebességek + gyorsulás
-    # imu0_relative: false — abszolút orientáció (BNO085 on-chip fúzió)
-    # imu0_remove_gravitational_acceleration: true — EKF ax/ay/az-t kapja, g nélkül
-    imu0: /sensors/imu/data
-    imu0_config:
-      [false, false, false,
-       true,  true,  true,
-       false, false, false,
-       true,  true,  true,
-       true,  true,  false]
-    imu0_queue_size: 20
-    imu0_differential: false
-    imu0_relative: false
-    imu0_remove_gravitational_acceleration: true
+    # BNO085 IMU — KIKAPCSOLVA (rpy kalibrálás hiányzik)
+    # imu0: /sensors/imu/data
+    # imu0_config:
+    #   [false, false, false,
+    #    true,  true,  true,
+    #    false, false, false,
+    #    true,  true,  true,
+    #    true,  true,  false]
+    # imu0_queue_size: 20
+    # imu0_differential: false
+    # imu0_relative: false
+    # imu0_remove_gravitational_acceleration: true
 
-    # Process noise covariance — 15×15 mátrix (flat list, row-major)
-    # Állapotvektor: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
-    # Értékek odom + IMU fúzióhoz hangolva.
+    # Process noise — odom-only módhoz hangolva (alacsony értékek)
     process_noise_covariance:
-      [0.05,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.05,  0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.06,  0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.03,  0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.03,  0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.06,  0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.025,  0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.025,  0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.04,   0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.01,   0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.01,   0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.02,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.01,  0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.01,  0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.015]
+      [0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001]
 
     # Initial estimate covariance — 15×15 mátrix (flat list, row-major)
     # Nagy kezdeti bizonytalanság: az EKF az első mérések alapján konvergál.
@@ -415,7 +413,7 @@ safety_supervisor:
     # imu watchdog aktív:  tilt_roll_limit_deg < 90 VAGY enable_imu_watchdog: true
     sensor_timeout_s:                2.0   # topic csend → dropout fault (runtime)
     sensor_recovery_stable_s:        2.0   # ennyi stabil adat → [recovered] jelölés (latch MEGMARAD)
-    scan_watchdog_startup_grace_s:   5.0   # motor warmup grace backup: első scan után N mp-ig watchdog inaktív
+    scan_watchdog_startup_grace_s:   15.0  # rplidar respawn=True → újraindulás ~2-5s; 15s ad biztos fedezetet startup és respawn esetén is
     enable_scan_watchdog:            true  # LiDAR dropout → scan_dropout_latch → ERROR
     enable_imu_watchdog:      true   # BNO085 aktív — dropout → imu_dropout_latch → ERROR
     # PLACEHOLDER (disabled) — ZED 2i és külső IMU watchdog
