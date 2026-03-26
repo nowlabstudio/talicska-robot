@@ -277,7 +277,7 @@ install_docker() {
     fi
 
     # docker csoport
-    if ! groups "${USER}" | grep -q docker; then
+    if ! id | grep -q docker; then
         step "Felhasználó hozzáadása 'docker' csoporthoz..."
         run sudo usermod -aG docker "${USER}"
         warn "FONTOS: docker csoport aktiválásához lépj ki és vissza, vagy futtasd:"
@@ -442,8 +442,14 @@ install_vcstool() {
 
     step "python3-vcstool telepítése..."
     run sudo apt-get update -qq
-    run sudo apt-get install -y -qq python3-vcstool
-    ok "vcstool telepítve"
+    if sudo apt-get install -y -qq python3-vcstool 2>/dev/null; then
+        ok "vcstool telepítve (apt)"
+    else
+        warn "python3-vcstool nem érhető el apt-ból — pip3 fallback..."
+        run sudo apt-get install -y -qq python3-pip
+        run sudo pip3 install vcstool
+        ok "vcstool telepítve (pip3)"
+    fi
 }
 
 # ── 4. Workspace + repo-k ─────────────────────────────────────────────────────
@@ -889,10 +895,17 @@ install_wifi_driver() {
     local dkms_src="${ROBOT_DIR}/drivers/rt2800usb"
     local dkms_dst="/usr/src/rt2800usb-1.0"
 
-    # Már telepítve?
-    if dkms status rt2800usb 2>/dev/null | grep -q "installed"; then
+    # Már telepítve vagy built?
+    local dkms_state
+    dkms_state="$(dkms status rt2800usb/1.0 2>/dev/null)"
+    if echo "${dkms_state}" | grep -q "installed"; then
         skip "rt2800usb DKMS: már telepítve"
-        # Modul betöltése ha nincs (pl. reboot előtt)
+        lsmod | grep -q rt2800usb || sudo modprobe rt2800usb 2>/dev/null || true
+        return 0
+    fi
+    if echo "${dkms_state}" | grep -q "built"; then
+        skip "rt2800usb DKMS: már built — csak install..."
+        run sudo dkms install rt2800usb/1.0 -k "$(uname -r)"
         lsmod | grep -q rt2800usb || sudo modprobe rt2800usb 2>/dev/null || true
         return 0
     fi
@@ -902,27 +915,44 @@ install_wifi_driver() {
         return 0
     fi
 
-    # Szükséges csomagok
-    step "dkms + build-essential + linux-source-5.15.0 telepítése..."
-    run sudo apt-get install -y -qq dkms build-essential linux-source-5.15.0
+    # Kernel headers ellenőrzés — Jetson tegra OOT kernelhez nem érhető el apt-ból
+    local kernel_ver
+    kernel_ver="$(uname -r)"
+    if [[ ! -d "/lib/modules/${kernel_ver}/build" ]]; then
+        warn "Kernel headers hiányoznak: /lib/modules/${kernel_ver}/build"
+        warn "Jetson OOT (tegra) kernelhez a DKMS build nem lehetséges apt headers nélkül"
+        warn "WiFi driver kihagyva — rt2800usb modul ha szükséges: sudo modprobe rt2800usb"
+        return 1
+    fi
 
-    # DKMS forrás könyvtár
-    run sudo mkdir -p "${dkms_dst}"
+    # dkms add idempotens — ha már hozzáadva, a forrás-előkészítés is kihagyható
+    if dkms status rt2800usb/1.0 2>/dev/null | grep -q "rt2800usb"; then
+        skip "rt2800usb DKMS: forrás már regisztrálva — build folytatása..."
+    else
+        # Szükséges csomagok
+        step "dkms + build-essential + linux-source-5.15.0 telepítése..."
+        run sudo apt-get install -y -qq dkms build-essential linux-source-5.15.0
 
-    # rt2x00 forrás kicsomagolása
-    step "rt2x00 forrás kicsomagolása a kernel source-ból..."
-    run sudo tar -xjf /usr/src/linux-source-5.15.0/linux-source-5.15.0.tar.bz2 \
-        -C /tmp/ "linux-source-5.15.0/drivers/net/wireless/ralink/rt2x00/"
-    run sudo cp /tmp/linux-source-5.15.0/drivers/net/wireless/ralink/rt2x00/* "${dkms_dst}/"
+        # DKMS forrás könyvtár
+        run sudo mkdir -p "${dkms_dst}"
 
-    # Repo-ból a DKMS Makefile + dkms.conf felülírja az eredetit
-    run sudo cp "${dkms_src}/Makefile"  "${dkms_dst}/Makefile"
-    run sudo cp "${dkms_src}/dkms.conf" "${dkms_dst}/dkms.conf"
+        # rt2x00 forrás kicsomagolása
+        step "rt2x00 forrás kicsomagolása a kernel source-ból..."
+        run sudo tar -xjf /usr/src/linux-source-5.15.0/linux-source-5.15.0.tar.bz2 \
+            -C /tmp/ "linux-source-5.15.0/drivers/net/wireless/ralink/rt2x00/"
+        run sudo cp /tmp/linux-source-5.15.0/drivers/net/wireless/ralink/rt2x00/* "${dkms_dst}/"
+
+        # Repo-ból a DKMS Makefile + dkms.conf felülírja az eredetit
+        run sudo cp "${dkms_src}/Makefile"  "${dkms_dst}/Makefile"
+        run sudo cp "${dkms_src}/dkms.conf" "${dkms_dst}/dkms.conf"
+
+        run sudo dkms add rt2800usb/1.0
+    fi
 
     # DKMS build + install
     step "rt2800usb DKMS build (ez eltarthat 2-3 percig)..."
-    run sudo dkms add rt2800usb/1.0
-    if ! sudo dkms build rt2800usb/1.0 -k "$(uname -r)" >> "${LOG_FILE}" 2>&1; then
+
+    if ! sudo dkms build rt2800usb/1.0 -k "${kernel_ver}" >> "${LOG_FILE}" 2>&1; then
         error "rt2800usb DKMS build sikertelen — részletek: ${LOG_FILE}"
         return 1
     fi
@@ -1150,12 +1180,12 @@ restore_docker_images() {
     fi
 
     # robot-robot image megvan?
-    if docker images --format "{{.Repository}}:{{.Tag}}" 2>/dev/null | grep -q "robot-robot:latest"; then
+    if sudo docker images --format "{{.Repository}}:{{.Tag}}" 2>/dev/null | grep -q "robot-robot:latest"; then
         skip "robot-robot:latest image már megvan"
     else
         step "robot + foxglove képek betöltése: $(basename "${custom_backup}")..."
         info "Ez eltarthat néhány percig..."
-        run docker load < "${custom_backup}"
+        run sudo docker load < "${custom_backup}"
         ok "robot + foxglove képek betöltve"
     fi
 
@@ -1168,12 +1198,12 @@ restore_docker_images() {
         return 0
     fi
 
-    if docker images --format "{{.Repository}}:{{.Tag}}" 2>/dev/null | grep -q "ros2-realsense:jazzy-isaac"; then
+    if sudo docker images --format "{{.Repository}}:{{.Tag}}" 2>/dev/null | grep -q "ros2-realsense:jazzy-isaac"; then
         skip "ros2-realsense:jazzy-isaac image már megvan"
     else
         step "RealSense kép betöltése: $(basename "${realsense_backup}")..."
         info "Ez eltarthat 5-10 percig..."
-        run docker load < "${realsense_backup}"
+        run sudo docker load < "${realsense_backup}"
         ok "RealSense kép betöltve"
     fi
 
@@ -1237,19 +1267,25 @@ apply_rplidar_patch() {
         return 0
     fi
 
-    # Megvan-e már a patch? (commit üzenet alapján)
-    if git -C "${rplidar_dir}" log --oneline 2>/dev/null | grep -q "SIGTERM handler"; then
+    # Megvan-e már a patch? — commit üzenet VAGY a kód jelenléte alapján
+    if git -C "${rplidar_dir}" log --oneline 2>/dev/null | grep -q "SIGTERM handler" || \
+       grep -q "g_drv" "${rplidar_dir}/src/rplidar_node.cpp" 2>/dev/null; then
         skip "rplidar_ros patch: már alkalmazva"
         return 0
     fi
 
     step "rplidar_ros patch alkalmazása..."
+    # Félbehagyott git am session cleanup
+    git -C "${rplidar_dir}" am --abort >> "${LOG_FILE}" 2>&1 || true
+
     if git -C "${rplidar_dir}" am "${patch_file}" >> "${LOG_FILE}" 2>&1; then
-        ok "rplidar_ros patch: alkalmazva (SIGTERM + motor stability gate)"
+        ok "rplidar_ros patch: alkalmazva (git am)"
+    elif git -C "${rplidar_dir}" apply "${patch_file}" >> "${LOG_FILE}" 2>&1; then
+        ok "rplidar_ros patch: alkalmazva (git apply)"
     else
         warn "Patch alkalmazás sikertelen — esetleg már részben megvan?"
-        run git -C "${rplidar_dir}" am --abort || true
-        warn "Manuálisan: cd ${rplidar_dir} && git am ${patch_file}"
+        git -C "${rplidar_dir}" apply --abort >> "${LOG_FILE}" 2>&1 || true
+        warn "Manuálisan: cd ${rplidar_dir} && git apply ${patch_file}"
     fi
 
     log "INFO" "rplidar_ros patch kész"
@@ -1375,14 +1411,15 @@ restore_portainer() {
     local portainer_vol="/var/lib/docker/volumes/tools_portainer_data/_data"
 
     # Volume létezik-e (docker compose tools stack kell hozzá)?
-    if [[ ! -d "${portainer_vol}" ]]; then
+    # sudo test szükséges: /var/lib/docker/volumes/ csak rootként olvasható
+    if ! sudo test -d "${portainer_vol}"; then
         step "Portainer volume létrehozása (tools stack indítása)..."
-        run docker compose -f "${ROBOT_DIR}/docker-compose.tools.yml" up -d portainer
+        run sudo docker compose -f "${ROBOT_DIR}/docker-compose.tools.yml" up -d portainer
         sleep 3
-        run docker compose -f "${ROBOT_DIR}/docker-compose.tools.yml" stop portainer
+        run sudo docker compose -f "${ROBOT_DIR}/docker-compose.tools.yml" stop portainer
     fi
 
-    if [[ ! -d "${portainer_vol}" ]]; then
+    if ! sudo test -d "${portainer_vol}"; then
         warn "Portainer volume nem jött létre — kihagyva"
         return 0
     fi
@@ -1544,6 +1581,46 @@ install_system_tools() {
     log "INFO" "Rendszer eszközök kész"
 }
 
+# ── Claude Code CLI telepítés ─────────────────────────────────────────────────
+# Claude Code az Anthropic AI fejlesztői eszköze (https://claude.ai/code).
+# Telepítő: hivatalos curl installer — kezeli a Node.js függőséget is.
+# docker hozzáférés: a docker csoport tagság (setup_user_groups) elegendő —
+# újrabejelentkezés után a claude folyamatnak is lesz docker hozzáférése.
+install_claude_code() {
+    section "Fázis: Claude Code CLI"
+
+    # Már telepítve?
+    if command -v claude &>/dev/null; then
+        skip "Claude Code: $(claude --version 2>/dev/null || echo 'telepítve')"
+        return
+    fi
+
+    # Telepítés — hivatalos curl installer
+    step "Claude Code CLI telepítése (curl installer)..."
+    run bash -c "curl -fsSL https://claude.ai/install.sh | sh"
+    ok "Claude Code telepítve"
+
+    # PATH — az installer ~/.local/bin-be teszi a binárist
+    # .bashrc-hez adjuk hozzá, hogy új shell-ben is elérhető legyen (idempotens)
+    local install_bin="${HOME}/.local/bin"
+    local bashrc="${HOME}/.bashrc"
+    local claude_path_marker="# ── Claude Code PATH"
+
+    if grep -q "${claude_path_marker}" "${bashrc}" 2>/dev/null; then
+        skip ".bashrc: Claude PATH már megvan (${install_bin})"
+    else
+        step ".bashrc PATH frissítése: ${install_bin}..."
+        cat >> "${bashrc}" << 'CLAUDE_PATH_BLOCK'
+
+# ── Claude Code PATH
+export PATH="${PATH}:${HOME}/.local/bin"
+CLAUDE_PATH_BLOCK
+        ok ".bashrc: Claude PATH hozzáadva (${install_bin})"
+    fi
+
+    log "INFO" "Claude Code kész — PATH és docker hozzáférés újrabejelentkezés után aktív"
+}
+
 # ── Összesítő ─────────────────────────────────────────────────────────────────
 print_summary() {
     section "Telepítés összesítő"
@@ -1561,13 +1638,21 @@ print_summary() {
     echo ""
 
     echo -e "${BOLD}  Docker image-ek:${NC}"
-    docker images --format "  • {{.Repository}}:{{.Tag}} ({{.Size}})" \
+    sudo docker images --format "  • {{.Repository}}:{{.Tag}} ({{.Size}})" \
         2>/dev/null | grep -E "talicska|microros" | head -10 || true
     echo ""
 
     echo -e "${BOLD}  Manuális lépések (ha még nem kész):${NC}"
-    if ! groups "${USER}" | grep -q docker; then
+    if ! id | grep -q docker; then
         echo -e "  ${YELLOW}!${NC} docker csoport: newgrp docker  (vagy lépj ki/be)"
+    fi
+    echo ""
+
+    echo -e "${BOLD}  Claude Code:${NC}"
+    if command -v claude &>/dev/null; then
+        echo -e "  ✓ $(claude --version 2>/dev/null || echo 'telepítve') — docker hozzáférés újrabejelentkezés után aktív"
+    else
+        echo -e "  ${YELLOW}!${NC} Claude Code nem telepítve"
     fi
     echo ""
 
@@ -1626,6 +1711,9 @@ main() {
     # ── Fázis 2b: Auto-frissítések LETILTÁSA ─────────────────────────────────
     section "Fázis 2b — Auto-frissítések letiltása"
     disable_auto_updates         # apt hold kernel+L4T + unattended-upgrades off
+
+    section "Fázis 2c — Claude Code CLI"
+    install_claude_code          # curl https://claude.ai/install.sh + ~/.local/bin PATH
 
     # ── Fázis 3: Felhasználói csoportok ──────────────────────────────────────
     section "Fázis 3 — Felhasználói csoportok"
@@ -1703,9 +1791,17 @@ main() {
         echo -e "  ${YELLOW}Hátralévő manuális lépések:${NC}"
         echo -e "  • Tailscale auth: kövesd a fenti URL-t (ha még nem kész)"
         echo -e "  • nvpmodel ellenőrzés: ${CYAN}nvpmodel -q${NC}"
+        if ! id | grep -q docker; then
+            echo -e "  • ${RED}docker csoport még nem aktív${NC} — futtasd:"
+            echo -e "    ${CYAN}newgrp docker${NC}"
+            echo -e "    majd:"
+        fi
         echo -e "  • Stack indítás: ${CYAN}cd ${ROBOT_DIR} && docker compose up -d${NC}"
-        echo -e "  • Tools stack:   ${CYAN}docker compose -f docker-compose.tools.yml up -d${NC}"
+        echo -e "  • Tools stack:   ${CYAN}cd ${ROBOT_DIR} && docker compose -f docker-compose.tools.yml up -d${NC}"
     else
+        if ! id | grep -q docker; then
+            echo -e "  ${RED}docker csoport még nem aktív${NC} — futtasd: ${CYAN}newgrp docker${NC}, majd:"
+        fi
         echo -e "  Indítás: ${CYAN}cd ${ROBOT_DIR} && docker compose up -d${NC}"
     fi
     echo ""
