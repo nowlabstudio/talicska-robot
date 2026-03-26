@@ -1542,8 +1542,12 @@ EOF"
         fi
     done
 
-    # 8. update-notifier eltávolítása — ez dobja fel a kikapcsoláskori "upgrade" ablakot
-    for pkg in update-notifier update-notifier-common update-manager update-manager-core; do
+    # 8. update-notifier + packagekit + gnome-software eltávolítása
+    # packagekit: ez dobja a kikapcsoláskori "telepítsd a frissítéseket" GNOME dialógot
+    # gnome-software: háttérben keres frissítéseket, packagekit-et hívja
+    # update-notifier: tálcaikon + shutdown prompt
+    for pkg in packagekit packagekit-tools gnome-software gnome-software-common \
+                update-notifier update-notifier-common update-manager update-manager-core; do
         if dpkg -l "${pkg}" &>/dev/null 2>&1; then
             step "${pkg} eltávolítása..."
             run sudo apt-get purge -y -qq "${pkg}"
@@ -1552,6 +1556,7 @@ EOF"
             skip "${pkg}: nincs telepítve"
         fi
     done
+    run sudo apt-get autoremove -y -qq
 
     log "INFO" "Auto-update letiltás kész — futó kernel: ${running_kernel}"
     warn "FONTOS: 'apt upgrade' TILOS a Jetsonen Seeed OOT kernel nélkül!"
