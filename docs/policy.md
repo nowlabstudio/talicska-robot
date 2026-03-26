@@ -21,6 +21,12 @@
 
 6. **Context Management:** Csak az aktuálisan szerkesztett fájlokat tartsd a kontextusban. Ha végeztünk egy modullal, dobd ki a memóriából a kreditek spórolása érdekében.
 
+## Claude Code környezet
+
+- Claude az `eduard` felhasználóként fut (`uid=1000`)
+- `sudo` jelszó nélkül elérhető — `/etc/sudoers.d/90-claude-nopasswd` tartalmaz `NOPASSWD: ALL` bejegyzést
+- Emiatt Claude közvetlenül futtathat `sudo` parancsokat (pl. udev reload, rendszerfájl írás) interakció nélkül
+
 ## Prioritási sorrend
 
 > Felhasználói biztonság → Megbízhatóság → Jövőállóság → Autonómia → Teljesítmény
