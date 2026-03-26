@@ -67,7 +67,7 @@ DOC_FILES=(
     "scripts/install.sh|Teljes telepítő (docker, systemd, sudoers, aliases)"
     "scripts/prestart.sh|Hardware check: RoboClaw, RPLidar, bridgeek ping"
     "scripts/ros2_health_check.sh|Teljes system health check (nodes, topics, states)"
-    "scripts/status_monitor.sh|Érkezési képernyő (ez a fájl) — docs + status + claude context"
+    "scripts/status_monitor.sh|Érkezési képernyő (ez a fájl) — docs + health check"
 )
 
 for item in "${DOC_FILES[@]}"; do
@@ -96,43 +96,6 @@ echo "   ├── Konfiguráció/UX"
 echo "   ├── URDF/Vizualizáció"
 echo "   ├── Ismert hibák (RoboClaw TCP, E-Stop watchdog, LiDAR motor)"
 echo "   └── Jövőbeli hardware (ZED 2i, Sabertooth, PEDAL winch)"
-echo ""
-
-# ════════════════════════════════════════════════════════════════════════════════
-# CLAUDE CONTEXT PROMPT (másolható)
-# ════════════════════════════════════════════════════════════════════════════════
-
-section "🤖 CLAUDE CONTEXT — Másolható Prompt"
-
-cat << 'CLAUDE_PROMPT'
-```
-Töltsd be a memóriát és a backlog-ot:
-
-1. Memory betöltés:
-   - ~/.claude/projects/-home-eduard-talicska-robot-ws-src-robot-talicska-robot/memory/MEMORY.md
-   - user_profile.md, feedback_policy.md, project_talicska.md
-   - status_verbose_20260322.md (aktuális státusz)
-
-2. Backlog betöltés:
-   - docs/backlog.md (aktív, ismert hibák, jövő)
-
-3. Policy betöltés:
-   - Fejlesztési sorrend: Biztonság → Megbízhatóság → Jövőállóság → Autonómia → Teljesítmény
-   - Docs előbb olvasás, kontextus tisztázás
-   - Git workflow: feature branch → PR → main
-
-4. Aktuális projekt státusz:
-   - Startup: PASSED + armed: true ✓
-   - Safety: IDLE + safe: true (no faults) ✓
-   - Docker stack: 6/6 UP ✓
-   - ROS2 nodes: 42+ UP ✓
-   - Bridges (RC, E-Stop, Pedal): ONLINE ✓
-   - Hátra: Power mode MAXN (sudo), LiDAR motor stop issue
-
-5. Kérdésem / feladatom: [IDE ÍRJA A FELHASZNÁLÓ]
-```
-CLAUDE_PROMPT
-
 echo ""
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -321,28 +284,6 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════════════════════════
-# 8. HÁTRA LÉVŐ FELADATOK
-# ════════════════════════════════════════════════════════════════════════════════
-
-section "📋 HÁTRA LÉVŐ FELADATOK"
-
-echo ""
-echo -e "${YELLOW}1. Power Mode MAXN (sudo szükséges)${NC}"
-echo "   bash scripts/install.sh  # vagy:"
-echo "   sudo nvpmodel -m 0 && sudo jetson_clocks"
-echo ""
-echo -e "${YELLOW}2. LiDAR Motor Stop Investigation${NC}"
-echo "   • Probléma: Motor nem áll le 'make down'-nál"
-echo "   • Gyökér: auto_standby: true az RPLidar config-ban"
-echo "   • Status: Vizsgálat szükséges"
-echo ""
-echo -e "${YELLOW}3. Full Integration Test${NC}"
-echo "   • RC teleop test"
-echo "   • Nav2 autonomous test"
-echo "   • Graceful shutdown test"
-echo ""
-
-# ════════════════════════════════════════════════════════════════════════════════
 # FOOTER
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -369,7 +310,6 @@ echo ""
 echo -e "${BOLD}📚 Dokumentáció:${NC}"
 echo "   docs/project_overview.md    — Full project docs"
 echo "   docs/backlog.md             — Tasks & issues"
-echo "   ~/.claude/projects/.../memory/ — Claude memory (context)"
 echo ""
 echo "═══════════════════════════════════════════════════════════════════════════"
 echo ""
