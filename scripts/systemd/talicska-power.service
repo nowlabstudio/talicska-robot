@@ -1,6 +1,5 @@
 [Unit]
 Description=Talicska Robot — Power Mode (nvpmodel MAXN_SUPER + jetson_clocks)
-After=multi-user.target
 Before=talicska-robot.service
 
 [Service]
