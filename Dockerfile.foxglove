@@ -8,9 +8,12 @@ RUN apt-get update \
         ros-jazzy-foxglove-bridge \
         ros-jazzy-rmw-cyclonedds-cpp \
         ros-jazzy-controller-manager-msgs \
+        ros-jazzy-control-msgs \
         ros-jazzy-nav2-msgs \
         ros-jazzy-robot-localization \
         ros-jazzy-slam-toolbox \
+        ros-jazzy-realsense2-camera-msgs \
+        ros-jazzy-pal-statistics-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 # Port dokumentáció (network_mode: host miatt nem kell EXPOSE, de jelöljük)
