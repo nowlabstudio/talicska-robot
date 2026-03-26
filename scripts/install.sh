@@ -1550,7 +1550,7 @@ EOF"
                 update-notifier update-notifier-common update-manager update-manager-core; do
         if dpkg -l "${pkg}" &>/dev/null 2>&1; then
             step "${pkg} eltávolítása..."
-            run sudo apt-get purge -y -qq "${pkg}"
+            run sudo apt-get purge -y -qq --allow-change-held-packages "${pkg}"
             ok "${pkg}: eltávolítva"
         else
             skip "${pkg}: nincs telepítve"
