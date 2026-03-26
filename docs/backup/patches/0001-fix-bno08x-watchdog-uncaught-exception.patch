@@ -1,0 +1,52 @@
+From 21c3cc54812842517bfe9e263ba16e38f3323f46 Mon Sep 17 00:00:00 2001
+From: Sik Eduard <Eduard@nowlab.eu>
+Date: Thu, 26 Mar 2026 16:38:22 +0100
+Subject: [PATCH] fix(watchdog): uncaught exception in reset() causes SIGABRT
+
+When the watchdog fires and the sensor is unavailable (e.g. physical
+disconnect/reconnect), init_sensor() throws std::runtime_error. This
+exception was uncaught in the watchdog's std::thread context, causing
+std::terminate() -> SIGABRT (exit code -6).
+
+Fix:
+- reset(): nullptr bno08x_ after delete before retrying init
+- reset(): catch exceptions from init_sensor() and log error instead of
+  propagating, allowing watchdog to retry on next timeout
+- poll_timer_callback(): guard bno08x_ nullptr check to prevent crash
+  if reset() fails between delete and successful reinit
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+---
+ src/bno08x_ros.cpp | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/src/bno08x_ros.cpp b/src/bno08x_ros.cpp
+index 387e9ab..e5598ac 100644
+--- a/src/bno08x_ros.cpp
++++ b/src/bno08x_ros.cpp
+@@ -258,12 +258,20 @@ void BNO08xROS::sensor_callback(void *cookie, sh2_SensorValue_t *sensor_value) {
+ void BNO08xROS::poll_timer_callback() {
+     {
+         std::lock_guard<std::mutex> lock(bno08x_mutex_);
+-        this->bno08x_->poll();
++        if (bno08x_ != nullptr) {
++            this->bno08x_->poll();
++        }
+     }
+ }
+ 
+ void BNO08xROS::reset() {
+     std::lock_guard<std::mutex> lock(bno08x_mutex_);
+     delete bno08x_;
+-    this->init_sensor();
++    bno08x_ = nullptr;
++    try {
++        this->init_sensor();
++    } catch (const std::exception& e) {
++        RCLCPP_ERROR(this->get_logger(),
++            "Sensor reinitialization failed: %s — will retry on next watchdog timeout", e.what());
++    }
+ }
+-- 
+2.34.1
+

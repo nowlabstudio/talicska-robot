@@ -17,3 +17,9 @@ repositories:
     type: git
     url: https://github.com/Slamtec/rplidar_ros.git
     version: ros2
+  # Patch szükséges: docs/backup/patches/0001-fix-bno08x-watchdog-uncaught-exception.patch
+  # Friss klón után: git am ...patch (lásd install.sh apply_bno08x_patch)
+  robot/bno08x_ros2_driver:
+    type: git
+    url: https://github.com/bnbhat/bno08x_ros2_driver.git
+    version: main

@@ -1329,7 +1329,46 @@ apply_rplidar_patch() {
     log "INFO" "rplidar_ros patch kész"
 }
 
-# ── 12. Tailscale VPN telepítés ───────────────────────────────────────────────
+# ── 12. bno08x_ros2_driver patch alkalmazása ──────────────────────────────────
+apply_bno08x_patch() {
+    section "12. Fázis: bno08x_ros2_driver Patch (watchdog uncaught exception fix)"
+
+    local bno08x_dir="${SRC}/robot/bno08x_ros2_driver"
+    local patch_file="${ROBOT_DIR}/docs/backup/patches/0001-fix-bno08x-watchdog-uncaught-exception.patch"
+
+    if [[ ! -d "${bno08x_dir}/.git" ]]; then
+        warn "bno08x_ros2_driver repo nem található: ${bno08x_dir} — patch kihagyva"
+        return 0
+    fi
+
+    if [[ ! -f "${patch_file}" ]]; then
+        warn "Patch fájl nem található: ${patch_file} — kihagyva"
+        return 0
+    fi
+
+    if git -C "${bno08x_dir}" log --oneline 2>/dev/null | grep -q "uncaught exception" || \
+       grep -q "will retry on next watchdog timeout" "${bno08x_dir}/src/bno08x_ros.cpp" 2>/dev/null; then
+        skip "bno08x_ros2_driver patch: már alkalmazva"
+        return 0
+    fi
+
+    step "bno08x_ros2_driver patch alkalmazása..."
+    git -C "${bno08x_dir}" am --abort >> "${LOG_FILE}" 2>&1 || true
+
+    if git -C "${bno08x_dir}" am "${patch_file}" >> "${LOG_FILE}" 2>&1; then
+        ok "bno08x_ros2_driver patch: alkalmazva (git am)"
+    elif git -C "${bno08x_dir}" apply "${patch_file}" >> "${LOG_FILE}" 2>&1; then
+        ok "bno08x_ros2_driver patch: alkalmazva (git apply)"
+    else
+        warn "Patch alkalmazás sikertelen — esetleg már részben megvan?"
+        git -C "${bno08x_dir}" apply --abort >> "${LOG_FILE}" 2>&1 || true
+        warn "Manuálisan: cd ${bno08x_dir} && git apply ${patch_file}"
+    fi
+
+    log "INFO" "bno08x_ros2_driver patch kész"
+}
+
+# ── 13. Tailscale VPN telepítés ───────────────────────────────────────────────
 install_tailscale() {
     section "12. Fázis: Tailscale VPN"
 
@@ -1827,6 +1866,10 @@ main() {
     # ── Fázis 10: rplidar patch ────────────────────────────────────────────────
     section "Fázis 10 — rplidar_ros patch"
     apply_rplidar_patch          # SIGTERM handler + motor stability gate patch
+
+    # ── Fázis 10b: bno08x patch ───────────────────────────────────────────────
+    section "Fázis 10b — bno08x_ros2_driver patch"
+    apply_bno08x_patch           # watchdog uncaught exception → SIGABRT fix
 
     # ── Fázis 11: Docker image-ek ─────────────────────────────────────────────
     section "Fázis 11 — Docker image-ek"
