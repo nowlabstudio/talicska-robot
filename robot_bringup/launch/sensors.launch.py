@@ -48,7 +48,7 @@ def launch_setup(context, *args, **kwargs):
         parameters=[rplidar_params],
         output="screen",
         respawn=True,
-        respawn_delay=10.0,
+        respawn_delay=10.0,   # make down: --timeout 8 garantálja hogy container meghal mielőtt timer tüzel
     )
 
     # EKF consolidation: robot_params.yaml tartalmazza az összes EKF paramétert.
