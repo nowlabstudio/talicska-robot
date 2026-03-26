@@ -1,73 +1,87 @@
 ### robot_localization EKF — Talicska rover
 #
-# Fuses:
-#   odom0 — /odom from diff_drive_controller (wheel odometry, 50 Hz)
-#   imu0  — /camera/camera/imu from RealSense D435i (~200 Hz)
+# FIGYELEM: Ez a fájl dokumentáció/szinkronizáció célú.
+# Az ekf_filter_node paramétereit a sensors.launch.py
+# közvetlenül a /config/robot_params.yaml-ból tölti be.
 #
-# two_d_mode: true — outdoor flat terrain
-# IMU corrects yaw drift from wheel odometry.
+# STÁTUSZ: AKTÍV — wheel odom (odom0) + BNO085 IMU (imu0: yaw+vyaw)
+#
+# Fúziós szenzor stratégia:
+#   odom0: /diff_drive_controller/odom → x,y pozíció + vx,vyaw sebesség
+#   imu0:  /sensors/imu/data (BNO085) → yaw orientáció + vyaw szögsebesség
+#          ax/ay KIKAPCSOLVA — deszkamodell: kerekek pörögnek de robot nem mozdul,
+#          acc integráció hamis pozíciódriftet okozna. Valós teszten visszakapcsolható.
+#
+# imu0_relative: true — yaw 0-ból indul induláskor (nem mágneses ref), kiszámítható
+#   deszkamodell teszten. Valós navigációhoz: false (abszolút mágneses heading).
+#
+# TF: EKF publikálja az odom→base_link TF-et (publish_tf: true).
+#     diff_drive enable_odom_tf: false (nem publikál TF-et).
+#
+# IMU visszakapcsolandó teljes konfig (ax/ay bekapcsolása valós robot teszten):
+#   imu0_config sor 14-15: false,false → true,true
 
 ekf_filter_node:
   ros__parameters:
-    frequency: 50.0
+    frequency:      50.0
     sensor_timeout: 0.1
-    two_d_mode: true
-    # KIKAPCSOLVA: egyetlen szenzor (wheel odom) mellett az EKF random walk driftet okoz.
-    # Jelenleg a diff_drive_controller publikálja az odom→base_link TF-et (enable_odom_tf: true).
-    # IMU visszakapcsolásakor: true-ra állítani + controllers.yaml enable_odom_tf: false!
-    publish_tf: false
+    two_d_mode:     true
+    publish_tf: true
     map_frame:       map
     odom_frame:      odom
     base_link_frame: base_link
     world_frame:     odom
 
     # Wheel odometry from diff_drive_controller
+    # x,y pozíció + vx sebesség — YAW SZÁNDÉKOSAN KIKAPCSOLVA!
+    # Az IMU az egyedüli yaw referencia. Ha az odom0 is ad yaw-t, az EKF
+    # az odom-integrált yaw és az IMU yaw között oszcillál → 45-50 fokos
+    # periodikus map-elfordulás.
     odom0: /diff_drive_controller/odom
     odom0_config:
       [true,  true,  false,
-       false, false, true,
-       true,  true,  false,
-       false, false, true,
+       false, false, false,
+       true,  false, false,
+       false, false, false,
        false, false, false]
     odom0_queue_size: 10
     odom0_differential: false
 
-    # RealSense D435i IMU — KIKAPCSOLVA
-    # A kamera fizikai orientációja nem egyezik a robot base_link frame-jével
-    # (pl. oldalra fektetve → -66° roll). Az EKF-be nyers IMU adat nem adható
-    # amíg a kamera→base_link transzformáció nincs implementálva.
-    # Visszakapcsolás: backlog → "IMU tilt check — RealSense kamera frame orientáció"
-    #
-    # imu0: /camera/camera/imu
-    # imu0_config:
-    #   [false, false, false,
-    #    true,  true,  true,
-    #    false, false, false,
-    #    true,  true,  true,
-    #    true,  true,  false]
-    # imu0_queue_size: 20
-    # imu0_differential: false
-    # imu0_relative: false
-    # imu0_remove_gravitational_acceleration: true
+    # BNO085 dedikált IMU — /sensors/imu/data (BNO085 on-chip sensor fusion)
+    # Config: csak yaw orientáció + vyaw szögsebesség (2D mód + deszkamodell)
+    # ax/ay szándékosan kikapcsolva — kerekek pörögnek de robot nem mozdul fizikailag
+    # Állapotvektor sorok: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    imu0: /sensors/imu/data
+    imu0_config:
+      [false, false, false,
+       false, false, true,
+       false, false, false,
+       false, false, true,
+       false, false, false]
+    imu0_queue_size: 20
+    imu0_differential: false
+    imu0_relative: true
+    imu0_remove_gravitational_acceleration: true
 
-    # Process noise — alacsony értékek, mert jelenleg CSAK wheel odom van (IMU ki).
-    # Egyetlen szenzorral a magas process noise random walk driftet okoz.
-    # IMU visszakapcsolásakor ezeket NÖVELNI KELL (0.01-0.05 tartomány).
-    #
+    # Process noise — odom + IMU yaw módhoz hangolva
     # Állapotvektor: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    # x,y: 0.05 (wheel odom pozíció bizonytalanság — deszkamodellen magas)
+    # yaw: 0.01 (IMU segíti, alacsonyabb mint x,y)
+    # vx:  0.025 (wheel sebesség bizonytalanság)
+    # vyaw: 0.01 (gyro pontosabb, alacsony)
     process_noise_covariance:
-      [0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001,  0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.001,  0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.001,  0.0,    0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.001,  0.0,    0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.001,  0.0,    0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.001,  0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.001, 0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.001, 0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,   0.0,   0.001]
+      [0.05,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.05,  0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.025,  0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.025,  0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.001, 0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.001, 0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.001,  0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.01,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.001, 0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.001, 0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.001]

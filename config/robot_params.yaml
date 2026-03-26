@@ -221,9 +221,9 @@ diff_drive_controller:
 
     odom_frame_id: odom
     base_frame_id: base_link
-    # EKF kikapcsolva (IMU rpy nincs kalibrálva) → diff_drive publikálja az odom TF-et.
-    # Visszakapcsoláshoz: false + ekf_filter_node publish_tf: true + imu0 kalibrálás
-    enable_odom_tf: true
+    # EKF aktív (imu0: BNO085, yaw+vyaw konfig) → EKF publikálja az odom→base_link TF-et.
+    # Kikapcsoláshoz: true + ekf_filter_node publish_tf: false
+    enable_odom_tf: false
 
     # Odometria kovariancia (alacsony: zárt hurkú enkóder alapú odometria)
     pose_covariance_diagonal:  [0.001, 0.001, 0.001, 0.001, 0.001, 0.01]
@@ -249,63 +249,87 @@ bno08x_driver:
         rate: 100
 
 # ── robot_localization EKF ─────────────────────────────────────────────────────
-# STÁTUSZ: IMU KIKAPCSOLVA — imu_joint rpy nincs kalibrálva (URDF TODO).
-# Kalibrálatlan IMU az EKF-ben jumping yaw-t és köríves odometriát okoz.
-# Jelenlegi mód: csak wheel odom (odom0), publish_tf: false (diff_drive publikál).
-# IMU visszakapcsolásához: 1. rpy mérés+URDF frissítés, 2. imu0 blokk visszakapcsolása,
-#   3. enable_odom_tf: false, 4. publish_tf: true.
+# STÁTUSZ: AKTÍV — wheel odom (odom0) + BNO085 IMU (imu0: yaw+vyaw)
+#
+# Szenzor stratégia:
+#   odom0: diff_drive_controller → x,y pozíció + vx,vyaw sebesség
+#   imu0:  BNO085 → yaw orientáció + vyaw szögsebesség
+#          ax/ay KIKAPCSOLVA — deszkamodell: kerekek pörögnek de robot nem mozdul,
+#          acc integráció hamis pozíciódriftet okozna. Valós teszten visszakapcsolható.
+#
+# imu0_relative: true — yaw 0-ból indul induláskor (nem mágneses ref), kiszámítható
+#   deszkamodell teszten. Valós navigációhoz: false (abszolút mágneses heading).
+#
+# TF: EKF publikálja az odom→base_link TF-et (publish_tf: true).
+#     diff_drive enable_odom_tf: false (nem publikál TF-et).
+#
+# IMU visszakapcsolandó teljes konfig (ax/ay bekapcsolása valós robot teszten):
+#   imu0_config sor 14-15: false,false → true,true
 ekf_filter_node:
   ros__parameters:
     frequency:      50.0
     sensor_timeout: 0.1
     two_d_mode:     true
-    publish_tf: false
+    publish_tf: true
     map_frame:       map
     odom_frame:      odom
     base_link_frame: base_link
     world_frame:     odom
 
-    # Wheel odometry from diff_drive_controller
+    # Wheel odometry — diff_drive_controller
+    # x,y pozíció + vx sebesség — YAW SZÁNDÉKOSAN KIKAPCSOLVA!
+    # Az IMU az egyedüli yaw referencia. Ha az odom0 is ad yaw-t, az EKF
+    # az odom-integrált yaw és az IMU yaw között oszcillál → 45-50 fokos
+    # periodikus map-elfordulás. Valós roboton (nem deszkamodell) sem javasolt
+    # yaw-t adni odom0-ból ha IMU aktív — az IMU pontosabb yaw-referencia.
     odom0: /diff_drive_controller/odom
     odom0_config:
       [true,  true,  false,
-       false, false, true,
-       true,  true,  false,
-       false, false, true,
+       false, false, false,
+       true,  false, false,
+       false, false, false,
        false, false, false]
     odom0_queue_size: 10
     odom0_differential: false
 
-    # BNO085 IMU — KIKAPCSOLVA (rpy kalibrálás hiányzik)
-    # imu0: /sensors/imu/data
-    # imu0_config:
-    #   [false, false, false,
-    #    true,  true,  true,
-    #    false, false, false,
-    #    true,  true,  true,
-    #    true,  true,  false]
-    # imu0_queue_size: 20
-    # imu0_differential: false
-    # imu0_relative: false
-    # imu0_remove_gravitational_acceleration: true
+    # BNO085 dedikált IMU — /sensors/imu/data (BNO085 on-chip sensor fusion)
+    # Config: csak yaw orientáció + vyaw szögsebesség (2D mód + deszkamodell)
+    # ax/ay szándékosan kikapcsolva — kerekek pörögnek de robot nem mozdul fizikailag
+    # Állapotvektor sorok: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    imu0: /sensors/imu/data
+    imu0_config:
+      [false, false, false,
+       false, false, true,
+       false, false, false,
+       false, false, true,
+       false, false, false]
+    imu0_queue_size: 20
+    imu0_differential: false
+    imu0_relative: true
+    imu0_remove_gravitational_acceleration: true
 
-    # Process noise — odom-only módhoz hangolva (alacsony értékek)
+    # Process noise — odom + IMU yaw módhoz hangolva
+    # Állapotvektor: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    # x,y: 0.05 (wheel odom pozíció bizonytalanság — deszkamodellen magas)
+    # yaw: 0.01 (IMU segíti, alacsonyabb mint x,y)
+    # vx:  0.025 (wheel sebesség bizonytalanság)
+    # vyaw: 0.01 (gyro pontosabb, alacsony)
     process_noise_covariance:
-      [0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001, 0.0,
-       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.001]
+      [0.05,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.05,  0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.001, 0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.001, 0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.001, 0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.025,  0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.025,  0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.001, 0.0,   0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.001, 0.0,    0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.001,  0.0,    0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.01,   0.0,   0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.001, 0.0,   0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.001, 0.0,
+       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.0,    0.0,    0.0,   0.0,   0.001]
 
     # Initial estimate covariance — 15×15 mátrix (flat list, row-major)
     # Nagy kezdeti bizonytalanság: az EKF az első mérések alapján konvergál.
