@@ -1,8 +1,8 @@
 [Unit]
 Description=Talicska Robot — Docker Stack
-After=talicska-power.service docker.service network-online.target
+After=talicska-power.service docker.service network-online.target dev-rplidar.device
 Requires=docker.service talicska-power.service
-Wants=network-online.target
+Wants=network-online.target dev-rplidar.device
 
 [Service]
 Type=simple

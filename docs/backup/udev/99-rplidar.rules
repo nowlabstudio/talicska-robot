@@ -4,4 +4,4 @@
 # Függetlenül a csatlakozási sorrendtől, mindig /dev/rplidar lesz elérhető.
 SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", \
   ATTRS{serial}=="966e1891ce961f43afdbd8401f355cb7", \
-  SYMLINK+="rplidar", MODE:="0666", GROUP:="dialout"
+  SYMLINK+="rplidar", MODE:="0666", GROUP:="dialout", TAG+="systemd"
