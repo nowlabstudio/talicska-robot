@@ -7,12 +7,12 @@ repositories:
     type: git
     url: https://github.com/nowlabstudio/ROS2_RoboClaw.git
     version: main
-  # DEPRECATED: saját realsense-jetson stack kiváltva Isaac ROS alapú megoldással
-  # Validálás után törlendő innen és a repóból is.
-  # robot/realsense-jetson:
-  #   type: git
-  #   url: https://github.com/nowlabstudio/realsense-jetson.git
-  #   version: main
+  # Ideiglenes: az Isaac ROS alapú stack kész és validált legyen mielőtt ez törlődik.
+  # TODO: Isaac ROS stack kész → ez a sor törlendő, realsense-jetson archivdlandó.
+  robot/realsense-jetson:
+    type: git
+    url: https://github.com/nowlabstudio/realsense-jetson.git
+    version: main
   robot/rplidar_ros:
     type: git
     url: https://github.com/Slamtec/rplidar_ros.git
