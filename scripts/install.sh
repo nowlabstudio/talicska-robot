@@ -1576,7 +1576,8 @@ install_system_tools() {
     section "Fázis: Rendszer eszközök (tmux, curl...)"
 
     # make: startup.sh hívja 'exec make up'-t — kritikus, explicit kell
-    local tools=(tmux curl ca-certificates lsb-release fuse3 fuse make)
+    # python3-pip: jetson-stats (jtop) telepítéséhez szükséges
+    local tools=(tmux curl ca-certificates lsb-release fuse3 fuse make python3-pip)
     local to_install=()
 
     for tool in "${tools[@]}"; do
@@ -1592,6 +1593,15 @@ install_system_tools() {
         run sudo apt-get update -qq
         run sudo apt-get install -y -qq "${to_install[@]}"
         ok "Telepítve: ${to_install[*]}"
+    fi
+
+    # jetson-stats (jtop) — Jetson GPU/CPU/mem monitor, tmux jetson ablakban
+    if command -v jtop &>/dev/null; then
+        skip "jetson-stats (jtop): már telepítve"
+    else
+        step "jetson-stats telepítése (pip3)..."
+        run sudo pip3 install jetson-stats
+        ok "jetson-stats telepítve: $(jtop --version 2>/dev/null || echo 'OK')"
     fi
 
     log "INFO" "Rendszer eszközök kész"
