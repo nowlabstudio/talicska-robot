@@ -412,7 +412,7 @@ safety_supervisor:
     enable_realsense_watchdog: true
     realsense_timeout_s:  3.0
     # Latch perzisztencia — node crash + ROS2 restart után is megmarad a FAULT állapot
-    latch_state_path:     "/tmp/safety_latch_state"
+    latch_state_path:     "/run/robot/safety_latch_state"
     # TILT: BNO085 dedikált IMU aktív — éles limitek bekapcsolva.
     # TODO: rpy orientáció URDF-ben (imu_joint) véglegesítése után validálni!
     tilt_roll_limit_deg:  25.0

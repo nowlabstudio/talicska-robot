@@ -14,6 +14,7 @@ ROS := source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setu
 REALSENSE_DIR := $(shell cd ../realsense-jetson 2>/dev/null && pwd)
 
 up: check realsense-up
+	@sudo mkdir -p /run/robot
 	@echo ""
 	@echo "── Fő stack indítása ──"
 	@sudo docker compose up -d
@@ -29,9 +30,9 @@ down:
 	@sleep 1
 	@echo "RPLidar motor leállítás..."
 	@sudo docker compose exec -T robot pkill -SIGINT -f rplidar_node 2>/dev/null || true
-	@echo "Safety latch állapot törlése (intentional shutdown — clean restart state)..."
-	@sudo docker compose exec -T robot bash -c "rm -f /tmp/safety_latch_state" 2>/dev/null || true
 	@sudo docker compose stop --timeout 8
+	@echo "Safety latch állapot törlése (intentional shutdown — clean restart state)..."
+	@sudo rm -f /run/robot/safety_latch_state 2>/dev/null || true
 	@if [ -n "$(REALSENSE_DIR)" ]; then \
 		cd $(REALSENSE_DIR) && sudo docker compose stop 2>/dev/null || true; \
 	fi

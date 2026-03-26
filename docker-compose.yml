@@ -45,6 +45,7 @@ services:
       - /dev/bus/usb:/dev/bus/usb
     volumes:
       - /dev:/dev
+      - /run/robot:/run/robot          # safety latch state — host-mounted, törölhető make down után
       - ./cyclonedds.xml:/root/talicska-robot/cyclonedds.xml:ro
       # Globális robot paraméter konfig — rebuild NEM kell, csak docker compose up -d robot
       - ./config:/config:ro
