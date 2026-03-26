@@ -4,7 +4,7 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ---
 
-## Aktív feladatok (2026-03-22 23:55 CET)
+## Aktív feladatok (2026-03-26 CET)
 
 ### 🔴 Magas prioritás (Biztonsági / Kritikus)
 
@@ -18,8 +18,6 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 - **ROS Bridge modulok javítása, újrafordítása — fordítási környezet eltört** — 2026-03-19. A Docker build/colcon fordítási környezet hibás állapotban van. Diagnosztizálni kell a törés okát (dependency, cache, build artifact), javítani, és újrafordítani az érintett modulokat. Érintett: Dockerfile, `colcon build`, Docker image.
 
 - **Safety szintek tesztelése — E-Stop, UTP kábel kicsúszás, hibakezelés** — 2026-03-19. Végig kell ellenőrizni a teljes safety láncot: (1) E-Stop bridge `/robot/estop` trigger → robot megáll, startup_supervisor FAULT állapot, (2) UTP kábel kicsúszás közben (RoboClaw TCP, bridge UDP) → mit csinál a stack, helyreáll-e, (3) egyéb fault forgatókönyvek (bridge timeout, SLAM crash, nav2 fail). Cél: dokumentálni a viselkedést, és minden esetben biztonságos leállást garantálni. Érintett: `startup_supervisor`, `scripts/prestart.sh`, `robot_bringup/launch/`.
-
-- **ROS Bridge modulok javítása, újrafordítása — fordítási környezet eltört** — 2026-03-19. A Docker build/colcon fordítási környezet hibás állapotban van. Diagnosztizálni kell a törés okát (dependency, cache, build artifact), javítani, és újrafordítani az érintett modulokat. Érintett: Dockerfile, `colcon build`, Docker image.
 
 - **`/startup/state` valós státusz ellenőrzés és javítás** — 2026-03-19. A startup_supervisor `/startup/state` topicja látszólag nem ad valós státuszt. A Foxglove `startupstate.ts` script (`~/Dropbox/share/startupstate.ts`) a `data` JSON stringet bontja ki (`state`, `armed`, `fault_reason`, `tilt_roll`, `tilt_pitch` mezők). Ellenőrizni: (1) a topic valóban publikál-e friss adatot (`ros2 topic echo /startup/state`), (2) a JSON mezők megfelelnek-e a script elvárásainak, (3) a startup_supervisor állapotgép helyesen frissíti-e az állapotot futás közben. Javítani a publikálási logikát vagy az állapotgép tranzícióit ha szükséges. Érintett: `robot_bringup/scripts/startup_supervisor.py` (vagy megfelelő fájl).
 
@@ -60,6 +58,8 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 - **`prestart.sh` TCP check megszakítja a robot TCP kapcsolatot** — `check_tcp()` a `echo >/dev/tcp/${IP}/${PORT}` technikát használja, ami egy TCP kapcsolatot nyit és azonnal zár. Ez megszakítja az USR-K6 Ethernet-Serial bridge esetleges aktív kapcsolatát. Fix: `nc -z -w 2 ${IP} ${PORT}` használata (non-destructive port check). Érintett: `scripts/prestart.sh:77`.
 
 - **`attempt_reconnect()` nem hívja `SetTimeout()`-ot** — `ROS2_RoboClaw/src/roboclaw_hardware.cpp:668`: TCP reconnect után a hardveres watchdog (RoboClaw SetTimeout) nem kerül visszaállításra. Ha az EEPROM értéke nem az elvártnak megfelelő, reconnect után a watchdog más értékkel fut. Fix: `SetTimeout(address_, 500)` hívás `attempt_reconnect()` végén. Érintett: `ROS2_RoboClaw/src/roboclaw_hardware.cpp`.
+
+- **~~RPLidar boot-time startup sikertelen — service ~5 percig timeout-olt~~** — ✅ **KÉSZ (2026-03-26):** Root cause: az RPLidar CP2102 USB az indulás után ~289s-cel jelenik meg (külső tápról, nem a Jetson USB hubból). A `talicska-robot.service` 30s prestart timeouttal indult el, és mindig sikertelen volt. Fix: (1) `docs/backup/udev/99-rplidar.rules`: `TAG+="systemd"` hozzáadva → systemd létrehoz egy `dev-rplidar.device` unitot; (2) `scripts/systemd/talicska-robot.service`: `After=dev-rplidar.device` + `Wants=dev-rplidar.device` → service megvárja az eszközt; (3) `robot_bringup/launch/sensors.launch.py`: `respawn=True, respawn_delay=2.0` az `rplidar_node`-ra → firmware boot alatt esetleges crash automatikusan újraindul. Érintett: `docs/backup/udev/99-rplidar.rules`, `scripts/systemd/talicska-robot.service`, `robot_bringup/launch/sensors.launch.py`.
 
 - **~~RPLidar motor nem áll le gracefully `make down` után~~** — ✅ **KÉSZ (2026-03-24):** Kétlépéses fix: (1) `rplidar_node.cpp` `ExitHandler`-ben `SIGTERM` handler regisztrálva + `g_drv->stop()` + `g_drv->setMotorSpeed(0)` hívás globális driver pointerrel; (2) `Makefile` `down` target: `pkill -SIGINT -f rplidar_node` a container leállítása előtt (SIGINT-et küld közvetlenül a node-nak, amit a Docker signal propagálás nem tett meg). Root cause: `docker compose stop` SIGTERM-et küld container PID 1-nek, ami nem propagálódott az rplidar_node-ra; ráadásul csak `SIGINT` volt regisztrálva a node-ban. Érintett: `rplidar_ros/src/rplidar_node.cpp`, `Makefile`.
 
