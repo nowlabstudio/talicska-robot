@@ -1,7 +1,8 @@
 From 21c3cc54812842517bfe9e263ba16e38f3323f46 Mon Sep 17 00:00:00 2001
 From: Sik Eduard <Eduard@nowlab.eu>
 Date: Thu, 26 Mar 2026 16:38:22 +0100
-Subject: [PATCH] fix(watchdog): uncaught exception in reset() causes SIGABRT
+Subject: [PATCH 1/2] fix(watchdog): uncaught exception in reset() causes
+ SIGABRT
 
 When the watchdog fires and the sensor is unavailable (e.g. physical
 disconnect/reconnect), init_sensor() throws std::runtime_error. This
@@ -47,6 +48,65 @@ index 387e9ab..e5598ac 100644
 +            "Sensor reinitialization failed: %s — will retry on next watchdog timeout", e.what());
 +    }
  }
+-- 
+2.34.1
+
+
+From 232286bbb583976786bd1a67aa960ee40e57a260 Mon Sep 17 00:00:00 2001
+From: Sik Eduard <Eduard@nowlab.eu>
+Date: Thu, 26 Mar 2026 17:30:33 +0100
+Subject: [PATCH 2/2] fix(imu): set sensor_msgs/Imu covariance matrices
+ (robot_localization EKF)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The BNO085 driver was publishing zero covariance matrices, causing
+robot_localization to treat sensor readings as perfectly accurate.
+This can lead to filter divergence or poor fusion behavior.
+
+Set realistic diagonal covariance values based on BNO085 datasheet:
+- orientation:          7.6e-7 rad²  (~0.05° RMS)
+- angular_velocity:     1e-6   (rad/s)²
+- linear_acceleration:  0.01   (m/s²)²
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+---
+ src/bno08x_ros.cpp | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/src/bno08x_ros.cpp b/src/bno08x_ros.cpp
+index e5598ac..827fdd1 100644
+--- a/src/bno08x_ros.cpp
++++ b/src/bno08x_ros.cpp
+@@ -27,6 +27,27 @@ BNO08xROS::BNO08xROS()
+         RCLCPP_INFO(this->get_logger(), "Magnetic Field Rate: %d", magnetic_field_rate_);
+     }
+ 
++    // Set IMU message covariances (BNO085 datasheet / empirical values)
++    // Diagonal elements only — off-diagonal assumed zero for this sensor class.
++    // orientation: ~0.05° RMS → (0.05 * pi/180)² ≈ 7.6e-7 rad²
++    imu_msg_.orientation_covariance = {
++        7.6e-7, 0.0,    0.0,
++        0.0,    7.6e-7, 0.0,
++        0.0,    0.0,    7.6e-7
++    };
++    // angular velocity: ~0.001 rad/s RMS → 1e-6 (rad/s)²
++    imu_msg_.angular_velocity_covariance = {
++        1e-6,  0.0,   0.0,
++        0.0,   1e-6,  0.0,
++        0.0,   0.0,   1e-6
++    };
++    // linear acceleration: ~0.1 m/s² RMS → 0.01 (m/s²)²
++    imu_msg_.linear_acceleration_covariance = {
++        0.01,  0.0,   0.0,
++        0.0,   0.01,  0.0,
++        0.0,   0.0,   0.01
++    };
++
+     // Poll the sensor at the rate of the fastest sensor
+     this->imu_received_flag_ = 0;
+     if(this->imu_rate_ < this->magnetic_field_rate_){
 -- 
 2.34.1
 

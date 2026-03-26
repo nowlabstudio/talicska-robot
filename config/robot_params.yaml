@@ -221,9 +221,8 @@ diff_drive_controller:
 
     odom_frame_id: odom
     base_frame_id: base_link
-    # EKF kikapcsolva (IMU nincs) → controller publikálja az odom TF-et.
-    # Ha EKF visszakapcsol (IMU fix után): false-ra állítani → különben dupla TF!
-    enable_odom_tf: true
+    # EKF publikálja az odom→base_link TF-et (publish_tf: true az ekf.yaml-ban).
+    enable_odom_tf: false
 
     # Odometria kovariancia (alacsony: zárt hurkú enkóder alapú odometria)
     pose_covariance_diagonal:  [0.001, 0.001, 0.001, 0.001, 0.001, 0.01]

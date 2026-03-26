@@ -49,6 +49,7 @@ services:
       # Globális robot paraméter konfig — rebuild NEM kell, csak docker compose up -d robot
       - ./config:/config:ro
       # Config + launch override — rebuild NEM kell, csak docker compose restart robot
+      - ./robot_bringup/config/ekf.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/ekf.yaml:ro
       - ./robot_bringup/config/slam_params.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/slam_params.yaml:ro
       - ./robot_bringup/config/nav2_params.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/nav2_params.yaml:ro
       - ./robot_bringup/launch/robot.launch.py:/root/talicska-ws/install/robot_bringup/share/robot_bringup/launch/robot.launch.py:ro
