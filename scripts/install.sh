@@ -934,8 +934,21 @@ install_wifi_driver() {
     # Kernel headers ellenőrzés — Jetson tegra OOT kernelhez nem érhető el apt-ból
     local kernel_ver
     kernel_ver="$(uname -r)"
-    if [[ ! -d "/lib/modules/${kernel_ver}/build" ]]; then
-        warn "Kernel headers hiányoznak: /lib/modules/${kernel_ver}/build"
+
+    # A /lib/modules/<kver>/build symlink az nvidia-l4t-kernel-headers csomag részeként
+    # gitlab-runner build útvonalra mutat, ami nem létezik a Jetsonen.
+    # Ha törött, javítjuk: a tényleges headers a nvidia-l4t-kernel-headers apt csomagban van.
+    local build_link="/lib/modules/${kernel_ver}/build"
+    local tegra_headers="/usr/src/linux-headers-${kernel_ver}-ubuntu22.04_aarch64/3rdparty/canonical/linux-jammy/kernel-source"
+    if [[ -L "${build_link}" && ! -e "${build_link}" ]]; then
+        if [[ -d "${tegra_headers}" ]]; then
+            step "Törött kernel build symlink javítása → ${tegra_headers}"
+            run sudo ln -sfn "${tegra_headers}" "${build_link}"
+        fi
+    fi
+
+    if [[ ! -d "${build_link}" ]]; then
+        warn "Kernel headers hiányoznak: ${build_link}"
         warn "Jetson OOT (tegra) kernelhez a DKMS build nem lehetséges apt headers nélkül"
         warn "WiFi driver kihagyva — rt2800usb modul ha szükséges: sudo modprobe rt2800usb"
         return 1
