@@ -480,7 +480,7 @@ roboclaw_hardware:
   encoder_counts_per_rev:  70300
   gear_ratio:              1.0            # TODO: kalibrálás szükséges
   motion_strategy:         "speed_accel"
-  default_acceleration:    230000
+  default_acceleration:    50000
   duty_accel_rate:         50000
   duty_decel_rate:         50000
   duty_max_rad_s:          20.5
