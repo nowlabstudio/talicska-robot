@@ -69,6 +69,8 @@ services:
       - ./cyclonedds.xml:/root/talicska-robot/cyclonedds.xml:ro
       # Globális robot paraméter konfig — rebuild NEM kell, csak docker compose up -d robot
       - ./config:/config:ro
+      # Scripts volume — readiness probe + egyéb helper scriptek, rebuild NEM kell
+      - ./scripts:/scripts:ro
       # Config + launch override — rebuild NEM kell, csak docker compose restart robot
       - ./robot_bringup/config/ekf.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/ekf.yaml:ro
       - ./robot_bringup/config/slam_params.yaml:/root/talicska-ws/install/robot_bringup/share/robot_bringup/config/slam_params.yaml:ro
