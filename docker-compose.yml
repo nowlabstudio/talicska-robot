@@ -26,6 +26,15 @@ services:
     ipc: host
     restart: unless-stopped
     command: udp4 -p ${MICROROS_AGENT_PORT:-8888}
+    # Healthcheck: UDP port 8888 listening → bridge-ek csatlakozhatnak.
+    # /proc/net/udp mindig elérhető Linux-on (network_mode: host → host hálózat látszik).
+    # Port 8888 = 0x22B8 — grep a 6. oszlopban (local_address col: 00000000:22B8).
+    healthcheck:
+      test: ["CMD", "sh", "-c", "grep -q ':22B8' /proc/net/udp"]
+      interval: 3s
+      timeout: 2s
+      retries: 15        # max ~50s várakozás (5s start + 15×3s) mielőtt unhealthy
+      start_period: 5s   # agent indulási ideje
 
   robot:
     container_name: robot
@@ -38,8 +47,19 @@ services:
     restart: unless-stopped
     stop_grace_period: 60s
     privileged: true          # serial port (rplidar ttyUSB) cgroup device access — /dev:/dev volume alone is insufficient
+    # depends_on condition: service_healthy → robot NEM indul, amíg microros_agent UDP portja
+    # nem listening. Korábban: only "container started" — nem garantálta az agent readiness-t.
     depends_on:
-      - microros_agent
+      microros_agent:
+        condition: service_healthy
+    # Healthcheck: ros2 launch process él → stack nem crashelt.
+    # start_period: 30s — launch fájl betöltési ideje (URDF xacro, param yaml parse).
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "robot_bringup robot.launch.py"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     env_file: .env
     devices:
       - /dev/bus/usb:/dev/bus/usb
