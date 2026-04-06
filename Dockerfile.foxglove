@@ -23,7 +23,7 @@ RUN apt-get update \
 # Foxglove nélkül: ObjectsStamped (skeleton) ismeretlen típusként jelenik meg
 RUN mkdir -p /opt/zed_ws/src \
     && cd /opt/zed_ws/src \
-    && git clone --branch main --depth 1 \
+    && git clone --branch master --depth 1 \
         https://github.com/stereolabs/zed-ros2-interfaces.git \
     && cd /opt/zed_ws \
     && . /opt/ros/jazzy/setup.sh \
