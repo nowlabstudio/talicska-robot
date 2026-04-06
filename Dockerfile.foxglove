@@ -18,21 +18,19 @@ RUN apt-get update \
         python3-colcon-common-extensions \
     && rm -rf /var/lib/apt/lists/*
 
-# zed_interfaces — ZED 2i egyedi üzenettípusok (skeleton, health, heartbeat)
-# Csak az interface csomag kell, nem a teljes wrapper (~2 perc, GPU nem szükséges)
+# zed_msgs — ZED 2i egyedi üzenettípusok (skeleton, health, heartbeat)
+# stereolabs/zed-ros2-interfaces repóban van (NEM a wrapper repóban)
 # Foxglove nélkül: ObjectsStamped (skeleton) ismeretlen típusként jelenik meg
 RUN mkdir -p /opt/zed_ws/src \
     && cd /opt/zed_ws/src \
-    && git clone --depth 1 --filter=blob:none --sparse \
-        https://github.com/stereolabs/zed-ros2-wrapper.git \
-    && cd zed-ros2-wrapper \
-    && git sparse-checkout set zed_interfaces \
+    && git clone --branch main --depth 1 \
+        https://github.com/stereolabs/zed-ros2-interfaces.git \
     && cd /opt/zed_ws \
     && . /opt/ros/jazzy/setup.sh \
     && colcon build \
-        --packages-select zed_interfaces \
+        --packages-select zed_msgs \
         --cmake-args -DCMAKE_BUILD_TYPE=Release \
-    && rm -rf build log
+    && rm -rf build log src/zed-ros2-interfaces
 
 # Port dokumentáció (network_mode: host miatt nem kell EXPOSE, de jelöljük)
 # 8765 — Foxglove WebSocket (ws://jetson-ip:8765)
