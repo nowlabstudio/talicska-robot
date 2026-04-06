@@ -12,25 +12,33 @@ Módszer: subscription + count_publishers() párhuzamos ellenőrzés.
     hamarabb érzékeli a publisher megjelenését.
   - Helyes QoS per-topic (TRANSIENT_LOCAL a /hardware/roboclaw/connected-hez).
 
-Ellenőrzött topic-ok:
+Ellenőrzött topic-ok (mindig):
   /robot/estop                 — E-Stop bridge connected (5s watchdog-timeout a safety-ban)
   /hardware/roboclaw/connected — RoboClaw hw interface alive (2s watchdog-timeout)
   /joint_states                — diff_drive_controller spawned (controller_manager kész)
 
+Ellenőrzött topic-ok (FOLLOW / SHUTTLE módban):
+  /zed/zed_node/depth/depth_registered — ZED 2i mélységkép (kamera init ~10-15s + TensorRT)
+  ZED timeout: 30s (SDK init lassabb mint RealSense)
+
 Exit: mindig 0 (READY VAGY TIMEOUT) — safety_supervisor mindig elindul.
 """
 
+import os
 import sys
 import time
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Bool
 
-TIMEOUT_S = 30       # max várakozás mielőtt timeout+proceed (csökkentve 60→30s)
+TIMEOUT_S     = 30       # max várakozás mielőtt timeout+proceed (csökkentve 60→30s)
+ZED_TIMEOUT_S = 30       # ZED külön timeout — SDK init + TensorRT ~10-15s
 CHECK_INTERVAL_S = 2.0
+
+ROBOT_MODE = os.environ.get('ROBOT_MODE', 'NAVIGATION')
 
 # ANSI
 GREEN  = '\033[0;32m'
@@ -44,10 +52,14 @@ class ReadinessChecker(Node):
     def __init__(self):
         super().__init__('ros_readiness_check')
 
-        self.estop_received       = False
-        self.roboclaw_received    = False
+        self.estop_received        = False
+        self.roboclaw_received     = False
         self.joint_states_received = False
+        self.zed_received          = False
         self.start_time = time.time()
+
+        # ZED check csak FOLLOW / SHUTTLE módban
+        self.check_zed = ROBOT_MODE in ('FOLLOW', 'SHUTTLE')
 
         # /robot/estop — default QoS (RELIABLE, VOLATILE, depth 10)
         self.create_subscription(
@@ -73,6 +85,18 @@ class ReadinessChecker(Node):
             lambda _: self._mark('joint_states_received'),
             10)
 
+        # ZED 2i mélységkép — FOLLOW/SHUTTLE módban kötelező
+        # BestEffort QoS (zed_ros2_wrapper default depth image QoS)
+        if self.check_zed:
+            zed_qos = QoSProfile(
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1)
+            self.create_subscription(
+                Image, '/zed/zed_node/depth/depth_registered',
+                lambda _: self._mark('zed_received'),
+                zed_qos)
+
         self.create_timer(CHECK_INTERVAL_S, self._check)
 
     def _mark(self, attr: str) -> None:
@@ -95,20 +119,32 @@ class ReadinessChecker(Node):
         roboclaw_ok = self.roboclaw_received or self.count_publishers('/hardware/roboclaw/connected') > 0
         joints_ok   = self.joint_states_received or self.count_publishers('/joint_states') > 0
 
+        # ZED: FOLLOW/SHUTTLE módban — count_publishers() elegendő, mert a ZED depth topic
+        # folyamatosan publishál ha a kamera inicializált (~15Hz).
+        # ZED init slow path: SDK + TensorRT ~10-15s → ZED_TIMEOUT_S külön timeout.
+        zed_ok = True  # default: nem ellenőrzött módban
+        if self.check_zed:
+            zed_ok = self.zed_received or \
+                     self.count_publishers('/zed/zed_node/depth/depth_registered') > 0
+
         def icon(v):
             return f'{GREEN}✓{NC}' if v else f'{YELLOW}⏳{NC}'
 
         def wait(v):
             return '' if v else ' — várakozás'
 
-        print(f'{CYAN}── [{elapsed}s / {TIMEOUT_S}s] ──────────────────────────────────{NC}')
+        timeout_label = f'{ZED_TIMEOUT_S}s (ZED)' if self.check_zed else f'{TIMEOUT_S}s'
+        print(f'{CYAN}── [{elapsed}s / {timeout_label}] ──────────────────────────────────{NC}')
         print(f'  {icon(estop_ok)}  /robot/estop              (E-Stop bridge){wait(estop_ok)}')
         print(f'  {icon(roboclaw_ok)}  /hardware/roboclaw/connected (RoboClaw hw interface){wait(roboclaw_ok)}')
         print(f'  {icon(joints_ok)}  /joint_states             (diff_drive_controller){wait(joints_ok)}')
+        if self.check_zed:
+            print(f'  {icon(zed_ok)}  /zed/zed_node/depth/depth_registered (ZED 2i — {ROBOT_MODE} mód){wait(zed_ok)}')
         print(flush=True)
 
-        all_ready = estop_ok and roboclaw_ok and joints_ok
-        timed_out = elapsed >= TIMEOUT_S
+        all_ready = estop_ok and roboclaw_ok and joints_ok and zed_ok
+        effective_timeout = max(TIMEOUT_S, ZED_TIMEOUT_S) if self.check_zed else TIMEOUT_S
+        timed_out = elapsed >= effective_timeout
 
         if all_ready:
             print(f'{GREEN}{BOLD}✓ READY [{elapsed}s] — Minden prerequizit teljesítve. safety_supervisor indul.{NC}')
@@ -117,15 +153,15 @@ class ReadinessChecker(Node):
             sys.exit(0)
 
         if timed_out:
-            missing = [
-                t for t, ok in [
-                    ('/robot/estop',                  estop_ok),
-                    ('/hardware/roboclaw/connected',  roboclaw_ok),
-                    ('/joint_states',                 joints_ok),
-                ]
-                if not ok
+            all_topics = [
+                ('/robot/estop',                              estop_ok),
+                ('/hardware/roboclaw/connected',              roboclaw_ok),
+                ('/joint_states',                             joints_ok),
             ]
-            print(f'{YELLOW}{BOLD}⚠ TIMEOUT [{TIMEOUT_S}s] — Hiányzó topic-ok: {" ".join(missing)}{NC}')
+            if self.check_zed:
+                all_topics.append(('/zed/zed_node/depth/depth_registered', zed_ok))
+            missing = [t for t, ok in all_topics if not ok]
+            print(f'{YELLOW}{BOLD}⚠ TIMEOUT [{effective_timeout}s] — Hiányzó topic-ok: {" ".join(missing)}{NC}')
             print(f'{YELLOW}  safety_supervisor indul — saját watchdog kezeli a fault-ot ha szükséges.{NC}')
             sys.stdout.flush()
             rclpy.shutdown()

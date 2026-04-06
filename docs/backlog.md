@@ -4,7 +4,25 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ---
 
-## Aktív feladatok (2026-03-26 CET)
+## Aktív feladatok (2026-04-06 CET)
+
+### ZED 2i kamera — implementált, teszt szükséges
+
+- **ZED Docker image build + validálás** — `cd zed-jetson && make build` (~20 perc). Sorrend: `install-udev` → `setup-host` → `build` → `up` → `validate`. Ellenőrizendő: depth Hz, RGB Hz, health topic, body_trk skeleton. 🔴 NEM TESZTELT
+
+- **Safety supervisor ZED watchdog (rebuild)** — `robot_safety/src/safety_supervisor.cpp`: `enable_zed_watchdog: false` szekció kész (robot_params.yaml), de a subscriber és latch kód még nincs implementálva. Előfeltétel: ZED stack fut stabilan, camera_director switching validált, Foxglove ellenőrzött. Ezután: safety_supervisor bővítése + főstack Docker image rebuild. 🔴 BACKLOG
+
+- **ZED x pozíció finomítás (URDF)** — `robot.urdf.xacro` `zed_camera_joint` x=0.480m PLACEHOLDER. Mérni kell: robot elejétől hány mm a ZED középvonala → x = (front_edge_mm - 325mm + mért_mm)/1000. Volume-mounted, rebuild nem kell. 🔴 BACKLOG
+
+- **`install.sh` frissítés ZED lépéssel** — `scripts/install.sh`: ZED udev rule telepítés (`zed-jetson/make install-udev`) + host setup (`make setup-host`) + opcionálisan ZED image build. Előfeltétel: ZED futás stabilizálódott. 🔴 BACKLOG
+
+- **ZED pointcloud → Isaac Sim (.pcd/.ply) export pipeline** — `cd zed-jetson && make save-pcd` ros2 bag-et ment. Következő lépés: ros2 bag → `pointcloud_to_pcd` node → `.pcd` export → Isaac Sim import. Infrastruktúra kész (bag record target), csak konverziós tool kell. 🔴 BACKLOG
+
+- **NEURAL_LIGHT depth mode (TensorRT cache feltöltés után)** — `zed_params.yaml`: `depth_mode: 1` (PERFORMANCE, Orin Nano safe default). Miután a TensorRT modellek `/usr/local/zed/resources/`-ba kerültek (első futás), frissíthető: `depth_mode: 4` (NEURAL_LIGHT). Volume-mounted, container restart elegendő. 🔴 BACKLOG
+
+- **Foxglove image rebuild (zed_interfaces)** — `Dockerfile.foxglove` frissítve: `zed_interfaces` sparse checkout + colcon build. Skeleton (`ObjectsStamped`) csak az image rebuild után lesz látható Foxglove-ban. `cd talicska-robot && sudo docker compose -f docker-compose.tools.yml up -d --build` 🔴 NEM TESZTELT
+
+
 
 ### 🔴 Magas prioritás (Biztonsági / Kritikus)
 

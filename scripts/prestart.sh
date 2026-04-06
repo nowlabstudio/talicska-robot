@@ -51,7 +51,7 @@ if [[ -f "${ENV_FILE}" ]]; then
     val="${val%%#*}"           # inline komment levágása
     val="${val%"${val##*[![:space:]]}"}"  # záró whitespace levágása
     case "${key}" in
-      ROBOCLAW_HOST|ROBOCLAW_PORT|RC_BRIDGE_IP|INPUT_BRIDGE_IP|JETSON_IP)
+      ROBOCLAW_HOST|ROBOCLAW_PORT|RC_BRIDGE_IP|INPUT_BRIDGE_IP|JETSON_IP|ROBOT_MODE)
         export "${key}=${val}"
         ;;
     esac
@@ -63,6 +63,7 @@ ROBOCLAW_PORT="${ROBOCLAW_PORT:-8234}"
 RC_BRIDGE_IP="${RC_BRIDGE_IP:-10.0.10.22}"
 INPUT_BRIDGE_IP="${INPUT_BRIDGE_IP:-10.0.10.23}"
 JETSON_IP="${JETSON_IP:-10.0.10.1}"
+ROBOT_MODE="${ROBOT_MODE:-NAVIGATION}"
 PEDAL_BRIDGE_IP="10.0.10.21"
 MIKROTIK_IP="${MIKROTIK_IP:-}"
 RTK_GPS_IP="${RTK_GPS_IP:-}"
@@ -70,6 +71,8 @@ RTK_GPS_DEV="${RTK_GPS_DEV:-}"
 
 # RealSense D435i USB vendor:product azonosítója
 REALSENSE_USB_ID="8086:0b3a"
+# ZED 2i USB vendor azonosítója (bármely USB porton, idVendor alapú)
+ZED_USB_VENDOR="2b03"
 RPLIDAR_DEV="/dev/rplidar"     # persistent udev symlink (99-rplidar.rules)
 
 # ── Ellenőrzési függvények ────────────────────────────────────────────────────
@@ -118,6 +121,11 @@ declare -a CHECKS=(
   # ── Szenzorok (full stack) ─────────────────────────────────────────────────
   "rplidar|required_nav|dev|${RPLIDAR_DEV}||RPLidar A2 (/dev/rplidar → ttyUSB*)|USB kábel bekötve? udev rule OK? — tesztelés: ls -la /dev/rplidar"
   "realsense|required_nav|usb|${REALSENSE_USB_ID}||RealSense D435i (USB ${REALSENSE_USB_ID})|USB3 kábel bekötve? — tesztelés: lsusb | grep ${REALSENSE_USB_ID}"
+
+  # ── ZED 2i (FOLLOW / SHUTTLE / NAVIGATION módban kötelező) ────────────────
+  # REAR_NAV módban: ZED nem szükséges → optional
+  # A check típusa usb, vendor ID: 2b03 (bármely ZED modell)
+  "zed_camera|$([ "${ROBOT_MODE}" = 'REAR_NAV' ] && echo 'optional' || echo 'required_nav')|usb|${ZED_USB_VENDOR}||ZED 2i (USB vendor ${ZED_USB_VENDOR}:*, ROBOT_MODE=${ROBOT_MODE})|USB3 kábel bekötve? udev rule OK? — tesztelés: lsusb | grep ${ZED_USB_VENDOR} / make install-udev (zed-jetson/)"
 
   # ── Opcionális eszközök ────────────────────────────────────────────────────
   "pedal_bridge|optional|ping|${PEDAL_BRIDGE_IP}||Pedal bridge / winch (RP2040, ${PEDAL_BRIDGE_IP})|RP2040 tápellátva? IP: ${PEDAL_BRIDGE_IP} — SW1 port: 5"

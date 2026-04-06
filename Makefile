@@ -3,17 +3,103 @@ EXEC := sudo docker compose exec robot bash -c
 
 ROS := source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && export CYCLONEDDS_URI=file:///root/talicska-robot/cyclonedds.xml &&
 
-.PHONY: up down rc-up rc-down check check-rc agent-restart realsense-up realsense-down realsense-logs realsense-fix realsense-restart reset safety-state topics nodes rc estop motors cmd-stop logs ps
+.PHONY: up down rc-up rc-down check check-rc agent-restart \
+        camera-up camera-down \
+        camera-fwd-up camera-fwd-down camera-fwd-logs camera-fwd-validate \
+        camera-rear-up camera-rear-down camera-rear-logs camera-rear-fix camera-rear-restart \
+        realsense-up realsense-down realsense-logs realsense-fix realsense-restart \
+        reset safety-state topics nodes rc estop motors cmd-stop logs ps
 
 ## Stack lifecycle — orchestráció
-##   make up      = prestart check → realsense container → fő stack
-##   make down    = fő stack + realsense leállítás
-##   make rc-up   = prestart check (RC mód) → fő stack (kamera nélkül)
-##   make check   = csak hardware check, semmi nem indul
+##   make up              = prestart check → kamera(k) → fő stack (ROBOT_MODE alapján)
+##   make down            = fő stack + kamerák leállítás
+##   make camera-fwd-up   = ZED 2i container (FOLLOW/SHUTTLE módhoz)
+##   make camera-rear-up  = RealSense container (REAR_NAV módhoz)
+##   make camera-up       = ROBOT_MODE szerint automatikus kamera orchestráció
+##   make rc-up           = prestart check (RC mód) → fő stack (kamera nélkül)
+##   make check           = csak hardware check, semmi nem indul
 
 REALSENSE_DIR := $(shell cd ../realsense-jetson 2>/dev/null && pwd)
+ZED_DIR       := $(shell cd ../zed-jetson 2>/dev/null && pwd)
+ROBOT_MODE    := $(shell grep '^ROBOT_MODE' .env 2>/dev/null | cut -d= -f2 | tr -d ' ')
 
-up: check realsense-up
+# =============================================================================
+# Irányalapú kamera orchestráció
+# =============================================================================
+
+## ZED 2i container indítása (előre néző — FOLLOW/SHUTTLE módhoz)
+camera-fwd-up:
+	@if [ -z "$(ZED_DIR)" ]; then \
+		echo "⚠ zed-jetson repo nem található (../zed-jetson), kihagyás"; \
+	elif lsusb 2>/dev/null | grep -q "2b03:"; then \
+		echo "── ZED 2i container indítása ──"; \
+		cd $(ZED_DIR) && make up; \
+	else \
+		echo "⚠ ZED 2i USB nem található (lsusb | grep 2b03), kihagyás"; \
+	fi
+
+## ZED 2i container leállítása
+camera-fwd-down:
+	@if [ -n "$(ZED_DIR)" ]; then \
+		cd $(ZED_DIR) && sudo docker compose stop 2>/dev/null || true; \
+	fi
+
+## ZED 2i logok
+camera-fwd-logs:
+	@cd $(ZED_DIR) && sudo docker compose logs -f ros2-zed
+
+## ZED 2i validáció (topic lista + Hz mérés)
+camera-fwd-validate:
+	@cd $(ZED_DIR) && make validate
+
+## RealSense D435i container indítása (hátra néző — REAR_NAV módhoz)
+camera-rear-up:
+	@if [ -z "$(REALSENSE_DIR)" ]; then \
+		echo "⚠ realsense-jetson repo nem található (../realsense-jetson), kihagyás"; \
+	elif lsusb 2>/dev/null | grep -q "8086:0b3a"; then \
+		echo "── RealSense container indítása ──"; \
+		cd $(REALSENSE_DIR) && make up; \
+	else \
+		echo "⚠ RealSense USB nem található, kihagyás"; \
+	fi
+
+## RealSense D435i container leállítása
+camera-rear-down:
+	@if [ -n "$(REALSENSE_DIR)" ]; then \
+		cd $(REALSENSE_DIR) && sudo docker compose stop 2>/dev/null || true; \
+	fi
+
+## RealSense logok
+camera-rear-logs:
+	@cd $(REALSENSE_DIR) && sudo docker compose logs -f ros2-realsense
+
+## ROBOT_MODE alapján automatikus kamera orchestráció
+## FOLLOW/SHUTTLE → ZED (előre), REAR_NAV → RealSense (hátra), NAVIGATION → mindkettő
+camera-up:
+	@MODE="$(ROBOT_MODE)"; \
+	echo "ROBOT_MODE=$$MODE → kamera orchestráció"; \
+	if [ "$$MODE" = "FOLLOW" ] || [ "$$MODE" = "SHUTTLE" ]; then \
+		echo "ZED 2i (előre) indul — RealSense kihagyás"; \
+		$(MAKE) camera-fwd-up; \
+	elif [ "$$MODE" = "REAR_NAV" ]; then \
+		echo "RealSense D435i (hátra) indul — ZED kihagyás"; \
+		$(MAKE) camera-rear-up; \
+	else \
+		echo "NAVIGATION mód: ZED (előre) + RealSense (hátra) indul"; \
+		$(MAKE) camera-fwd-up; \
+		$(MAKE) camera-rear-up; \
+	fi
+
+## Minden kamera container leállítása
+camera-down:
+	@$(MAKE) camera-fwd-down || true
+	@$(MAKE) camera-rear-down || true
+
+# =============================================================================
+# Stack lifecycle
+# =============================================================================
+
+up: check camera-up
 	@sudo mkdir -p /run/robot
 	@echo ""
 	@echo "── Fő stack indítása ──"
@@ -33,11 +119,9 @@ down:
 	@sudo docker compose stop --timeout 8
 	@echo "Safety latch állapot törlése (intentional shutdown — clean restart state)..."
 	@sudo rm -f /run/robot/safety_latch_state 2>/dev/null || true
-	@if [ -n "$(REALSENSE_DIR)" ]; then \
-		cd $(REALSENSE_DIR) && sudo docker compose stop 2>/dev/null || true; \
-	fi
+	@$(MAKE) camera-down
 	@echo ""
-	@echo "Robot stack + RealSense leállítva. Foxglove és Portainer fut tovább."
+	@echo "Robot stack + kamerák leállítva. Foxglove és Portainer fut tovább."
 	@echo "RC fallback: make rc-up  |  Teljes leállítás: make tools-down"
 	@echo ""
 
@@ -65,24 +149,12 @@ agent-restart:
 	@echo "MicroROS agent újraindítva. Bridge-ek ~2-5s alatt újracsatlakoznak."
 	@echo ""
 
-## RealSense D435i — dustynv alapú külön stack (saját repo: realsense-jetson)
-realsense-up:
-	@if [ -z "$(REALSENSE_DIR)" ]; then \
-		echo "⚠ realsense-jetson repo nem található (../realsense-jetson), kihagyás"; \
-	elif lsusb 2>/dev/null | grep -q "8086:0b3a"; then \
-		echo "── RealSense container indítása ──"; \
-		cd $(REALSENSE_DIR) && make up; \
-	else \
-		echo "⚠ RealSense USB nem található, kihagyás"; \
-	fi
-
-realsense-down:
-	@if [ -n "$(REALSENSE_DIR)" ]; then \
-		cd $(REALSENSE_DIR) && sudo docker compose stop 2>/dev/null || true; \
-	fi
-
-realsense-logs:
-	@cd $(REALSENSE_DIR) && sudo docker compose logs -f ros2-realsense
+# =============================================================================
+# Kamera aliasok (backward-compatible)
+# =============================================================================
+realsense-up:     camera-rear-up
+realsense-down:   camera-rear-down
+realsense-logs:   camera-rear-logs
 
 realsense-fix:
 	@if [ -z "$(REALSENSE_DIR)" ]; then \
@@ -91,7 +163,6 @@ realsense-fix:
 	@cd $(REALSENSE_DIR) && make install-udev
 
 ## RealSense újraindítás USB reconnect után, majd safety latch reset
-## Sorrend: container restart → 10s várakozás (camera_info megjelenéséig) → /robot/reset
 realsense-restart:
 	@if [ -z "$(REALSENSE_DIR)" ]; then \
 		echo "HIBA: realsense-jetson repo nem található"; exit 1; \
@@ -101,6 +172,10 @@ realsense-restart:
 	@echo "Várakozás a kamera inicializációjára (10s)..."
 	@sleep 10
 	@$(MAKE) reset
+
+## ZED 2i újraindítás
+camera-rear-fix:
+	@if [ -n "$(ZED_DIR)" ]; then cd $(ZED_DIR) && make install-udev; fi
 
 ## Safety latch reset — watchdog_latch, rc_watchdog_latch, joint_states_dropout_latch,
 ## realsense_dropout_latch (ha recovered) törlése.

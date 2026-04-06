@@ -23,7 +23,7 @@ ekf.yaml is NOT needed (single source of truth).
 import os
 import yaml
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -81,7 +81,25 @@ def launch_setup(context, *args, **kwargs):
         respawn_delay=3.0,
     )
 
-    return [rplidar, bno085, ekf]
+    # camera_director — irányalapú kamera gating (ZED előre / RealSense hátra)
+    # FOLLOW, SHUTTLE: navigációs módok, mindkét kamera potenciálisan aktív irány szerint.
+    # NAVIGATION (teszt): mindkét kamera indul → director kezeli az átkapcsolást.
+    # REAR_NAV: csak RealSense aktív → director nem szükséges, de ártalmatlan ha fut.
+    # RC mód: sensors.launch.py nem indul → director sem fut.
+    nodes = [rplidar, bno085, ekf]
+
+    if robot_mode in ('FOLLOW', 'SHUTTLE', 'NAVIGATION'):
+        camera_director = ExecuteProcess(
+            cmd=[
+                'python3',
+                '/root/talicska-robot/scripts/camera_director.py',
+            ],
+            name='camera_director',
+            output='screen',
+        )
+        nodes.append(camera_director)
+
+    return nodes
 
 
 def generate_launch_description():

@@ -14,7 +14,25 @@ RUN apt-get update \
         ros-jazzy-slam-toolbox \
         ros-jazzy-realsense2-camera-msgs \
         ros-jazzy-pal-statistics-msgs \
+        git \
+        python3-colcon-common-extensions \
     && rm -rf /var/lib/apt/lists/*
+
+# zed_interfaces — ZED 2i egyedi üzenettípusok (skeleton, health, heartbeat)
+# Csak az interface csomag kell, nem a teljes wrapper (~2 perc, GPU nem szükséges)
+# Foxglove nélkül: ObjectsStamped (skeleton) ismeretlen típusként jelenik meg
+RUN mkdir -p /opt/zed_ws/src \
+    && cd /opt/zed_ws/src \
+    && git clone --depth 1 --filter=blob:none --sparse \
+        https://github.com/stereolabs/zed-ros2-wrapper.git \
+    && cd zed-ros2-wrapper \
+    && git sparse-checkout set zed_interfaces \
+    && cd /opt/zed_ws \
+    && . /opt/ros/jazzy/setup.sh \
+    && colcon build \
+        --packages-select zed_interfaces \
+        --cmake-args -DCMAKE_BUILD_TYPE=Release \
+    && rm -rf build log
 
 # Port dokumentáció (network_mode: host miatt nem kell EXPOSE, de jelöljük)
 # 8765 — Foxglove WebSocket (ws://jetson-ip:8765)
@@ -31,6 +49,7 @@ RUN mkdir -p /opt/ros/jazzy/share/ament_index/resource_index/packages && \
 # és csak azt adja át. A /tmp fájl a container életciklusán belül él.
 CMD ["/bin/bash", "-c", \
      "source /opt/ros/jazzy/setup.bash && \
+      source /opt/zed_ws/install/setup.bash && \
       python3 -c \"\
 import yaml, sys; \
 d = yaml.safe_load(open('/config/robot_params.yaml')); \

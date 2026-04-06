@@ -13,6 +13,10 @@ repositories:
     type: git
     url: https://github.com/nowlabstudio/realsense-jetson.git
     version: main
+  robot/zed-jetson:
+    type: git
+    url: https://github.com/nowlabstudio/zed-jetson.git
+    version: main
   robot/rplidar_ros:
     type: git
     url: https://github.com/Slamtec/rplidar_ros.git

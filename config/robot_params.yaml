@@ -42,10 +42,11 @@ _profiles_:
 # Merge logika: base = node_name/ros__parameters/, override = _profiles_/MODE/node_name/
 # Eredmény: {**base, **override} dict kerül a Node(parameters=[...]) listájába.
 
-  # ── NAVIGATION — Normál autonóm navigáció ──────────────────────────────────
-  # RPLidar: auto scan_mode (firmware dönti el a legjobb támogatott módot), 10 Hz
+  # ── NAVIGATION — Autonóm navigáció (tesztelési mód) ─────────────────────────
+  # Kamera: ZED 2i (előre) + RealSense D435i (hátra) — mindkettő aktív
+  # camera_director_node: irány szerint vált (cmd_vel_raw figyelés)
+  # RPLidar: auto scan_mode, 10 Hz
   # Nav2: 0.5 m/s, teljes costmap, SLAM aktív
-  # RealSense D435i: NEM AKTÍV ITT — lásd realsense2_camera_node szekció lent
   NAVIGATION:
     rplidar_node:
       scan_mode:      ""              # auto — OPERATION_NOT_SUPPORT volt Sensitivity-vel (A2M12 firmware)
@@ -74,19 +75,20 @@ _profiles_:
       max_velocity: [0.5, 0.0, 1.5]
       min_velocity: [-0.2, 0.0, -1.5]
 
-  # ── DOCKING — Célba állás / pontos megközelítés ────────────────────────────
+  # ── REAR_NAV — Hátsó kamerás navigáció (hátramese, dokkolás) ─────────────────
+  # Kamera:  RealSense D435i (hátra néző) — aktív
+  #          ZED 2i (előre néző)          — INAKTÍV (make camera-fwd-down)
   # RPLidar: Standard mód, 5 Hz (energiatakarékos közelítésnél)
-  # Nav2: 0.1 m/s (lassú, pontos)
-  # RealSense D435i: NEM AKTÍV ITT — lásd realsense2_camera_node szekció lent
-  DOCKING:
+  # Nav2:    0.1 m/s (lassú, pontos — dokkoláshoz)
+  # camera_director_node: hátramese → RealSense relay ON, ZED relay OFF
+  REAR_NAV:
     rplidar_node:
       scan_mode:      Standard
       scan_frequency: 5.0
 
     # !! NEM AKTÍV — a RealSense külön Docker stackben fut (ros2_realsense container).
-    # Profil-alapú (NAVIGATION vs DOCKING) felbontásváltás nem lehetséges amíg a RealSense
-    # saját stack-ből indul. Megoldás: a realsense stack ROBOT_MODE-t olvasson és
-    # conditionálisan adjon át eltérő launch argumentumokat.
+    # Profil-alapú felbontásváltás nem lehetséges amíg a RealSense saját stack-ből indul.
+    # A RealSense konfig: realsense-jetson/realsense_params.yaml
     realsense2_camera_node:
       "rgb_camera.color_profile":   "424x240x6"
       "depth_module.depth_profile": "424x240x6"
@@ -110,26 +112,20 @@ _profiles_:
     roboclaw_hardware:
       encoder_stuck_limit: 20
 
-  # ── FOLLOW — Tárgykövetés (PLACEHOLDER) ───────────────────────────────────
-  # ZED 2i kamera: még nincs implementálva — minden érték PLACEHOLDER.
-  # RealSense NEM indul FOLLOW módban (a ZED veszi át a szerepét).
-  # RPLidar és Nav2 sebességek: NAVIGATION-nal azonos (gyors követés).
-  # Backlog: "ZED 2i integráció"
+  # ── FOLLOW — Személykövetés ──────────────────────────────────────────────────
+  # Kamera:  ZED 2i (előre néző) — aktív (make camera-fwd-up)
+  #          RealSense D435i     — INAKTÍV
+  # ZED body tracking: make body-enable → /zed/zed_node/body_trk/skeletons
+  # camera_director_node: előremenet → ZED relay ON, RealSense relay OFF
+  #                        hátramese → ZED relay OFF, RealSense relay ON (bármely módban)
+  #
+  # !! ZED saját Docker containerből fut (zed-jetson/) — ez a szekció a
+  # safety_supervisor watchdog paramétereihez van dokumentálva, nem a ZED node konfig.
+  # Tényleges ZED paraméterek: zed-jetson/zed_params.yaml
   FOLLOW:
     rplidar_node:
-      scan_mode:      ""              # auto — lásd NAVIGATION megjegyzés
+      scan_mode:      ""              # auto
       scan_frequency: 10.0
-
-    # !! NEM AKTÍV — ZED 2i nincs integrálva. PLACEHOLDER értékek.
-    # Ha a ZED saját Docker stackben fut (várható), ugyanaz az elkülönülési probléma
-    # áll fenn mint a RealSense-nél: ez a szekció nem kerül felolvasásra.
-    # Backlog: "ZED 2i integráció" — udev, docker setup, zed_ros2_wrapper launch.
-    zed_node:
-      "general.camera_resolution": 3    # 3=VGA (672×376) — közelítő, PLACEHOLDER
-      "general.grab_frame_rate":   30
-      "general.self_calib":        true
-      "depth.depth_mode":          1    # 1=PERFORMANCE (alacsonyabb CPU overhead)
-      "pos_tracking.set_as_static": false
 
     controller_server:
       FollowPath:
@@ -139,6 +135,27 @@ _profiles_:
     velocity_smoother:
       max_velocity: [0.5, 0.0, 1.5]
       min_velocity: [-0.2, 0.0, -1.5]
+
+  # ── SHUTTLE — Szállítás közbeni autonóm navigáció ────────────────────────────
+  # Kamera:  ZED 2i (előre néző) — aktív (make camera-fwd-up)
+  #          RealSense D435i     — INAKTÍV
+  # camera_director_node: ugyanaz mint FOLLOW (irányalapú kamera relay)
+  #
+  # !! ZED saját Docker containerből fut (zed-jetson/)
+  # Tényleges ZED paraméterek: zed-jetson/zed_params.yaml
+  SHUTTLE:
+    rplidar_node:
+      scan_mode:      ""
+      scan_frequency: 10.0
+
+    controller_server:
+      FollowPath:
+        desired_linear_vel:           0.8
+        min_approach_linear_velocity: 0.1
+
+    velocity_smoother:
+      max_velocity: [0.8, 0.0, 1.5]
+      min_velocity: [-0.3, 0.0, -1.5]
 
 
 # =============================================================================
@@ -156,8 +173,8 @@ rplidar_node:
     frame_id:         lidar_link
     inverted:         false
     angle_compensate: true
-    scan_mode:        ""                  # auto-select (OPERATION_NOT_SUPPORT volt Sensitivity-vel); DOCKING: Standard
-    scan_frequency:   10.0               # NAVIGATION default; DOCKING: 5.0
+    scan_mode:        ""                  # auto-select (OPERATION_NOT_SUPPORT volt Sensitivity-vel); REAR_NAV: Standard
+    scan_frequency:   10.0               # NAVIGATION/FOLLOW/SHUTTLE default; REAR_NAV: 5.0
     auto_standby:     true               # motor leáll ha /scan-nek nincs subscriber-e (make down graceful stop)
     # QoS override: BEST_EFFORT publisher
     # Audit #4: RELIABLE→BEST_EFFORT mismatch extra CycloneDDS buffert okozott.
@@ -440,8 +457,13 @@ safety_supervisor:
     scan_watchdog_startup_grace_s:   15.0  # rplidar respawn=True → újraindulás ~2-5s; 15s ad biztos fedezetet startup és respawn esetén is
     enable_scan_watchdog:            true  # LiDAR dropout → scan_dropout_latch → ERROR
     enable_imu_watchdog:      true   # BNO085 aktív — dropout → imu_dropout_latch → ERROR
-    # PLACEHOLDER (disabled) — ZED 2i és külső IMU watchdog
-    # enable_zed_watchdog:      false
+    # ZED 2i watchdog — DISABLED (safety_supervisor.cpp rebuild szükséges az aktiváláshoz)
+    # Backlog: "Safety supervisor ZED watchdog — uncomment + rebuild"
+    # Aktiválás: enable_zed_watchdog: true + rebuild robot-robot image
+    # Topic: /zed/zed_node/depth/depth_registered (sensor_msgs/Image)
+    enable_zed_watchdog:      false
+    zed_timeout_s:            3.0
+    # ZED IMU watchdog — DISABLED (ZED IMU letiltva, imu_joint kalibráció pending)
     # enable_ext_imu_watchdog:  false
 
 # ── Startup Supervisor ────────────────────────────────────────────────────────

@@ -59,7 +59,8 @@ footprint: "[[0.505, 0.4], [0.505, -0.4], [-0.595, -0.4], [-0.595, 0.4]]"
 | Pedal bridge | RP2040 + W6100 | ETH | 10.0.10.21 | Pedál bemenet (WIP) |
 | RoboClaw | Motor ctrl | ETH→USR-K6→RS232 | 10.0.10.24:8234 | Differenciálhajtás |
 | Sabertooth 2x32 | Tilt motor ctrl | PWM from Tilt bridge | — | Billentő motor |
-| RealSense D435i | Mélységkamera | USB3 Jetsonen | — | Depth, stereo IR, IMU |
+| RealSense D435i | Mélységkamera (hátra) | USB3 Jetsonen | — | Depth, stereo IR, IMU — REAR_NAV módhoz |
+| ZED 2i | Sztereó kamera (előre) | USB3 Jetsonen (bármely port, idVendor: 2b03) | — | RGB, depth, IMU, body tracking — FOLLOW/SHUTTLE módhoz |
 | RPLidar A2M12 | 2D LiDAR | USB Jetsonen → `/dev/rplidar` (udev) | — | SLAM + Nav2 + safety zónák |
 
 **Hálózat:** `10.0.10.x/24` robot-internal — Jetson enP8p1s0: 10.0.10.1/24 (nem labor LAN, hanem Jetson→bridge dedicated ethernetes hálózat)
@@ -121,6 +122,20 @@ footprint: "[[0.505, 0.4], [0.505, -0.4], [-0.595, -0.4], [-0.595, 0.4]]"
 │  ESTOP ←──── bármely módból, hardware + software    │
 └─────────────────────────────────────────────────────┘
 ```
+
+### ROBOT_MODE — Kamera orchestráció (.env)
+
+| ROBOT_MODE | Kamera | Max sebesség | Makefile target |
+|---|---|---|---|
+| `FOLLOW` | ZED 2i (előre) | 0.5 m/s | `make camera-fwd-up` |
+| `SHUTTLE` | ZED 2i (előre) | 0.8 m/s | `make camera-fwd-up` |
+| `REAR_NAV` | RealSense D435i (hátra) | 0.1 m/s | `make camera-rear-up` |
+| `NAVIGATION` | ZED + RealSense (mindkettő) | 0.5 m/s | `make camera-fwd-up` + `make camera-rear-up` |
+
+**Irányalapú kamera gating** (minden módban, `camera_director.py`):
+- Előremenet (linear.x ≥ 0) → `/camera/fwd/depth` él (ZED aktív), `/camera/rear/depth` néma
+- Hátramese (linear.x < 0) → `/camera/rear/depth` él (RealSense aktív), `/camera/fwd/depth` néma
+- A Nav2 costmap a relay output topic-okat figyeli, nem a nyers kamera topic-okat
 
 ---
 

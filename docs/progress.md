@@ -245,6 +245,117 @@ disabled-del kerülhető meg.
 
 ---
 
+## Fázis 3c — ZED 2i Kamera Integráció ✓ | 🔴 NEM TESZTELT
+
+**Elkészült (2026-04-06):**
+
+### Docker stack (`zed-jetson/`)
+
+- **Alap image:** `dustynv/ros:jazzy-ros-base-r36.4.0` (azonos a fő stack és RealSense alapjával)
+- **ZED SDK:** Stereolabs 5.x Jetson-specifikus silent installer (L4T R36.4 / JetPack 6.2)
+- **zed_ros2_wrapper:** forrásból colcon build (zed_interfaces + zed_components + zed_wrapper)
+- **Önálló service**: `ros2-zed` container, saját `docker-compose.yml`
+- **Network mode: host** — topic-ok DDS-en közvetlenül láthatók a többi container számára
+
+### Makefile targetok (zed-jetson/)
+
+```bash
+make build            # Docker image build (~20 perc, egyszer)
+make install-udev     # 99-zed.rules telepítés — bármely USB port
+make setup-host       # /usr/local/zed/resources/ TensorRT cache könyvtár
+make up / down        # Container indítás/leállítás
+make validate         # topic lista + depth Hz + RGB Hz
+make depth-hz         # /zed/zed_node/depth/depth_registered Hz
+make rgb-hz           # /zed/zed_node/rgb/image_rect_color Hz
+make imu-hz           # /zed/zed_node/imu/data Hz
+make pointcloud-hz    # /zed/zed_node/point_cloud/cloud_registered Hz
+make body-enable      # body_trk_enabled: true (FOLLOW mód előtt)
+make body-disable     # body_trk_enabled: false
+make mapping-enable   # mapping_enabled: true (Isaac Sim pontfelhő)
+make mapping-save     # save_3d_map service call (/tmp/zed_map.ply)
+make save-pcd         # ros2 bag record (pointcloud + RGB, Isaac Sim forrás)
+make health           # /zed/zed_node/status/health topic
+make tf-check         # base_link → zed_camera_link TF ellenőrzés
+```
+
+### Fő stack integráció
+
+- **Makefile orchestráció** (`talicska-robot/Makefile`):
+  - `camera-fwd-up/down`: ZED 2i container (FOLLOW/SHUTTLE módhoz)
+  - `camera-rear-up/down`: RealSense container (REAR_NAV módhoz)
+  - `camera-up`: ROBOT_MODE-alapú automatikus orchestráció
+  - `make up` = prestart check → kamerák → fő stack
+  - Backward-compatible aliasok: `realsense-up`, `realsense-down`
+
+- **Irányalapú kamera gating** (`scripts/camera_director.py`):
+  - `/cmd_vel_raw` figyelése → ZED vagy RealSense depth relay
+  - Előremenet → `/camera/fwd/depth` (ZED aktív)
+  - Hátramese → `/camera/rear/depth` (RealSense aktív)
+  - Hisztérézis: |linear.x| < 0.02 m/s → nincs váltás
+  - Bounce protection: 500ms min switch interval
+  - cmd_vel timeout (2s) → FWD fallback
+  - Monitoring: `/camera/director/state` (String: "FWD"/"REAR")
+  - `sensors.launch.py`: FOLLOW/SHUTTLE/NAVIGATION módban indul
+
+- **URDF** (`robot_description/urdf/robot.urdf.xacro`):
+  - `zed_camera_link` + `zed_camera_joint` hozzáadva
+  - z=0.18m (mért), y=0.0 (szimmetriatengelyen), x=0.480m (PLACEHOLDER — mérés kell)
+  - ZED 2i fizikai méret: 175×33×30mm
+
+- **Startup integráció:**
+  - `ros_readiness_check.py`: FOLLOW/SHUTTLE módban ZED depth topic várakozás (30s)
+  - `prestart.sh`: ZED USB vendor check (2b03) — REAR_NAV módban optional, egyébként required_nav
+
+- **Profil frissítések** (`config/robot_params.yaml`):
+  - `DOCKING` → `REAR_NAV` átnevezés
+  - `SHUTTLE` profil: ÚJ — rplidar + controller_server + velocity_smoother
+  - Safety supervisor: ZED watchdog szekciók (disabled, backlog)
+
+### Foxglove integráció
+
+- **`Dockerfile.foxglove`**: `zed_interfaces` sparse checkout + colcon build (~2 perc)
+- `zed_interfaces` nélkül az `ObjectsStamped` (skeleton) "unknown type"-ként jelenik meg
+
+### ZED topic-ok (Foxglove-ban elérhető)
+
+| Topic | Típus | Panel |
+|-------|-------|-------|
+| `/zed/zed_node/rgb/image_rect_color` | Image | Image panel |
+| `/zed/zed_node/depth/depth_registered` | Image | Image panel |
+| `/zed/zed_node/point_cloud/cloud_registered` | PointCloud2 | 3D panel |
+| `/zed/zed_node/body_trk/skeletons` | zed_interfaces/ObjectsStamped | 3D panel |
+| `/zed/zed_node/odom` | Odometry | 3D panel |
+| `/zed/zed_node/imu/data` | Imu | Plot panel |
+| `/zed/zed_node/status/health` | HealthStatusStamped | Raw messages |
+| `/camera/fwd/depth` | Image | camera_director relay (ZED → Nav2) |
+| `/camera/rear/depth` | Image | camera_director relay (RealSense → Nav2) |
+| `/camera/director/state` | String | "FWD" / "REAR" |
+
+### Ellenőrzési sorrend
+
+```bash
+# 1. Host setup (egyszer)
+cd zed-jetson && make install-udev && make setup-host
+
+# 2. ZED önálló teszt
+cd zed-jetson && make build     # ~20 perc
+cd zed-jetson && make up
+cd zed-jetson && make validate
+cd zed-jetson && make body-enable   # skeleton topic?
+cd zed-jetson && make health        # status/health OK?
+
+# 3. Fő stack (FOLLOW mód)
+ROBOT_MODE=FOLLOW make up       # csak ZED indul
+make safety-state
+
+# 4. camera_director teszt
+# Negatív cmd_vel → /camera/rear/depth él, /camera/fwd/depth néma
+# Pozitív cmd_vel → /camera/fwd/depth él, /camera/rear/depth néma
+ros2 topic echo /camera/director/state
+```
+
+---
+
 ## Hátralévő feladatok
 
 ### Task #2 — EKF covariance finomhangolás | 🔴 NEM TESZTELT

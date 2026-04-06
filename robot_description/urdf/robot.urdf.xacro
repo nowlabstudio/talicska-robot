@@ -264,7 +264,7 @@
   </joint>
 
   <!-- ============================================================
-       CAMERA — RealSense D435i
+       CAMERA — RealSense D435i (rear-facing / docking)
        Chassis front edge (X = +0.325), lens centre 30 mm above chassis top
        Z = 0.26 + 0.03 = 0.29
        ============================================================ -->
@@ -284,6 +284,37 @@
     <parent link="base_link"/>
     <child  link="camera_link"/>
     <origin xyz="0.325 0 0.29" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============================================================
+       ZED 2i — előre néző sztereó kamera (FOLLOW / SHUTTLE mód)
+       Saját Docker containerben fut (zed-jetson/), topic-ok: /zed/zed_node/*
+       Mérések (2026-04-06):
+         z = 0.18 m (180 mm a robot base aljától — mért érték)
+         y = 0.0   (hosszanti szimmetriatengelyen — mért érték)
+         x = 0.480 m  *** PLACEHOLDER — mérés szükséges! ***
+                      (könnyen frissíthető: volume-mounted, rebuild nem kell)
+       ZED 2i fizikai méret: 175 × 33 × 30 mm
+       IMU: csatlakoztatva, topic-ok elérhetők, TF letiltva (publish_imu_tf: false)
+       ============================================================ -->
+  <link name="zed_camera_link">
+    <visual>
+      <geometry><box size="0.175 0.033 0.030"/></geometry>
+      <material name="dark_grey"><color rgba="0.2 0.2 0.2 1.0"/></material>
+    </visual>
+    <collision>
+      <geometry><box size="0.175 0.033 0.030"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.165"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+  <joint name="zed_camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="zed_camera_link"/>
+    <!-- z=0.18m (mért), y=0.0 (szimmetriatengelyen), x=0.480m (PLACEHOLDER — mérés kell) -->
+    <origin xyz="0.480 0.0 0.18" rpy="0 0 0"/>
   </joint>
 
   <!-- ============================================================
