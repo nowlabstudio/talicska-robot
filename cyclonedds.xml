@@ -1,18 +1,18 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!--
   CycloneDDS configuration for Talicska robot (Jetson Orin Nano)
-  Transport: UDP loopback (lo) + UDP unicast (enP1p1s0)
+  Transport: UDP loopback (lo) + UDP unicast (enP8p1s0)
 
   - lo ELSŐ: intra-host DDS forgalom (konténer ↔ konténer) a loopbacken megy,
     nem a fizikai NIC-en → recvMC thread CPU overhead elmarad.
-  - enP1p1s0 MÁSODIK: cross-host discovery + Foxglove (dev laptop, lab LAN).
+  - enP8p1s0 MÁSODIK: cross-host discovery + Foxglove (dev laptop, lab LAN).
   - MaxMessageSize: 65500B — RPLidar A2 scan message elfér egy UDP datagramban.
   - Discovery lab subnettre korlátozva (ParticipantIndex auto, max 32).
 
   Network layout:
-    Jetson ETH0 (eth0): 10.0.10.1/24  — robot internal (RP2040s, RoboClaw)
-    Jetson ETH1 (eth1): 192.168.68.x  — lab LAN (dev laptop, internet)
-    lo:                 127.0.0.1      — intra-host DDS (konténerek közt)
+    Jetson enP1p1s0: 10.0.10.1/24  — robot internal (RP2040s, RoboClaw)
+    Jetson enP8p1s0: 192.168.68.x  — lab LAN (dev laptop, Foxglove)
+    lo:              127.0.0.1      — intra-host DDS (konténerek közt)
 
   Audit eredmény (2026-03-19):
     CPU: ~130% (recvUC thread, stabil)  RAM: ~325 MiB  /scan delay: 76 ms stabil
@@ -28,11 +28,11 @@
   <Domain>
     <General>
       <!-- lo első: intra-host forgalom loopbacken megy, nem a fizikai NIC-en.
-           enP1p1s0 második: cross-host discovery (dev laptop, Foxglove).
-           AllowMulticast csak az enP1p1s0-n; lo-n unicast elegendő.        -->
+           enP8p1s0 második: cross-host discovery (dev laptop, Foxglove).
+           AllowMulticast csak az enP8p1s0-n; lo-n unicast elegendő.        -->
       <Interfaces>
         <NetworkInterface name="lo"        priority="default" multicast="false"/>
-        <NetworkInterface name="enP1p1s0"  priority="default" multicast="default"/>
+        <NetworkInterface name="enP8p1s0"  priority="default" multicast="default"/>
       </Interfaces>
       <AllowMulticast>true</AllowMulticast>
       <MaxMessageSize>65500B</MaxMessageSize>
