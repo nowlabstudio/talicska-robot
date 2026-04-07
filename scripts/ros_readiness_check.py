@@ -59,7 +59,8 @@ class ReadinessChecker(Node):
         self.start_time = time.time()
 
         # ZED check csak FOLLOW / SHUTTLE módban
-        self.check_zed = ROBOT_MODE in ('FOLLOW', 'SHUTTLE')
+        # self.check_zed = ROBOT_MODE in ('FOLLOW', 'SHUTTLE')  # ZED KI
+        self.check_zed = False  # ZED 2i stack ideiglenesen kikapcsolva
 
         # /robot/estop — default QoS (RELIABLE, VOLATILE, depth 10)
         self.create_subscription(

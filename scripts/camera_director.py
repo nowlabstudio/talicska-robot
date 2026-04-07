@@ -65,11 +65,11 @@ class CameraDirector(Node):
             QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
                        history=HistoryPolicy.KEEP_LAST, depth=5))
 
-        # ZED depth input
-        self.create_subscription(
-            Image, '/zed/zed_node/depth/depth_registered',
-            self._zed_depth_cb,
-            sensor_qos)
+        # ZED depth input — ZED 2i stack ideiglenesen kikapcsolva
+        # self.create_subscription(
+        #     Image, '/zed/zed_node/depth/depth_registered',
+        #     self._zed_depth_cb,
+        #     sensor_qos)
 
         # RealSense depth input
         self.create_subscription(
@@ -124,9 +124,9 @@ class CameraDirector(Node):
 
     # ── Depth relay ───────────────────────────────────────────────────────────
 
-    def _zed_depth_cb(self, msg: Image) -> None:
-        if self._direction == 'FWD':
-            self._pub_fwd.publish(msg)
+    # def _zed_depth_cb(self, msg: Image) -> None:  # ZED KI
+    #     if self._direction == 'FWD':
+    #         self._pub_fwd.publish(msg)
 
     def _rs_depth_cb(self, msg: Image) -> None:
         if self._direction == 'REAR':
