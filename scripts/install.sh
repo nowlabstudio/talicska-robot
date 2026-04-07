@@ -122,8 +122,10 @@ print_help() {
     echo "    5.  Workspace létrehozás + repók klónozása (robot.repos)"
     echo "    6.  Docker képek visszaállítás pendrive-ról VAGY build"
     echo "    6b. RealSense képek visszaállítás VAGY build"
+    echo "    6c. ZED 2i képek visszaállítás pendrive-ról VAGY build"
     echo "    7.  Validáció"
     echo "    8.  Systemd services + bash aliases"
+    echo "    8b. ZED 2i SDK + host konfig (SDK, Qt5, zed csoport, calib fájl, udev)"
     echo "    9.  udev rules telepítés (rplidar, realsense)"
     echo "    10. rplidar_ros egyedi patch alkalmazása (SIGTERM fix)"
     echo "    11. nvpmodel MAXN_SUPER + jetson_clocks"
@@ -1248,6 +1250,249 @@ restore_docker_images() {
     log "INFO" "Docker képek visszaállítás kész"
 }
 
+# ── ZED 2i telepítés ──────────────────────────────────────────────────────────
+install_zed() {
+    section "Fázis: ZED 2i SDK + host konfiguráció"
+
+    local zed_dir="${SRC}/robot/zed-jetson"
+    local zed_settings="/usr/local/zed/settings"
+    local zed_resources="/usr/local/zed/resources"
+
+    # ── 1. zed csoport ─────────────────────────────────────────────────────────
+    if id | grep -q "zed"; then
+        skip "zed csoport: $(whoami) már tagja"
+    else
+        step "Felhasználó hozzáadása 'zed' csoporthoz..."
+        run sudo usermod -aG zed "${USER}"
+        warn "FONTOS: zed csoport aktiválásához lépj ki és vissza, vagy: newgrp zed"
+    fi
+
+    # ── 2. Qt5 könyvtárak (ZED Explorer futtatásához) ─────────────────────────
+    local qt5_pkgs="libqt5network5 libqt5widgets5 libqt5gui5 libqt5core5a libqt5opengl5 libqt5sql5 libqt5xml5 libturbojpeg"
+    local qt5_missing=0
+    for pkg in ${qt5_pkgs}; do
+        dpkg -l "${pkg}" &>/dev/null || qt5_missing=1
+    done
+    if [[ ${qt5_missing} -eq 0 ]]; then
+        skip "Qt5 könyvtárak: telepítve"
+    else
+        step "Qt5 könyvtárak telepítése (ZED Explorer)..."
+        # shellcheck disable=SC2086
+        run sudo apt-get install -y -qq ${qt5_pkgs}
+        ok "Qt5 könyvtárak telepítve"
+    fi
+
+    # ── 3. ZED SDK telepítése ──────────────────────────────────────────────────
+    if [[ -f /usr/local/zed/lib/libsl_zed.so ]]; then
+        skip "ZED SDK: már telepítve ($(ls /usr/local/zed/lib/libsl_zed.so))"
+    else
+        local sdk_installer=""
+
+        # Pendrive-ról próbáljuk először
+        if [[ -n "${PENDRIVE_MOUNT}" ]]; then
+            sdk_installer="$(ls "${PENDRIVE_MOUNT}"/zed/ZedSDK_*.run 2>/dev/null | sort -r | head -1 || true)"
+        fi
+
+        if [[ -n "${sdk_installer}" ]] && [[ -f "${sdk_installer}" ]]; then
+            step "ZED SDK telepítése pendrive-ról: $(basename "${sdk_installer}")..."
+        elif [[ "${OFFLINE}" == true ]]; then
+            warn "ZED SDK installer nem található a pendrive-on: ${PENDRIVE_MOUNT}/zed/ZedSDK_*.run"
+            warn "Telepítsd kézzel: sudo /tmp/zed_sdk.run -- silent skip_od_module"
+            warn "ZED host konfiguráció folytatódik SDK nélkül..."
+        else
+            step "ZED SDK letöltése (Stereolabs — ~1.5 GB)..."
+            info "Pendrive-ra mentéshez: cp /tmp/zed_sdk_download.run <pendrive>/zed/ZedSDK_5.2.3_L4T36.4.run"
+            run wget -q --show-progress \
+                "https://download.stereolabs.com/zedsdk/5.2/l4t36.4/jetsons" \
+                -O /tmp/zed_sdk_download.run
+            sdk_installer="/tmp/zed_sdk_download.run"
+        fi
+
+        if [[ -n "${sdk_installer}" ]] && [[ -f "${sdk_installer}" ]]; then
+            run chmod +x "${sdk_installer}"
+            step "ZED SDK futtatása (silent, skip_od_module, skip_tools=NEM)..."
+            info "FONTOS: skip_tools NEM kell — ZED Explorer + Calibration szükséges"
+            if ! sudo "${sdk_installer}" -- silent skip_od_module >> "${LOG_FILE}" 2>&1; then
+                fail "ZED SDK telepítés sikertelen — részletek: tail -50 ${LOG_FILE}"
+            fi
+            ok "ZED SDK telepítve: $(ls /usr/local/zed/lib/libsl_zed.so 2>/dev/null)"
+        fi
+    fi
+
+    # ── 4. Host könyvtárak ─────────────────────────────────────────────────────
+    if [[ ! -d "${zed_settings}" ]]; then
+        step "ZED settings könyvtár létrehozása: ${zed_settings}"
+        run sudo mkdir -p "${zed_settings}"
+    else
+        skip "ZED settings könyvtár: ${zed_settings}"
+    fi
+
+    if [[ ! -d "${zed_resources}" ]]; then
+        step "ZED resources könyvtár létrehozása: ${zed_resources}"
+        run sudo mkdir -p "${zed_resources}"
+    else
+        skip "ZED resources könyvtár: ${zed_resources}"
+    fi
+
+    # ── 5. Kalibrációs fájl telepítése ────────────────────────────────────────
+    local calib_dst="${zed_settings}/SN98214176.conf"
+    local calib_src=""
+
+    # Forrás prioritás: repo > pendrive
+    if [[ -f "${zed_dir}/SN98214176.conf" ]]; then
+        calib_src="${zed_dir}/SN98214176.conf"
+    elif [[ -n "${PENDRIVE_MOUNT}" ]] && [[ -f "${PENDRIVE_MOUNT}/zed/SN98214176.conf" ]]; then
+        calib_src="${PENDRIVE_MOUNT}/zed/SN98214176.conf"
+        warn "Kalibrációs fájl a pendrive-ról töltődik (repo nem elérhető)"
+    fi
+
+    if [[ -z "${calib_src}" ]]; then
+        warn "SN98214176.conf nem található — CALIBRATION FILE NOT AVAILABLE hiba várható!"
+        warn "  Repo: ${zed_dir}/SN98214176.conf"
+        warn "  Pendrive: ${PENDRIVE_MOUNT}/zed/SN98214176.conf"
+        warn "  Kézi fix: sudo cp SN98214176.conf ${calib_dst}"
+    else
+        # Érvényes fájl-e? (nem error string)
+        if [[ -f "${calib_dst}" ]] && head -1 "${calib_dst}" 2>/dev/null | grep -q "VERSION"; then
+            skip "Kalibrációs fájl: naprakész (${calib_dst})"
+        else
+            step "Kalibrációs fájl telepítése: ${calib_src} → ${calib_dst}"
+            run sudo cp "${calib_src}" "${calib_dst}"
+            run sudo chown root:zed "${calib_dst}"
+            run sudo chmod 664 "${calib_dst}"
+            ok "SN98214176.conf telepítve (közelítő értékek — self_calib: true korrigálja futásidőben)"
+            warn "FIGYELEM: Ez nem gyári kalibráció. Gyári kalibráció: support@stereolabs.com (SN 98214176)"
+        fi
+    fi
+
+    # ── 6. udev szabály telepítése ─────────────────────────────────────────────
+    local zed_udev_src="${zed_dir}/99-zed.rules"
+    local zed_udev_dst="/etc/udev/rules.d/99-zed.rules"
+
+    if [[ ! -f "${zed_udev_src}" ]]; then
+        warn "99-zed.rules nem található: ${zed_udev_src} — kihagyva"
+    elif [[ -f "${zed_udev_dst}" ]] && diff -q "${zed_udev_src}" "${zed_udev_dst}" &>/dev/null; then
+        skip "ZED udev rule: naprakész"
+    else
+        step "ZED udev rule telepítése → ${zed_udev_dst}..."
+        run sudo cp "${zed_udev_src}" "${zed_udev_dst}"
+        run sudo udevadm control --reload-rules
+        run sudo udevadm trigger
+        ok "ZED udev rule telepítve"
+    fi
+
+    # ── 7. Desktop shortcutok ──────────────────────────────────────────────────
+    local desktop_dir="${HOME}/Desktop"
+    if [[ -d "${desktop_dir}" ]] && [[ -f /usr/local/zed/tools/ZED_Explorer ]]; then
+        if [[ ! -f "${desktop_dir}/ZED_Explorer.desktop" ]]; then
+            step "ZED_Explorer desktop shortcut létrehozása..."
+            cat > "${desktop_dir}/ZED_Explorer.desktop" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=ZED Explorer
+Comment=Stereolabs ZED Explorer — firmware update, camera test
+Exec=sg zed -c "/usr/local/zed/tools/ZED_Explorer"
+Icon=/usr/local/zed/tools/ZED_Explorer
+Terminal=true
+Categories=Science;
+EOF
+            chmod +x "${desktop_dir}/ZED_Explorer.desktop"
+            ok "ZED_Explorer.desktop létrehozva"
+        else
+            skip "ZED_Explorer.desktop: már létezik"
+        fi
+
+        if [[ ! -f "${desktop_dir}/ZED_Calibration.desktop" ]]; then
+            step "ZED_Calibration desktop shortcut létrehozása..."
+            cat > "${desktop_dir}/ZED_Calibration.desktop" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=ZED Calibration
+Comment=Stereolabs ZED Calibration — generate SN-specific calibration file
+Exec=sg zed -c "/usr/local/zed/tools/ZED_Calibration"
+Icon=/usr/local/zed/tools/ZED_Calibration
+Terminal=true
+Categories=Science;
+EOF
+            chmod +x "${desktop_dir}/ZED_Calibration.desktop"
+            ok "ZED_Calibration.desktop létrehozva"
+        else
+            skip "ZED_Calibration.desktop: már létezik"
+        fi
+    else
+        info "ZED desktop shortcutok kihagyva (Desktop vagy ZED SDK tools nem elérhető)"
+    fi
+
+    log "INFO" "ZED 2i host konfiguráció kész"
+}
+
+# ── ZED 2i Docker image build / restore ───────────────────────────────────────
+build_zed_image() {
+    section "Fázis: ZED Docker Image Build"
+
+    local zed_dir="${SRC}/robot/zed-jetson"
+    local zed_compose="${zed_dir}/docker-compose.yml"
+
+    if [[ ! -f "${zed_compose}" ]]; then
+        warn "zed-jetson repo nem található: ${zed_dir}"
+        warn "Kihagyva — telepítsd külön: cd ${zed_dir} && docker compose build"
+        return 0
+    fi
+
+    if docker images --format "{{.Repository}}:{{.Tag}}" 2>/dev/null \
+            | grep -q "ros2-zed:jazzy"; then
+        skip "ZED image már létezik: ros2-zed:jazzy"
+        warn "Újrabuildeléshez: cd ${zed_dir} && docker compose build"
+        return 0
+    fi
+
+    step "ZED image build (dustynv base + ZED SDK 5.2 + zed-ros2-wrapper)..."
+    info "Build context: ${zed_dir}"
+    info "Várható idő: ~20 perc (ARM64, első build)"
+    info "Build log: /tmp/zed-build.log"
+    info "FONTOS: kamera ne legyen lefoglalva build közben"
+
+    if [[ "${VERBOSE}" == true ]]; then
+        run_show docker compose -f "${zed_compose}" build
+    else
+        if ! docker compose -f "${zed_compose}" build >> "${LOG_FILE}" 2>&1; then
+            fail "ZED image build sikertelen — részletek: tail -50 ${LOG_FILE}"
+        fi
+    fi
+
+    ok "ZED image kész: ros2-zed:jazzy"
+    log "INFO" "ZED build kész"
+}
+
+restore_zed_image() {
+    section "Fázis: ZED Docker Image Visszaállítás (pendrive)"
+
+    if [[ "${FROM_BACKUP}" != true ]] || [[ -z "${PENDRIVE_MOUNT}" ]]; then
+        return 0
+    fi
+
+    local zed_backup
+    zed_backup="$(ls "${PENDRIVE_MOUNT}"/talicska-docker-zed-*.tar.gz 2>/dev/null | sort -r | head -1 || true)"
+
+    if [[ -z "${zed_backup}" ]]; then
+        warn "Nem találtam talicska-docker-zed-*.tar.gz a pendrive-on — build fog futni"
+        return 0
+    fi
+
+    if docker images --format "{{.Repository}}:{{.Tag}}" 2>/dev/null | grep -q "ros2-zed:jazzy"; then
+        skip "ros2-zed:jazzy image már megvan"
+        return 0
+    fi
+
+    step "ZED kép betöltése: $(basename "${zed_backup}")..."
+    info "Ez eltarthat 5-10 percig (~2 GB)..."
+    run sudo docker load < "${zed_backup}"
+    ok "ZED image betöltve: ros2-zed:jazzy"
+    log "INFO" "ZED image restore kész"
+}
+
 # ── 10. udev rules telepítés ──────────────────────────────────────────────────
 install_udev_rules() {
     section "10. Fázis: udev Rules (rplidar, realsense)"
@@ -1856,6 +2101,10 @@ main() {
     section "Fázis 8 — udev szabályok"
     install_udev_rules           # RPLidar + RealSense udev rules
 
+    # ── Fázis 8b: ZED 2i host konfiguráció ───────────────────────────────────
+    section "Fázis 8b — ZED 2i SDK + host konfiguráció"
+    install_zed                  # SDK, Qt5, zed csoport, kalibrációs fájl, udev, desktop shortcuts
+
     # ── Fázis 8: Workspace ────────────────────────────────────────────────────
     section "Fázis 8 — vcstool"
     install_vcstool              # vcstool
@@ -1875,9 +2124,11 @@ main() {
     section "Fázis 11 — Docker image-ek"
     if [[ "${FROM_BACKUP}" == true ]] && [[ -n "${PENDRIVE_MOUNT}" ]]; then
         restore_docker_images    # docker load pendrive-ról (robot + foxglove + realsense)
+        restore_zed_image        # ZED image: pendrive-ról vagy build
     else
         build_docker_image       # docker compose build (robot + microros)
         build_realsense_image    # RealSense image build (dustynv base)
+        build_zed_image          # ZED image build (dustynv + ZED SDK + zed-ros2-wrapper)
     fi
 
     # ── Fázis 12: Validáció + systemd ─────────────────────────────────────────
