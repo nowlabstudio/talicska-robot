@@ -1,0 +1,20 @@
+[Unit]
+Description=Talicska Robot — Power button immediate shutdown watcher
+Documentation=https://github.com/nowlabstudio/talicska-robot
+# Ubuntu 22.04 (systemd 249) workaround: a PowerKeyIgnoreInhibited logind
+# beállítás csak systemd 254+ óta létezik. Ezen a verzión a gsd-media-keys
+# block inhibitor miatt a logind nem reagál a power gomb eseményre.
+# Ez a service közvetlenül olvassa a gpio-keys evdev eseményeket és
+# systemctl poweroff-ot hív KEY_POWER press-re, megkerülve a logind láncot.
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/talicska-power-button
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

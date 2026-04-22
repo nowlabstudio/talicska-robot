@@ -1102,39 +1102,93 @@ setup_jetson_power() {
 # lenyomására (gsd-media-keys block inhibitor + power-button-action='interactive').
 # Kívánt: 1× lenyomás → azonnal graceful shutdown (make down → poweroff).
 #
-# Fix két rétegben:
-#   1. GNOME power-button-action='nothing' — nincs countdown dialóg
-#   2. logind PowerKeyIgnoreInhibited=yes + HandlePowerKey=poweroff
-#      → áthidalja a gsd-media-keys block inhibitort → azonnali poweroff
+# Ubuntu 22.04 (systemd 249) problémája:
+#   A `PowerKeyIgnoreInhibited=yes` logind beállítás CSAK systemd 254+ óta létezik
+#   (Ubuntu 23.10+). Ezen a verzión a gsd-media-keys `block` inhibitor miatt a
+#   logind NEM REAGÁL a power gomb eseményre — a default `HandlePowerKey=poweroff`
+#   ellenére sem. A `systemctl kill -s HUP systemd-logind` sem tölti be a
+#   `HandlePowerKey` property-t; teljes `systemctl restart systemd-logind` kell
+#   — de az sem old meg, mert a block inhibitor marad.
+#
+# Tankönyvi megoldás (Ubuntu 22.04 / systemd 249):
+#   1. GNOME power-button-action='nothing' — ha GUI session fut, nincs 60s dialóg
+#   2. Saját systemd service (`talicska-power-button.service`) ami közvetlenül
+#      olvassa a gpio-keys evdev eventet (`/dev/input/event0`) és `systemctl
+#      poweroff`-ot hív KEY_POWER press-re. Ez megkerüli a logind/inhibitor láncot.
+#
+# Shutdown flow: gomb → kernel evdev → watcher → systemctl poweroff →
+#   talicska-robot.service ExecStop (make down) → poweroff.
 #
 # Háttér: memory/session_power_button.md
 setup_power_key() {
-    local logind_override="/etc/systemd/logind.conf.d/power-key.conf"
-    local logind_content="[Login]
-HandlePowerKey=poweroff
-PowerKeyIgnoreInhibited=yes"
-
-    # 1. logind override fájl (idempotens)
-    if [[ -f "${logind_override}" ]] && \
-       grep -q "^HandlePowerKey=poweroff" "${logind_override}" && \
-       grep -q "^PowerKeyIgnoreInhibited=yes" "${logind_override}"; then
-        skip "logind power-key override: már beállítva"
+    # 1. evtest csomag (a watcher ennek binárisát használja)
+    if dpkg -l evtest &>/dev/null; then
+        skip "evtest: már telepítve"
     else
-        step "logind power-key override létrehozása..."
-        run sudo mkdir -p /etc/systemd/logind.conf.d/
-        sudo tee "${logind_override}" > /dev/null <<EOF
-# Power gomb → azonnali graceful shutdown (talicska-robot install.sh)
-# GNOME/gsd-media-keys block inhibitor áthidalása
-# Dokumentáció: memory/session_power_button.md
-[Login]
-HandlePowerKey=poweroff
-PowerKeyIgnoreInhibited=yes
-EOF
-        run sudo systemctl kill -s HUP systemd-logind
-        ok "logind power-key override: ${logind_override}"
+        step "evtest csomag telepítése (power gomb watcher-hez)..."
+        run sudo apt-get install -y evtest
+        ok "evtest: telepítve"
     fi
 
-    # 2. GNOME power-button-action (user-kontextusban, idempotens)
+    # 2. Legacy logind override eltávolítása, ha korábbi install hagyta
+    local legacy_override="/etc/systemd/logind.conf.d/power-key.conf"
+    if [[ -f "${legacy_override}" ]]; then
+        step "Elavult logind power-key override eltávolítása (systemd 249-en nem hat)..."
+        run sudo rm -f "${legacy_override}"
+        run sudo systemctl restart systemd-logind
+        ok "Legacy override törölve: ${legacy_override}"
+    fi
+
+    # 3. Watcher script telepítése /usr/local/bin/-be
+    local watcher_src="${SCRIPT_DIR}/talicska-power-button.sh"
+    local watcher_dst="/usr/local/bin/talicska-power-button"
+    if [[ ! -f "${watcher_src}" ]]; then
+        fail "Watcher script hiányzik: ${watcher_src}"
+    fi
+    if [[ -f "${watcher_dst}" ]] && sudo cmp -s "${watcher_src}" "${watcher_dst}"; then
+        skip "Power button watcher script: már telepítve (${watcher_dst})"
+    else
+        step "Power button watcher telepítése: ${watcher_dst}..."
+        run sudo install -m 0755 "${watcher_src}" "${watcher_dst}"
+        ok "Watcher: ${watcher_dst}"
+    fi
+
+    # 4. systemd service unit telepítése
+    local unit_src="${SCRIPT_DIR}/systemd/talicska-power-button.service"
+    local unit_dst="/etc/systemd/system/talicska-power-button.service"
+    if [[ ! -f "${unit_src}" ]]; then
+        fail "Systemd unit hiányzik: ${unit_src}"
+    fi
+    if [[ -f "${unit_dst}" ]] && sudo cmp -s "${unit_src}" "${unit_dst}"; then
+        skip "talicska-power-button.service: már telepítve"
+    else
+        step "talicska-power-button.service telepítése..."
+        run sudo install -m 0644 "${unit_src}" "${unit_dst}"
+        run sudo systemctl daemon-reload
+        ok "Systemd unit: ${unit_dst}"
+    fi
+
+    # 5. Service engedélyezése + indítása
+    if sudo systemctl is-enabled talicska-power-button.service &>/dev/null; then
+        skip "talicska-power-button.service: már enabled"
+    else
+        step "talicska-power-button.service engedélyezése..."
+        run sudo systemctl enable talicska-power-button.service
+        ok "Service: enabled"
+    fi
+    if sudo systemctl is-active talicska-power-button.service &>/dev/null; then
+        step "talicska-power-button.service újraindítása (friss watcher)..."
+        run sudo systemctl restart talicska-power-button.service
+        ok "Service: restarted"
+    else
+        step "talicska-power-button.service indítása..."
+        run sudo systemctl start talicska-power-button.service
+        ok "Service: started"
+    fi
+
+    # 6. GNOME power-button-action='nothing' (user-kontextusban, idempotens)
+    # GUI session esetén megakadályozza a 60s countdown dialógot — ha a watcher
+    # már előbb reagál, akkor is praktikus hogy a GNOME rész se avatkozzon be.
     if command -v gsettings &>/dev/null; then
         local current_action
         current_action="$(gsettings get org.gnome.settings-daemon.plugins.power power-button-action 2>/dev/null || echo '')"
@@ -1143,16 +1197,16 @@ EOF
         else
             step "GNOME power-button-action='nothing' beállítása..."
             if gsettings set org.gnome.settings-daemon.plugins.power power-button-action 'nothing' 2>/dev/null; then
-                ok "GNOME power-button-action: nothing (nincs 60s dialóg)"
+                ok "GNOME power-button-action: nothing"
             else
-                warn "gsettings beállítás sikertelen (nincs DBus session?) — SSH-ban futtatáskor manuálisan: gsettings set org.gnome.settings-daemon.plugins.power power-button-action 'nothing'"
+                warn "gsettings beállítás sikertelen (nincs DBus session?) — SSH-ban manuálisan: gsettings set org.gnome.settings-daemon.plugins.power power-button-action 'nothing'"
             fi
         fi
     else
-        info "gsettings nem elérhető (nincs GNOME) — csak logind override elég"
+        info "gsettings nem elérhető (nincs GNOME) — watcher egyedül is elég"
     fi
 
-    log "INFO" "Power gomb → azonnali shutdown konfigurálva"
+    log "INFO" "Power gomb → azonnali shutdown konfigurálva (watcher service + GNOME nothing)"
 }
 
 # ── 0. Pendrive detektálás + felcsatolás ──────────────────────────────────────
