@@ -1097,6 +1097,64 @@ setup_jetson_power() {
     log "INFO" "Power mode beállítás kész"
 }
 
+# ── Power gomb → azonnali graceful shutdown ──────────────────────────────────
+# A default Ubuntu/GNOME viselkedés 60s countdownos dialógot mutat a power gomb
+# lenyomására (gsd-media-keys block inhibitor + power-button-action='interactive').
+# Kívánt: 1× lenyomás → azonnal graceful shutdown (make down → poweroff).
+#
+# Fix két rétegben:
+#   1. GNOME power-button-action='nothing' — nincs countdown dialóg
+#   2. logind PowerKeyIgnoreInhibited=yes + HandlePowerKey=poweroff
+#      → áthidalja a gsd-media-keys block inhibitort → azonnali poweroff
+#
+# Háttér: memory/session_power_button.md
+setup_power_key() {
+    local logind_override="/etc/systemd/logind.conf.d/power-key.conf"
+    local logind_content="[Login]
+HandlePowerKey=poweroff
+PowerKeyIgnoreInhibited=yes"
+
+    # 1. logind override fájl (idempotens)
+    if [[ -f "${logind_override}" ]] && \
+       grep -q "^HandlePowerKey=poweroff" "${logind_override}" && \
+       grep -q "^PowerKeyIgnoreInhibited=yes" "${logind_override}"; then
+        skip "logind power-key override: már beállítva"
+    else
+        step "logind power-key override létrehozása..."
+        run sudo mkdir -p /etc/systemd/logind.conf.d/
+        sudo tee "${logind_override}" > /dev/null <<EOF
+# Power gomb → azonnali graceful shutdown (talicska-robot install.sh)
+# GNOME/gsd-media-keys block inhibitor áthidalása
+# Dokumentáció: memory/session_power_button.md
+[Login]
+HandlePowerKey=poweroff
+PowerKeyIgnoreInhibited=yes
+EOF
+        run sudo systemctl kill -s HUP systemd-logind
+        ok "logind power-key override: ${logind_override}"
+    fi
+
+    # 2. GNOME power-button-action (user-kontextusban, idempotens)
+    if command -v gsettings &>/dev/null; then
+        local current_action
+        current_action="$(gsettings get org.gnome.settings-daemon.plugins.power power-button-action 2>/dev/null || echo '')"
+        if [[ "${current_action}" == "'nothing'" ]]; then
+            skip "GNOME power-button-action: már 'nothing'"
+        else
+            step "GNOME power-button-action='nothing' beállítása..."
+            if gsettings set org.gnome.settings-daemon.plugins.power power-button-action 'nothing' 2>/dev/null; then
+                ok "GNOME power-button-action: nothing (nincs 60s dialóg)"
+            else
+                warn "gsettings beállítás sikertelen (nincs DBus session?) — SSH-ban futtatáskor manuálisan: gsettings set org.gnome.settings-daemon.plugins.power power-button-action 'nothing'"
+            fi
+        fi
+    else
+        info "gsettings nem elérhető (nincs GNOME) — csak logind override elég"
+    fi
+
+    log "INFO" "Power gomb → azonnali shutdown konfigurálva"
+}
+
 # ── 0. Pendrive detektálás + felcsatolás ──────────────────────────────────────
 detect_pendrive() {
     section "0. Fázis: Backup Pendrive Detektálás"
@@ -2090,6 +2148,9 @@ main() {
 
     section "Fázis 6 — Jetson Power"
     setup_jetson_power           # nvpmodel MAXN_SUPER + jetson_clocks (boot-kor: talicska-power.service)
+
+    section "Fázis 6b — Power gomb (azonnali shutdown)"
+    setup_power_key              # logind override + GNOME nothing (no 60s countdown)
 
     # ── Fázis 7: udev szabályok ───────────────────────────────────────────────
     section "Fázis 7 — WiFi driver"
