@@ -4,11 +4,44 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ---
 
+## Fejlesztési munkamód — globális szabály (2026-04-22)
+
+**Docs + install.sh párhuzamos fejlesztés.** A projekt production-ready mintafejlesztés: a robotnak nulláról újratelepülnie kell egyetlen `scripts/install.sh` futtatással, és a `docs/*.md` mindig tükrözi a valós rendszert. Ezért minden új fejlesztés (nem csak ZED) alatt **folyamatosan** rögzítjük a felmerülő install + docs igényeket egy staging listán (Claude memory: `staging_install_requirements.md`), és a feladat lezárásakor **egyszerre** alkalmazzuk őket `install.sh`-ra és a docs fájlokra, mielőtt commit+push történne. Ez kizárja a patch-szerű "utólag majd megoldjuk" kockázatot, és garantálja, hogy bármelyik ponton egy friss Jetson roboton reprodukálható a rendszer. A staging kategóriák: `apt`, `udev`, `host-dir`, `env`, `systemd`, `volume`, `docker`, `patch`, `docs`, `config`.
+
+---
+
 ## Aktív feladatok (2026-04-06 CET)
 
-### ZED 2i kamera — implementált, teszt szükséges
+### ZED 2i kamera — production integráció folyamatban (2026-04-22 redesign)
 
-- **ZED Docker image build + validálás** — `cd zed-jetson && make build` (~20 perc). Sorrend: `install-udev` → `setup-host` → `build` → `up` → `validate`. Ellenőrizendő: depth Hz, RGB Hz, health topic, body_trk skeleton. 🔴 NEM TESZTELT
+**Terv:** `memory/plan_zed2i_integration.md` (P0–P6 fázisok). Scope: ZED = elsődleges FRONT kamera, RealSense = REAR; C++ lifecycle `robot_cameras` package; irány-alapú switch a Jetson terhelés csökkentésére; ZED minden SDK feature (depth, RGB, IMU, baro, mag, temp, pos_trk, body_trk, mapping, OD) konfigurálhatóan elérhető.
+
+**P0 audit (2026-04-22):** ✅ LEZÁRVA. Négy párhuzamos audit kiderítette, hogy a stack nem üzemképes három független szoftverhiba miatt (calib felülírás, launch arg, yaml konvenció). Stereolabs hivatalos Jazzy Docker image NEM létezik (Issue #409), dustynv base kötelezőség legitim. `ros-jazzy-zed-msgs 5.2.1` + `ros-jazzy-zed-description 0.1.3` apt-ból elérhető 2026-04-12 óta (TF convention validáció P1.2-ben).
+
+**P1.1 szoftveres fixek (2026-04-22):** ✅ LEZÁRVA — `zed-jetson` commit `fbd1ed8`, pushed.
+- **BUG-1** Kalibrációs fájl felülírás: az SDK a szerver-hibaüzenetet (`"Serial number not found !"`) a config fájlba írta, mert könyvtár rw mount volt. Fix: per-file `:ro` mount.
+- **BUG-2** Launch arg: a gyári `zed_camera.launch.py` `ros_params_override_path`-t vár, NEM `config_path`-t (az nem létező arg, csendben ignorálódott). Fix: compose-szintű `command:` override; Dockerfile CMD véglegesítése P1.2-ben.
+- **BUG-3** yaml konvenció: v5.2.x STRING enumokat vár (régi int enumok InvalidParameterType exception + SIGABRT). A `'PERFORMANCE'` depth mód az SDK 5.x-ből ELTŰNT. Fix: teljes `zed_params.yaml` átírás gyári common_stereo.yaml + zed2i.yaml konvencióra.
+- udev rule (`99-zed.rules`) telepítve `/etc/udev/rules.d/`-be (`make install-udev`) — korábban sosem volt telepítve.
+
+**Jelenlegi blokker (2026-04-22 este):** ZED stream NEM indul ennek ellenére. Host-oldali gyári `ZED_Diagnostic -c` is fail-el `No Camera detected`-tel az USB Camera Diagnostic 50%-án, három különböző hardware konfigurációban (régi kábel + port 2-1.1, régi kábel + port 2-1.3, új kábel + port 2-1.1). USB2 enum OK, USB3 SuperSpeed link up, driver UNBOUND, permission OK, senki nem foglalja — de a stream endpoint negotiation nem megy át.
+
+**Hipotézis (nem validálva):** vagy Jetson xHCI subsystem kernel-szintű beakadása (párhuzam: `session_zed_uvcvideo_dds.md` GPU deadlock — akkor csak reboot oldotta fel), vagy ZED 2i belső USB IC firmware beragadt állapot. **Reboot pendeluló.**
+
+**Reboot utáni első feladatok (P1.2 indítás):**
+- ⏳ `sudo /usr/local/zed/tools/ZED_Diagnostic -c` host-on (container előtt) — **A) OK** → P1.2 folytatás; **B) fail** → Stereolabs support ticket
+- ⏳ Ha OK: `cd zed-jetson && make up && make validate` — a szoftver most tankönyvileg helyes, azonnal indulnia kell
+- ⏳ Dockerfile rebuild (EGYBEN, ~20 perc): CMD frissítés `ros_params_override_path`-ra, PYTHONPATH bővítés (`ros2cli` PackageNotFoundError fix), SDK URL patch-pin (`5.2.3`), base image digest-pin
+- ⏳ `depth_mode: 'NONE'` → `'NEURAL_LIGHT'` + ~6 perc TRT cache optimalizáció első alkalommal
+- ⏳ Makefile bővítés: `make imu-hz`, `make baro-hz`, `make mag-hz`, `make temp-hz`, `make posetrk-on/off`, `make od-enable/disable`, `make body-enable/disable`, `make mapping-start/save/stop`, `make health`, `make validate-full`
+
+**Factory kalibrációs fájl beszerzése (2026-04-22):** A jelenlegi `zed-jetson/SN98214176.conf` csak közelítő (85 sor, ZED 2i gyári specifikáció szerinti becslés, fx≈700px, baseline=120mm). A `calib.stereolabs.com` nem tartalmazza ezt az SN-t. Felhasználó külön intézi (Stereolabs support ticket: `support@stereolabs.com`, SN 98214176 + vásárlási igazolás VAGY helyszíni `ZED_Calibration` sakktáblával). Amíg nem érkezik meg: `self_calib: true` runtime korrekció. Amikor megérkezik: a fájlt a repo-ban lecserélni, a `:ro` mount továbbra is védi. 🔴 BACKLOG
+
+**ZED SDK verzió-bump (JP7 release környékén, ~2026-Q3):** Ha a ZED 5.2.3 + v5.2.2 stabil JP6.2-n, a tervezett migráció JP7 GA után: Jetson JP7 + L4T R38.x + ZED SDK 5.3+ vagy 6.x + wrapper új tag. **Addig NE frissíts proaktívan** (silent CDN upgrade elleni patch-pin P1.2-ben). Érintett: `zed-jetson/Dockerfile` (`ZED_SDK_URL`), `scripts/install.sh`, base image tag. 🔴 BACKLOG
+
+### ZED 2i további részfeladatok (P1.2 utánra)
+
+- **ZED Docker image rebuild + validálás** — `cd zed-jetson && make build` (~20 perc). Dockerfile-ba kerül: CMD `ros_params_override_path`, PYTHONPATH bővítés `/opt/ros/jazzy/install/lib/python3.12/site-packages`-szel (ros2cli fix), SDK URL patch-pin (`5.2.3`), base image digest-pin. 🔴 P1.2
 
 - **Safety supervisor ZED watchdog (rebuild)** — `robot_safety/src/safety_supervisor.cpp`: `enable_zed_watchdog: false` szekció kész (robot_params.yaml), de a subscriber és latch kód még nincs implementálva. Előfeltétel: ZED stack fut stabilan, camera_director switching validált, Foxglove ellenőrzött. Ezután: safety_supervisor bővítése + főstack Docker image rebuild. 🔴 BACKLOG
 
