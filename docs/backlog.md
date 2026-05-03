@@ -114,6 +114,8 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 - **~~RPLidar motor nem áll le gracefully `make down` után~~** — ✅ **KÉSZ (2026-03-24):** Kétlépéses fix: (1) `rplidar_node.cpp` `ExitHandler`-ben `SIGTERM` handler regisztrálva + `g_drv->stop()` + `g_drv->setMotorSpeed(0)` hívás globális driver pointerrel; (2) `Makefile` `down` target: `pkill -SIGINT -f rplidar_node` a container leállítása előtt (SIGINT-et küld közvetlenül a node-nak, amit a Docker signal propagálás nem tett meg). Root cause: `docker compose stop` SIGTERM-et küld container PID 1-nek, ami nem propagálódott az rplidar_node-ra; ráadásul csak `SIGINT` volt regisztrálva a node-ban. Érintett: `rplidar_ros/src/rplidar_node.cpp`, `Makefile`.
 
+- **RC expo görbe — alacsony stick állásban finomabb vezérlés** — 2026-05-03. Jelenleg a `rc_teleop_node` lineárisan konvertálja a stick értéket sebességgé (`input * max_linear_vel`). 100kg-os robotnál ez nehézzé teszi a lassú, pontos mozgást — az alsó stick állások is azonnali gyorsulást okoznak. Tervezett fix: expo görbe bevezetése a `publish_tick()`-ben: `output = (1 - expo) * x + expo * x³`. Paraméter: `expo_factor` (0.0 = lineáris, 1.0 = kubikus; ajánlott: 0.5-0.7). Runtime frissíthető: `declare_parameter` + `param_cb_handle_` callback (mint `rc_mode_invert`) → Foxglove Parameters panelből állítható rebuild nélkül. YAML-ban: `rc_teleop_node/ros__parameters/expo_factor: 0.6`. Docker build szükséges az implementációhoz. Érintett: `robot_teleop/src/rc_teleop_node.cpp`, `config/robot_params.yaml`.
+
 - **RC módban a jobb motor gyorsabban forog mint a bal** — Enkóder nélkül tesztelve (2026-03-15, open-loop). Lehetséges okok: (1) RoboClaw M1/M2 eltérő kalibrációja, (2) mechanikai ellenállás különbség, (3) RC mixer aszimmetria az adón. Enkóder bekötése + PID tuning után visszatérni — closed-loop-ban a controller kompenzálja. Addig: adón trimmelhető.
 
 - **E-Stop bridge publikálási frekvencia túl alacsony (~1 Hz)** — 2026-03-16, mérve. Egy 100kg-os robotnál az E-Stop jelzésnek ≤100ms-en belül meg kell érkeznie. Jelenlegi ~1 Hz = legrosszabb eset ~1s reakcióidő, elfogadhatatlan. Fix: bridge firmware publish rate emelése ≥10 Hz-re (100ms). Érintett firmware: ROS2-Bridge E-Stop (10.0.10.23), `/robot/estop` topic.
@@ -187,15 +189,54 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ## Üzemmódok
 
-- **RC fallback mód** — minimális stack ami a fő robot docker leállása után is elérhetővé teszi az RC vezérlést. Cél: a 100kg-os robot ne legyen mozgásképtelen ha a fő stack crashel, frissül vagy karbantartás alatt van.
+- **RC fallback mód** — 2026-05-03. Minimális stack, ami a fő robot container váratlan leállása után automatikusan elindul, és RC vezérlést biztosít. Cél: a 100kg-os robot soha ne legyen mozgásképtelen stack crash vagy hiányzó komponens esetén.
 
-  **Tartalom:** MicroROS agent + controller_manager + diff_drive_controller + rc_teleop_node + E-Stop watchdog. Nav2, SLAM, szenzorok, safety supervisor **nélkül**.
+  **Trigger — automatikus (crash):**
+  A `restart_watchdog.sh` `*` esete (container leállt topic nélkül) jelenleg csak `sleep 2`-t csinál. Ezt kell kiegészíteni: log + `docker compose -f docker-compose.rc.yml up -d`. Az intentional shutdown (`make down` → `/robot/shutdown` topic) a `SHUTDOWN` ágon fut — ott nem indul RC fallback. A differenciálás már megvan a watchdog logikájában.
 
-  **Implementáció:** Külön `docker-compose.rc.yml` (vagy `compose` profile), önálló `make rc-up` / `make rc-down` target. A fő stack leállításakor (`make down`) ez automatikusan elindul, `make up` leállítja és átvált a teljes stackre.
+  **Trigger — manuális:**
+  `make rc-up` — explicit operátori döntés (pl. karbantartás, komponens csere közben).
 
-  **Safety korlát:** RC fallback módban nincs LiDAR proximity, nincs IMU tilt — az operátor felelőssége. Foxglove-on és a terminálon egyértelműen jelezni kell hogy fallback módban van a robot.
+  **Boot viselkedés:**
+  Power cycle után mindig a teljes stack indul (`talicska-robot.service`). Az RC fallback-nak nincs systemd service-e, boot után soha nem indul automatikusan.
 
-  **Elvégzési sorrend:** Az indítás/leállítás szekvencia (Todo #3) után, de a maintenance mód előtt.
+  **Stack tartalma (RC fallback):**
+  - `microros_agent` — már always-on, nem érinti az RC fallback compose
+  - `foxglove_bridge` — már always-on (`make down` sem állítja le), nem érinti az RC fallback compose
+  - `rc_robot` container (meglévő `robot-robot:latest` image, új launch fájllal):
+    - `hardware.launch.py` — controller_manager + diff_drive_controller + robot_state_publisher
+    - `teleop.launch.py` — rc_teleop_node + twist_mux
+    - `rc_state_publisher.py` — új minimális Python node, publikálja a `/safety/state` JSON-t `RC_FALLBACK` state-tel
+  - Nav2, SLAM, szenzorok, safety_supervisor, startup_supervisor **nélkül**
+
+  **E-Stop:**
+  Hardveres vészstop (fizikai tápkiütés) véd — szoftver E-Stop watchdog nem kell RC fallback-ban. A RoboClaw `cmd_vel_timeout: 500ms` + az RC receiver failsafe (ch5=0 ha adó leáll) ad alapvédelmet.
+
+  **Státuszkommunikáció:**
+  `rc_state_publisher.py` (~50 sor Python, rclpy) publikál `/safety/state` JSON-t:
+  `{"state": "RC_FALLBACK", "mode": "RC", "safe": true, ...}`.
+  Foxglove a meglévő safetystate.ts-en keresztül mutatja — új `RC_FALLBACK` state + `is_rc_fallback: boolean` mező kell a szkriptbe.
+
+  **Lifecycle — tiszta:**
+  Amit a `docker-compose.rc.yml` elindít, azt a `make rc-down` le is állítja. Megosztott szolgáltatások (foxglove, microros_agent) nem szerepelnek az RC fallback compose-ban.
+
+  **`make up` viselkedés:**
+  Ha RC fallback fut és `make up`-ot hívnak, először `make rc-down` fut, majd indul a teljes stack.
+
+  **Érintett fájlok:**
+
+  | Fájl | Változás |
+  |---|---|
+  | `scripts/restart_watchdog.sh` | `*` eset: log + `docker compose -f docker-compose.rc.yml up -d` |
+  | `docker-compose.rc.yml` | új — `rc_robot` service, meglévő image, új launch |
+  | `robot_bringup/launch/rc_fallback.launch.py` | új — hardware + teleop include |
+  | `robot_bringup/scripts/rc_state_publisher.py` | új — `/safety/state` RC_FALLBACK JSON publisher |
+  | `Makefile` | `rc-up` implementálás; `up` target: RC fallback detektálás + leállítás |
+  | `Dropbox/share/safetystate.ts` | `RC_FALLBACK` state + `is_rc_fallback` mező |
+
+  **Docker build nem kell** — `robot-robot:latest` image már tartalmaz mindent (rclpy, ros2_control, rc_teleop_node).
+
+  **Safety korlát:** Nincs LiDAR proximity, nincs IMU tilt — operátor felelőssége. A Foxglove safety state panel `RC_FALLBACK` állapotot mutat, terminálban `make rc-up` echo figyelmeztet.
 
 ## Távoli hozzáférés
 

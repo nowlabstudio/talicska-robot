@@ -502,7 +502,7 @@ roboclaw_hardware:
   encoder_counts_per_rev:  70300
   gear_ratio:              1.0            # TODO: kalibrálás szükséges
   motion_strategy:         "speed_accel"
-  default_acceleration:    50000
+  default_acceleration:    75000
   duty_accel_rate:         50000
   duty_decel_rate:         50000
   duty_max_rad_s:          20.5
@@ -528,7 +528,8 @@ roboclaw_hardware:
   #   5. docker compose up -d robot  (build nem kell, volume-ból frissül)
   #   6. Ellenőrzés: docker logs robot 2>&1 | grep -i qpps
   #      (a hardware plugin logolja a kapott értéket on_configure-ban)
-  qpps:                    230000
+  # Motion Studio mért QPPS (2026-05-03, új Basicmicro vezérlő): M1=193710, M2=192390
+  qpps:                    193050   # átlag; hardware.launch.py → xacro arg → URDF <param>
   invert_left_motor:       true
   invert_right_motor:      true
   auto_home_on_startup:    false
