@@ -3,7 +3,7 @@ EXEC := sudo docker compose exec robot bash -c
 
 ROS := source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && export CYCLONEDDS_URI=file:///root/talicska-robot/cyclonedds.xml &&
 
-.PHONY: up down rc-up rc-down check check-rc agent-restart \
+.PHONY: up up-boot down rc-up rc-down check check-rc agent-restart \
         camera-up camera-down \
         camera-fwd-up camera-fwd-down camera-fwd-logs camera-fwd-validate \
         camera-rear-up camera-rear-down camera-rear-logs camera-rear-fix camera-rear-restart \
@@ -12,6 +12,7 @@ ROS := source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setu
 
 ## Stack lifecycle — orchestráció
 ##   make up              = prestart check → kamera(k) → fő stack (ROBOT_MODE alapján)
+##   make up-boot         = kamera(k) → fő stack, prestart nélkül — csak startup.sh-nak
 ##   make down            = fő stack + kamerák leállítás
 ##   make camera-fwd-up   = ZED 2i container (FOLLOW/SHUTTLE módhoz)
 ##   make camera-rear-up  = RealSense container (REAR_NAV módhoz)
@@ -31,11 +32,18 @@ ROBOT_MODE    := $(shell grep '^ROBOT_MODE' .env 2>/dev/null | cut -d= -f2 | tr 
 camera-fwd-up:
 	@if [ -z "$(ZED_DIR)" ]; then \
 		echo "⚠ zed-jetson repo nem található (../zed-jetson), kihagyás"; \
-	elif lsusb 2>/dev/null | grep -q "2b03:"; then \
-		echo "── ZED 2i container indítása ──"; \
-		cd $(ZED_DIR) && make up; \
 	else \
-		echo "⚠ ZED 2i USB nem található (lsusb | grep 2b03), kihagyás"; \
+		found=0; \
+		for i in 1 2 3 4 5; do \
+			lsusb 2>/dev/null | grep -q "2b03:" && found=1 && break; \
+			echo "  ZED USB $$i/5 — re-enumeration várakozás..."; sleep 1; \
+		done; \
+		if [ "$$found" = "1" ]; then \
+			echo "── ZED 2i container indítása ──"; \
+			cd $(ZED_DIR) && make up; \
+		else \
+			echo "⚠ ZED 2i USB nem található (5s), kihagyás"; \
+		fi; \
 	fi
 
 ## ZED 2i container leállítása
@@ -56,11 +64,18 @@ camera-fwd-validate:
 camera-rear-up:
 	@if [ -z "$(REALSENSE_DIR)" ]; then \
 		echo "⚠ realsense-jetson repo nem található (../realsense-jetson), kihagyás"; \
-	elif lsusb 2>/dev/null | grep -q "8086:0b3a"; then \
-		echo "── RealSense container indítása ──"; \
-		cd $(REALSENSE_DIR) && make up; \
 	else \
-		echo "⚠ RealSense USB nem található, kihagyás"; \
+		found=0; \
+		for i in 1 2 3 4 5; do \
+			lsusb 2>/dev/null | grep -q "8086:0b3a" && found=1 && break; \
+			echo "  RealSense USB $$i/5 — re-enumeration várakozás..."; sleep 1; \
+		done; \
+		if [ "$$found" = "1" ]; then \
+			echo "── RealSense container indítása ──"; \
+			cd $(REALSENSE_DIR) && make up; \
+		else \
+			echo "⚠ RealSense USB nem található (5s), kihagyás"; \
+		fi; \
 	fi
 
 ## RealSense D435i container leállítása
@@ -103,6 +118,15 @@ up: check camera-up
 	@sudo mkdir -p /run/robot
 	@echo ""
 	@echo "── Fő stack indítása ──"
+	@sudo docker compose up -d
+
+## Fő stack indítása prestart check NÉLKÜL — kizárólag startup.sh-nak.
+## startup.sh már lefuttatta a prestart-ot exec make up-boot előtt.
+## Manuális használatra: make up (prestart-tal együtt).
+up-boot: camera-up
+	@sudo mkdir -p /run/robot
+	@echo ""
+	@echo "── Fő stack indítása (boot) ──"
 	@sudo docker compose up -d
 
 down:

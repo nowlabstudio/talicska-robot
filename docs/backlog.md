@@ -200,6 +200,12 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
   **Boot viselkedés:**
   Power cycle után mindig a teljes stack indul (`talicska-robot.service`). Az RC fallback-nak nincs systemd service-e, boot után soha nem indul automatikusan.
 
+  **✅ LEZÁRVA (2026-05-03) — `talicska-robot.service Type=oneshot`:**
+  Root cause: `Type=simple` + `exec make up` (docker compose up -d, azonnal visszatér) → main process kilép → systemd ExecStop fut → minden container leáll 2s-en belül. Fix: `Type=simple` → `Type=oneshot` + `RemainAfterExit=yes`, `Restart=on-failure` eltávolítva. Service "active (exited)" állapotban marad; ExecStop csak explicit stop-ra fut. Alkalmazva: `scripts/systemd/talicska-robot.service` + `/etc/systemd/system/talicska-robot.service` + `daemon-reload`.
+
+  **✅ LEZÁRVA (2026-05-04) — dupla prestart bug:**
+  `startup.sh` futtatja a `prestart.sh`-t soft-fail-lel, majd `exec make up` → `make up: check` → **újra** futtatja a prestart-ot hard-fail-lel → ha hardware állapot megváltozott a két futás között, service FAILED. Fix: külön `up-boot` target a `Makefile`-ban (camera-up + docker compose up -d, `check` nélkül); `startup.sh` `exec make up-boot`-ot hív. A manuális `make up` változatlan (check + camera-up + stack). Érintett: `Makefile`, `scripts/startup.sh`.
+
   **Stack tartalma (RC fallback):**
   - `microros_agent` — már always-on, nem érinti az RC fallback compose
   - `foxglove_bridge` — már always-on (`make down` sem állítja le), nem érinti az RC fallback compose
@@ -233,6 +239,7 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
   | `robot_bringup/scripts/rc_state_publisher.py` | új — `/safety/state` RC_FALLBACK JSON publisher |
   | `Makefile` | `rc-up` implementálás; `up` target: RC fallback detektálás + leállítás |
   | `Dropbox/share/safetystate.ts` | `RC_FALLBACK` state + `is_rc_fallback` mező |
+  | `scripts/systemd/talicska-robot.service` | `Type=simple` → `Type=oneshot` + `RemainAfterExit=yes` (power cycle fix) |
 
   **Docker build nem kell** — `robot-robot:latest` image már tartalmaz mindent (rclpy, ros2_control, rc_teleop_node).
 

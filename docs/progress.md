@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-05-04 — Startup robustness fix (dupla prestart + USB race) | 🔴 NEM TESZTELT
+
+**Probléma 1 — Dupla prestart (boot):**
+`startup.sh` lefuttatta a `prestart.sh`-t (soft), majd `exec make up` → `make up: check` → megint prestart (hard). Ha hardware állapot a két futás között megváltozott → service FAILED.
+
+**Fix:** `up-boot` target a Makefile-ban (camera-up + stack, check nélkül). `startup.sh` → `exec make up-boot`. Manuális `make up` változatlan (check megmarad).
+
+**Probléma 2 — USB re-enumeration race (`make down && make up`):**
+`make down` → kamera containerek leállnak → librealsense/ZED USB reset-et küld → eszköz 1-3s-ig eltűnik az USB busról → `make up` `camera-up`-ban az `lsusb` check MISS → container nem indul el.
+
+**Fix:** `camera-fwd-up` és `camera-rear-up` retry loop (max 5 próba × 1s = 5s várakozás). Ha az első `lsusb` miss, vár és újrapróbál.
+
+**Érintett fájlok:** `Makefile`, `scripts/startup.sh`, `docs/backlog.md`
+
+---
+
 ## Teszt státusz jelölések
 
 | Jel | Jelentés |

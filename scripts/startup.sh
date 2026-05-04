@@ -5,9 +5,10 @@
 # Systemd ExecStart hívja (talicska-robot.service, User=root)
 #
 # Sorrend:
-#   nvpmodel -m 2 → jetson_clocks → prestart.sh (60s timeout) → exec make up
+#   nvpmodel -m 2 → jetson_clocks → prestart.sh (60s timeout) → exec make up-boot
 #
-# exec make up: systemd a make process PID-jét trackeli (Type=simple)
+# exec make up-boot: prestart.sh már lefutott — camera-up + docker compose up -d
+# Type=oneshot + RemainAfterExit=yes: service "active (exited)" állapotban marad.
 # =============================================================================
 
 set -euo pipefail
@@ -62,6 +63,6 @@ else
 fi
 
 # ── 4. Docker stack indítás ───────────────────────────────────────────────────
-log "make up indítása (exec — systemd PID tracking)..."
+log "make up-boot indítása (exec — prestart kész, camera + stack)..."
 cd "${ROBOT_DIR}"
-exec make up >> "${LOG_FILE}" 2>&1
+exec make up-boot >> "${LOG_FILE}" 2>&1
