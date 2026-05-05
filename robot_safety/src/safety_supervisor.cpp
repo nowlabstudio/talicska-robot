@@ -222,7 +222,8 @@ public:
               "RoboClaw TCP connection lost — joint_states_dropout_latch → FAULT");
           }
         } else {
-          // RoboClaw TCP reconnected
+          // RoboClaw TCP reconnected (or heartbeat while connected)
+          bool was_connected = joint_states_watchdog_ok_;
           joint_states_watchdog_ok_ = true;
           if (estop_pending_joint_clear_) {
             estop_pending_joint_clear_  = false;
@@ -230,7 +231,7 @@ public:
             persist_latches();
             RCLCPP_INFO(get_logger(),
               "RoboClaw TCP visszaállt — joint_states_dropout_latch törölve (E-Stop reset)");
-          } else {
+          } else if (!was_connected) {
             RCLCPP_INFO(get_logger(), "RoboClaw TCP reconnected");
           }
         }
