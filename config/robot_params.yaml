@@ -447,7 +447,7 @@ safety_supervisor:
     sensor_recovery_stable_s:        2.0   # ennyi stabil adat → [recovered] jelölés (latch MEGMARAD)
     scan_watchdog_startup_grace_s:   15.0  # rplidar respawn=True → újraindulás ~2-5s; 15s ad biztos fedezetet startup és respawn esetén is
     enable_scan_watchdog:            true  # LiDAR dropout → scan_dropout_latch → ERROR
-    enable_imu_watchdog:      true   # BNO085 aktív — dropout → imu_dropout_latch → ERROR
+    enable_imu_watchdog:      false  # DISABLED: BNO085 instabil (23Hz avg, 2.5s max gap) — hardware vizsgálat pending
     # ZED 2i watchdog — DISABLED (ZED szervizen 2026-05-05 + safety_supervisor.cpp rebuild kell)
     # Visszaállításkor: enable_zed_watchdog: true + rebuild robot-robot image
     # Topic: /zed/zed_node/depth/depth_registered (sensor_msgs/Image)
