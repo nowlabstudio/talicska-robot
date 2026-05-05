@@ -1,0 +1,21 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * BNO085 IMU — i2c-7 (c250000) sebességcsökkentés 400kHz -> 100kHz
+ * Ok: 50cm kábelhossz — 400kHz instabil (sporadikus NACK, driver watchdog)
+ * Label: gen8_i2c = hdr40_i2c1 = /bus@0/i2c@c250000
+ * Platform: Jetson Orin Nano / Seeed reComputer Super J401, L4T R36.4.x
+ */
+
+/ {
+	overlay-name = "BNO085 I2C-7 100kHz";
+	compatible = "nvidia,tegra234";
+
+	fragment@0 {
+		target = <&gen8_i2c>;
+		__overlay__ {
+			clock-frequency = <100000>;
+		};
+	};
+};
