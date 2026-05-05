@@ -12,7 +12,22 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ## Aktív feladatok (2026-04-06 CET)
 
-### ZED 2i kamera — production integráció folyamatban (2026-04-22 redesign)
+### ⏸ ZED 2i visszaállítás szerviz után (2026-05-05)
+
+**Státusz:** ZED 2i szervizen van — a kamera ki van vezetve a rendszerből.
+Ideiglenesen: RealSense D435i = elülső kamera, hátsó kamera nincs.
+
+**Visszaállításhoz szükséges módosítások:**
+- `scripts/prestart.sh` — ZED USB check sor visszaállítása (kommentben megvan)
+- `scripts/camera_director.py` — ZED subscription visszakapcsolása; `_rs_depth_cb` REAR irányba; `_zed_depth_cb` FWD irányba
+- `robot_description/urdf/robot.urdf.xacro` — ZED link+joint visszaállítása (kommentben megvan)
+- `Makefile` — `camera-fwd-up` ZED USB check + docker compose hívás visszaállítása; `camera-up` orchestráció visszaállítása
+- `config/robot_params.yaml` — profil kommentek visszaállítása
+- ZED x pozíció finomítása (PLACEHOLDER volt: x=0.480m) 🔴
+
+---
+
+### ⏸ ZED 2i kamera — production integráció szünetel (2026-04-22 redesign)
 
 **Terv:** `memory/plan_zed2i_integration.md` (P0–P6 fázisok). Scope: ZED = elsődleges FRONT kamera, RealSense = REAR; C++ lifecycle `robot_cameras` package; irány-alapú switch a Jetson terhelés csökkentésére; ZED minden SDK feature (depth, RGB, IMU, baro, mag, temp, pos_trk, body_trk, mapping, OD) konfigurálhatóan elérhető.
 

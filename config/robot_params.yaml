@@ -43,8 +43,8 @@ _profiles_:
 # Eredmény: {**base, **override} dict kerül a Node(parameters=[...]) listájába.
 
   # ── NAVIGATION — Autonóm navigáció (tesztelési mód) ─────────────────────────
-  # Kamera: ZED 2i (előre) + RealSense D435i (hátra) — mindkettő aktív
-  # camera_director_node: irány szerint vált (cmd_vel_raw figyelés)
+  # Kamera: RealSense D435i (előre) — ZED 2i szervizen (2026-05-05), hátsó kamera nincs
+  # camera_director_node: FWD irányban D435i relay ON; REAR irányban nincs relay
   # RPLidar: auto scan_mode, 10 Hz
   # Nav2: 0.5 m/s, teljes costmap, SLAM aktív
   NAVIGATION:
@@ -76,11 +76,10 @@ _profiles_:
       min_velocity: [-0.2, 0.0, -1.5]
 
   # ── REAR_NAV — Hátsó kamerás navigáció (hátramese, dokkolás) ─────────────────
-  # Kamera:  RealSense D435i (hátra néző) — aktív
-  #          ZED 2i (előre néző)          — INAKTÍV (make camera-fwd-down)
+  # Kamera:  RealSense D435i (előre néző) — ZED 2i szervizen (2026-05-05), hátsó nincs
   # RPLidar: Standard mód, 5 Hz (energiatakarékos közelítésnél)
   # Nav2:    0.1 m/s (lassú, pontos — dokkoláshoz)
-  # camera_director_node: hátramese → RealSense relay ON, ZED relay OFF
+  # FIGYELEM: hátramese kamera nélkül — Nav2 vakon megy hátra (csak LiDAR)
   REAR_NAV:
     rplidar_node:
       scan_mode:      Standard
@@ -113,15 +112,10 @@ _profiles_:
       encoder_stuck_limit: 20
 
   # ── FOLLOW — Személykövetés ──────────────────────────────────────────────────
-  # Kamera:  ZED 2i (előre néző) — aktív (make camera-fwd-up)
-  #          RealSense D435i     — INAKTÍV
-  # ZED body tracking: make body-enable → /zed/zed_node/body_trk/skeletons
-  # camera_director_node: előremenet → ZED relay ON, RealSense relay OFF
-  #                        hátramese → ZED relay OFF, RealSense relay ON (bármely módban)
-  #
-  # !! ZED saját Docker containerből fut (zed-jetson/) — ez a szekció a
-  # safety_supervisor watchdog paramétereihez van dokumentálva, nem a ZED node konfig.
-  # Tényleges ZED paraméterek: zed-jetson/zed_params.yaml
+  # Kamera:  RealSense D435i (előre néző) — ZED 2i szervizen (2026-05-05)
+  #          Hátsó kamera: nincs — hátramese esetén kamera nélkül
+  # ZED body tracking INAKTÍV (ZED szervizen)
+  # camera_director_node: FWD irányban D435i relay ON; REAR irányban nincs relay
   FOLLOW:
     rplidar_node:
       scan_mode:      ""              # auto
@@ -137,12 +131,9 @@ _profiles_:
       min_velocity: [-0.2, 0.0, -1.5]
 
   # ── SHUTTLE — Szállítás közbeni autonóm navigáció ────────────────────────────
-  # Kamera:  ZED 2i (előre néző) — aktív (make camera-fwd-up)
-  #          RealSense D435i     — INAKTÍV
-  # camera_director_node: ugyanaz mint FOLLOW (irányalapú kamera relay)
-  #
-  # !! ZED saját Docker containerből fut (zed-jetson/)
-  # Tényleges ZED paraméterek: zed-jetson/zed_params.yaml
+  # Kamera:  RealSense D435i (előre néző) — ZED 2i szervizen (2026-05-05)
+  #          Hátsó kamera: nincs
+  # camera_director_node: FWD irányban D435i relay ON; REAR irányban nincs relay
   SHUTTLE:
     rplidar_node:
       scan_mode:      ""
@@ -457,13 +448,12 @@ safety_supervisor:
     scan_watchdog_startup_grace_s:   15.0  # rplidar respawn=True → újraindulás ~2-5s; 15s ad biztos fedezetet startup és respawn esetén is
     enable_scan_watchdog:            true  # LiDAR dropout → scan_dropout_latch → ERROR
     enable_imu_watchdog:      true   # BNO085 aktív — dropout → imu_dropout_latch → ERROR
-    # ZED 2i watchdog — DISABLED (safety_supervisor.cpp rebuild szükséges az aktiváláshoz)
-    # Backlog: "Safety supervisor ZED watchdog — uncomment + rebuild"
-    # Aktiválás: enable_zed_watchdog: true + rebuild robot-robot image
+    # ZED 2i watchdog — DISABLED (ZED szervizen 2026-05-05 + safety_supervisor.cpp rebuild kell)
+    # Visszaállításkor: enable_zed_watchdog: true + rebuild robot-robot image
     # Topic: /zed/zed_node/depth/depth_registered (sensor_msgs/Image)
     enable_zed_watchdog:      false
     zed_timeout_s:            3.0
-    # ZED IMU watchdog — DISABLED (ZED IMU letiltva, imu_joint kalibráció pending)
+    # ZED IMU watchdog — DISABLED (ZED szervizen)
     # enable_ext_imu_watchdog:  false
 
 # ── Startup Supervisor ────────────────────────────────────────────────────────

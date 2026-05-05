@@ -14,9 +14,9 @@ ROS := source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setu
 ##   make up              = prestart check → kamera(k) → fő stack (ROBOT_MODE alapján)
 ##   make up-boot         = kamera(k) → fő stack, prestart nélkül — csak startup.sh-nak
 ##   make down            = fő stack + kamerák leállítás
-##   make camera-fwd-up   = ZED 2i container (FOLLOW/SHUTTLE módhoz)
-##   make camera-rear-up  = RealSense container (REAR_NAV módhoz)
-##   make camera-up       = ROBOT_MODE szerint automatikus kamera orchestráció
+##   make camera-fwd-up   = ZED 2i container — SZERVIZEN (2026-05-05), no-op
+##   make camera-rear-up  = RealSense D435i container (minden módban, ideiglenesen elülső)
+##   make camera-up       = ROBOT_MODE szerint orchestráció (ZED szervizen → csak RealSense)
 ##   make rc-up           = prestart check (RC mód) → fő stack (kamera nélkül)
 ##   make check           = csak hardware check, semmi nem indul
 
@@ -28,25 +28,12 @@ ROBOT_MODE    := $(shell grep '^ROBOT_MODE' .env 2>/dev/null | cut -d= -f2 | tr 
 # Irányalapú kamera orchestráció
 # =============================================================================
 
-## ZED 2i container indítása (előre néző — FOLLOW/SHUTTLE módhoz)
+## ZED 2i container — SZERVIZEN (2026-05-05), elülső kamera ideiglenesen: D435i
+## Visszaállításkor: ZED USB check + docker compose hívás visszaállítandó (lásd backlog)
 camera-fwd-up:
-	@if [ -z "$(ZED_DIR)" ]; then \
-		echo "⚠ zed-jetson repo nem található (../zed-jetson), kihagyás"; \
-	else \
-		found=0; \
-		for i in 1 2 3 4 5; do \
-			lsusb 2>/dev/null | grep -q "2b03:" && found=1 && break; \
-			echo "  ZED USB $$i/5 — re-enumeration várakozás..."; sleep 1; \
-		done; \
-		if [ "$$found" = "1" ]; then \
-			echo "── ZED 2i container indítása ──"; \
-			cd $(ZED_DIR) && make up; \
-		else \
-			echo "⚠ ZED 2i USB nem található (5s), kihagyás"; \
-		fi; \
-	fi
+	@echo "⚠ ZED 2i szervizen (2026-05-05) — elülső kamera: RealSense D435i (camera-rear-up)"
 
-## ZED 2i container leállítása
+## ZED 2i container leállítása — no-op amíg szervizen
 camera-fwd-down:
 	@if [ -n "$(ZED_DIR)" ]; then \
 		cd $(ZED_DIR) && sudo docker compose stop 2>/dev/null || true; \
@@ -54,11 +41,11 @@ camera-fwd-down:
 
 ## ZED 2i logok
 camera-fwd-logs:
-	@cd $(ZED_DIR) && sudo docker compose logs -f ros2-zed
+	@echo "⚠ ZED 2i szervizen — logok nem elérhetők"
 
-## ZED 2i validáció (topic lista + Hz mérés)
+## ZED 2i validáció
 camera-fwd-validate:
-	@cd $(ZED_DIR) && make validate
+	@echo "⚠ ZED 2i szervizen — validáció nem elérhető"
 
 ## RealSense D435i container indítása (hátra néző — REAR_NAV módhoz)
 camera-rear-up:
@@ -89,21 +76,12 @@ camera-rear-logs:
 	@cd $(REALSENSE_DIR) && sudo docker compose logs -f ros2-realsense
 
 ## ROBOT_MODE alapján automatikus kamera orchestráció
-## FOLLOW/SHUTTLE → ZED (előre), REAR_NAV → RealSense (hátra), NAVIGATION → mindkettő
+## IDEIGLENES (2026-05-05): ZED szervizen — minden módban csak RealSense D435i (elülső)
+## Visszaállításkor: FOLLOW/SHUTTLE → ZED (előre), NAVIGATION → mindkettő
 camera-up:
 	@MODE="$(ROBOT_MODE)"; \
-	echo "ROBOT_MODE=$$MODE → kamera orchestráció"; \
-	if [ "$$MODE" = "FOLLOW" ] || [ "$$MODE" = "SHUTTLE" ]; then \
-		echo "ZED 2i (előre) indul — RealSense kihagyás"; \
-		$(MAKE) camera-fwd-up; \
-	elif [ "$$MODE" = "REAR_NAV" ]; then \
-		echo "RealSense D435i (hátra) indul — ZED kihagyás"; \
-		$(MAKE) camera-rear-up; \
-	else \
-		echo "NAVIGATION mód: ZED (előre) + RealSense (hátra) indul"; \
-		$(MAKE) camera-fwd-up; \
-		$(MAKE) camera-rear-up; \
-	fi
+	echo "ROBOT_MODE=$$MODE → kamera orchestráció (ZED szervizen — D435i elülső)"; \
+	$(MAKE) camera-rear-up
 
 ## Minden kamera container leállítása
 camera-down:

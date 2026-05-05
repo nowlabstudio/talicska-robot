@@ -122,10 +122,10 @@ declare -a CHECKS=(
   "rplidar|required_nav|dev|${RPLIDAR_DEV}||RPLidar A2 (/dev/rplidar → ttyUSB*)|USB kábel bekötve? udev rule OK? — tesztelés: ls -la /dev/rplidar"
   "realsense|required_nav|usb|${REALSENSE_USB_ID}||RealSense D435i (USB ${REALSENSE_USB_ID})|USB3 kábel bekötve? — tesztelés: lsusb | grep ${REALSENSE_USB_ID}"
 
-  # ── ZED 2i (FOLLOW / SHUTTLE / NAVIGATION módban kötelező) ────────────────
-  # REAR_NAV módban: ZED nem szükséges → optional
-  # A check típusa usb, vendor ID: 2b03 (bármely ZED modell)
-  "zed_camera|$([ "${ROBOT_MODE}" = 'REAR_NAV' ] && echo 'optional' || echo 'required_nav')|usb|${ZED_USB_VENDOR}||ZED 2i (USB vendor ${ZED_USB_VENDOR}:*, ROBOT_MODE=${ROBOT_MODE})|USB3 kábel bekötve? udev rule OK? — tesztelés: lsusb | grep ${ZED_USB_VENDOR} / make install-udev (zed-jetson/)"
+  # ── ZED 2i — SZERVIZEN (2026-05-05), ideiglenes csere: D435i előre ────────
+  # ZED check kikapcsolva: a kamera szervizen van, helyette D435i az elülső kamera.
+  # Visszaállításhoz: töröld a kommentet és add vissza az alábbi sort:
+  # "zed_camera|$([ "${ROBOT_MODE}" = 'REAR_NAV' ] && echo 'optional' || echo 'required_nav')|usb|${ZED_USB_VENDOR}||ZED 2i (USB vendor ${ZED_USB_VENDOR}:*, ROBOT_MODE=${ROBOT_MODE})|USB3 kábel bekötve? udev rule OK? — tesztelés: lsusb | grep ${ZED_USB_VENDOR} / make install-udev (zed-jetson/)"
 
   # ── Opcionális eszközök ────────────────────────────────────────────────────
   "pedal_bridge|optional|ping|${PEDAL_BRIDGE_IP}||Pedal bridge / winch (RP2040, ${PEDAL_BRIDGE_IP})|RP2040 tápellátva? IP: ${PEDAL_BRIDGE_IP} — SW1 port: 5"

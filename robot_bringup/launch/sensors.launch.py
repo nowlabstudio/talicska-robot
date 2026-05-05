@@ -81,10 +81,10 @@ def launch_setup(context, *args, **kwargs):
         respawn_delay=3.0,
     )
 
-    # camera_director — irányalapú kamera gating (ZED előre / RealSense hátra)
-    # FOLLOW, SHUTTLE: navigációs módok, mindkét kamera potenciálisan aktív irány szerint.
-    # NAVIGATION (teszt): mindkét kamera indul → director kezeli az átkapcsolást.
-    # REAR_NAV: csak RealSense aktív → director nem szükséges, de ártalmatlan ha fut.
+    # camera_director — irányalapú kamera gating
+    # IDEIGLENES (2026-05-05): ZED szervizen — D435i = elülső kamera, hátsó nincs.
+    # FWD irányban D435i → /camera/fwd/depth; REAR irányban nincs relay.
+    # FOLLOW, SHUTTLE, NAVIGATION módokban fut; REAR_NAV: ártalmatlan ha fut.
     # RC mód: sensors.launch.py nem indul → director sem fut.
     nodes = [rplidar, bno085, ekf]
 
