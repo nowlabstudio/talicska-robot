@@ -85,6 +85,7 @@
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/header.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "visualization_msgs/msg/marker.hpp"
 
 namespace robot_safety
 {
@@ -113,8 +114,14 @@ public:
     this->declare_parameter("latch_state_path",         std::string("/tmp/safety_latch_state"));
     this->declare_parameter("tilt_roll_limit_deg",  25.0);
     this->declare_parameter("tilt_pitch_limit_deg", 20.0);
-    this->declare_parameter("proximity_distance_m",  0.3);
-    this->declare_parameter("proximity_angle_deg",  30.0);
+    this->declare_parameter("superstructure_circumradius_m", 0.7);
+    this->declare_parameter("proximity_safety_margin_m",    0.10);
+    this->declare_parameter("proximity_angle_deg",          30.0);
+    this->declare_parameter("proximity_min_range_m",        0.45);
+    this->declare_parameter("proximity_exclusion_angle_starts_deg", std::vector<double>{});
+    this->declare_parameter("proximity_exclusion_angle_ends_deg",   std::vector<double>{});
+    this->declare_parameter("proximity_min_points",                 10);
+    this->declare_parameter("proximity_enabled",                    true);
     this->declare_parameter("watchdog_rate_hz",     20.0);
     this->declare_parameter("imu_process_rate_hz",  20.0);
     this->declare_parameter("rc_mode_threshold",     0.5);
@@ -140,8 +147,26 @@ public:
     latch_state_path_          = this->get_parameter("latch_state_path").as_string();
     tilt_roll_limit_      = deg2rad(this->get_parameter("tilt_roll_limit_deg").as_double());
     tilt_pitch_limit_     = deg2rad(this->get_parameter("tilt_pitch_limit_deg").as_double());
-    proximity_dist_       = this->get_parameter("proximity_distance_m").as_double();
+    const double circumradius    = this->get_parameter("superstructure_circumradius_m").as_double();
+    const double safety_margin   = this->get_parameter("proximity_safety_margin_m").as_double();
+    proximity_dist_       = circumradius + safety_margin;
     proximity_angle_      = deg2rad(this->get_parameter("proximity_angle_deg").as_double());
+    proximity_min_range_  = this->get_parameter("proximity_min_range_m").as_double();
+
+    auto ex_starts_deg = this->get_parameter("proximity_exclusion_angle_starts_deg").as_double_array();
+    auto ex_ends_deg   = this->get_parameter("proximity_exclusion_angle_ends_deg").as_double_array();
+    for (size_t i = 0; i < std::min(ex_starts_deg.size(), ex_ends_deg.size()); ++i) {
+      exclusion_starts_.push_back(deg2rad(ex_starts_deg[i]));
+      exclusion_ends_.push_back(deg2rad(ex_ends_deg[i]));
+    }
+    proximity_min_points_ = this->get_parameter("proximity_min_points").as_int();
+    proximity_enabled_    = this->get_parameter("proximity_enabled").as_bool();
+
+    RCLCPP_INFO(get_logger(),
+      "Proximity zone: circumradius=%.3fm + margin=%.2fm = %.3fm (min_range=%.2fm, exclusions=%zu, min_points=%d, %s)",
+      circumradius, safety_margin, proximity_dist_, proximity_min_range_,
+      exclusion_starts_.size(), proximity_min_points_,
+      proximity_enabled_ ? "ENABLED" : "DISABLED");
     rc_mode_threshold_    = this->get_parameter("rc_mode_threshold").as_double();
     mode_topic_timeout_s_ = this->get_parameter("mode_topic_timeout_s").as_double();
     double rate_hz        = this->get_parameter("watchdog_rate_hz").as_double();
@@ -260,9 +285,10 @@ public:
     //   });
 
     // --- publishers ---
-    cmd_vel_pub_   = create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel", rclcpp::QoS(10));
-    state_pub_     = create_publisher<std_msgs::msg::String>("/safety/state", rclcpp::QoS(10));
-    heartbeat_pub_ = create_publisher<std_msgs::msg::Header>("/robot/heartbeat", rclcpp::QoS(10));
+    cmd_vel_pub_            = create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel", rclcpp::QoS(10));
+    state_pub_              = create_publisher<std_msgs::msg::String>("/safety/state", rclcpp::QoS(10));
+    heartbeat_pub_          = create_publisher<std_msgs::msg::Header>("/robot/heartbeat", rclcpp::QoS(10));
+    proximity_marker_pub_   = create_publisher<visualization_msgs::msg::Marker>("/safety/proximity_zone", rclcpp::QoS(10));
 
     // --- watchdog timer (20 Hz — state machine + change detection) ---
     auto wd_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -426,34 +452,60 @@ private:
     last_scan_time_ = now();
     scan_received_  = true;
 
-    float min_range = msg->range_max;
+    if (!proximity_enabled_) {
+      return;
+    }
+
+    // Full 360° proximity check — clusteres pont-szám szűrővel, nem latch-elő
+    // 1. Összegyűjti a zónán belüli, nem kizárt, érvényes sugár-indexeket
+    // 2. Megszámolja az egymás melletti (index-szomszédos) clusterek méretét
+    // 3. Fault amíg akadály jelen van, automatikusan törlődik ha elhagyja a zónát
+    float  min_range        = msg->range_max;
+    size_t max_cluster_size = 0;
+    size_t cur_cluster_size = 0;
+    size_t prev_idx         = SIZE_MAX;
 
     for (size_t i = 0; i < msg->ranges.size(); ++i) {
-      const double angle =
-        msg->angle_min + static_cast<double>(i) * msg->angle_increment;
-
-      if (std::abs(angle) <= proximity_angle_) {
-        const float r = msg->ranges[i];
-        if (r > msg->range_min && r < msg->range_max) {
-          min_range = std::min(min_range, r);
+      const float r = msg->ranges[i];
+      if (r <= static_cast<float>(proximity_min_range_) || r >= msg->range_max) {
+        cur_cluster_size = 0;
+        prev_idx = SIZE_MAX;
+        continue;
+      }
+      const double angle = msg->angle_min + static_cast<double>(i) * msg->angle_increment;
+      bool excluded = false;
+      for (size_t j = 0; j < exclusion_starts_.size(); ++j) {
+        if (angle >= exclusion_starts_[j] && angle <= exclusion_ends_[j]) {
+          excluded = true;
+          break;
         }
+      }
+      if (excluded) {
+        cur_cluster_size = 0;
+        prev_idx = SIZE_MAX;
+        continue;
+      }
+      min_range = std::min(min_range, r);
+      if (r < static_cast<float>(proximity_dist_)) {
+        cur_cluster_size = (prev_idx == i - 1) ? cur_cluster_size + 1 : 1;
+        prev_idx = i;
+        if (cur_cluster_size > max_cluster_size) {
+          max_cluster_size = cur_cluster_size;
+        }
+      } else {
+        cur_cluster_size = 0;
+        prev_idx = SIZE_MAX;
       }
     }
 
-    const bool fault = (min_range < static_cast<float>(proximity_dist_));
-
-    if (fault && !proximity_latch_) {
-      proximity_latch_ = true;
-      RCLCPP_WARN(get_logger(),
-        "Proximity FAULT latchelve — min front range = %.2f m", min_range);
-    }
+    const bool fault = (static_cast<int>(max_cluster_size) >= proximity_min_points_);
 
     if (fault != proximity_fault_) {
       proximity_fault_      = fault;
       last_proximity_range_ = static_cast<double>(min_range);
       RCLCPP_WARN(get_logger(),
-        "Proximity %s — min front range = %.2f m",
-        fault ? "FAULT" : "cleared", min_range);
+        "Proximity %s — min range = %.2f m, cluster = %zu pont",
+        fault ? "FAULT" : "cleared", min_range, max_cluster_size);
     }
     if (fault) {
       last_proximity_range_ = static_cast<double>(min_range);
@@ -681,6 +733,28 @@ private:
       publish_state();
       last_baseline_publish_ = now();
     }
+
+    // 13. Proximity zone marker — Foxglove vizualizáció (minden tick-en)
+    if (proximity_dist_ > 0.0) {
+      visualization_msgs::msg::Marker m;
+      m.header.stamp    = now();
+      m.header.frame_id = "lidar_link";
+      m.ns              = "safety";
+      m.id              = 0;
+      m.type            = visualization_msgs::msg::Marker::CYLINDER;
+      m.action          = visualization_msgs::msg::Marker::ADD;
+      m.pose.orientation.w = 1.0;
+      m.scale.x = proximity_dist_ * 2.0;
+      m.scale.y = proximity_dist_ * 2.0;
+      m.scale.z = 0.02;
+      const bool zone_active = proximity_fault_;
+      m.color.r = zone_active ? 1.0f : 0.0f;
+      m.color.g = zone_active ? 0.0f : 1.0f;
+      m.color.b = 0.0f;
+      m.color.a = 0.35f;
+      m.lifetime = rclcpp::Duration::from_seconds(1.0);
+      proximity_marker_pub_->publish(m);
+    }
   }
 
   // ---------------------------------------------------------------- state machine
@@ -733,16 +807,16 @@ private:
       return;
     }
 
-    // Priority 4: sensor/tilt/proximity/realsense latch-alapú ERROR
-    if (tilt_latch_ || proximity_latch_ || scan_dropout_latch_ || imu_dropout_latch_ ||
+    // Priority 4: sensor/tilt/proximity/realsense ERROR
+    // proximity_fault_ nem latch-el — automatikusan törlődik ha akadály elhagyja a zónát
+    if (tilt_latch_ || proximity_fault_ || scan_dropout_latch_ || imu_dropout_latch_ ||
         realsense_dropout_latch_) {
       state = "ERROR";
       mode  = last_active_mode_;
-      // error_reason: az első aktív latch leírása
       if (tilt_latch_) {
         error_reason = "Tilt fault: roll=" + fmt(rad2deg(last_roll_)) +
                        "° pitch=" + fmt(rad2deg(last_pitch_)) + "°";
-      } else if (proximity_latch_) {
+      } else if (proximity_fault_) {
         error_reason = "Proximity fault: " + fmt(last_proximity_range_) + "m";
       } else if (scan_dropout_latch_) {
         error_reason = "LiDAR timeout";
@@ -789,7 +863,7 @@ private:
            !(rc_received_ && (!rc_watchdog_ok_ || rc_watchdog_latch_)) &&
            !joint_states_dropout_latch_ &&
            !tilt_latch_ &&
-           !proximity_latch_ &&
+           !proximity_fault_ &&
            !scan_dropout_latch_ &&
            !imu_dropout_latch_ &&
            !realsense_dropout_latch_;
@@ -804,7 +878,7 @@ private:
         "Tilt fault: roll=" + fmt(rad2deg(last_roll_)) +
         "° pitch=" + fmt(rad2deg(last_pitch_)) + "°");
     }
-    if (proximity_latch_) {
+    if (proximity_fault_) {
       active_faults_.push_back("Proximity fault: " + fmt(last_proximity_range_) + "m");
     }
     if (scan_dropout_latch_) {
@@ -895,7 +969,6 @@ private:
        << "rc_watchdog_latch="           << (rc_watchdog_latch_           ? "1" : "0") << "\n"
        << "joint_states_dropout_latch="  << (joint_states_dropout_latch_  ? "1" : "0") << "\n"
        << "tilt_latch="                  << (tilt_latch_                  ? "1" : "0") << "\n"
-       << "proximity_latch="             << (proximity_latch_             ? "1" : "0") << "\n"
        << "scan_dropout_latch="          << (scan_dropout_latch_          ? "1" : "0") << "\n"
        << "imu_dropout_latch="           << (imu_dropout_latch_           ? "1" : "0") << "\n"
        << "realsense_dropout_latch="     << (realsense_dropout_latch_     ? "1" : "0") << "\n";
@@ -982,8 +1055,13 @@ private:
   double      realsense_timeout_s_;
   double      tilt_roll_limit_;
   double      tilt_pitch_limit_;
-  double      proximity_dist_;
+  double      proximity_dist_;       // = circumradius + safety_margin (computed on init)
   double      proximity_angle_;
+  double      proximity_min_range_;
+  int         proximity_min_points_; // min egymás melletti scan pont fault-hoz (ceruza-szűrő)
+  bool        proximity_enabled_;    // false = proximity check teljesen kikapcsolt (YAML)
+  std::vector<double> exclusion_starts_;  // rad
+  std::vector<double> exclusion_ends_;    // rad
   double      rc_mode_threshold_;
   double      mode_topic_timeout_s_;
   std::string latch_state_path_;
@@ -1118,9 +1196,10 @@ private:
   // rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr  zed_sub_;
   // rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr    ext_imu_sub_;
 
-  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_vel_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr            state_pub_;
-  rclcpp::Publisher<std_msgs::msg::Header>::SharedPtr            heartbeat_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr  cmd_vel_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr             state_pub_;
+  rclcpp::Publisher<std_msgs::msg::Header>::SharedPtr             heartbeat_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr   proximity_marker_pub_;
 
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
   rclcpp::TimerBase::SharedPtr heartbeat_timer_;

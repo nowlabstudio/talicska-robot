@@ -520,3 +520,45 @@ RAM növekedés: +10.7 MiB / 2.5 perc = SLAM occupancy grid bővülés (normáli
 | /scan delay | — | **76ms** (stabil) | ✅ |
 | TF integritás | — | **100% ✓** | ✅ |
 | Restart recovery | — | **automatikus ✓** | ✅ |
+
+---
+
+## Hardver pozíció validáció (2026-05-08)
+
+### IMU — BNO085
+
+Validálva fizikai mérés alapján:
+
+| Paraméter | Érték | Módszer |
+|-----------|-------|---------|
+| URDF xyz | `-0.135 0.0 0.370` | Fizikai mérés: 700mm a robot elejétől, 250mm a chassis aljától, szimmetriatengelyen |
+| URDF rpy | `0 0 0` | Chip face-up, X→előre, Y→balra, Z→fel — REP-103 natív, koordináta-fordítás nem szükséges |
+| Frekvencia | ~100 Hz (400kHz I2C) | Stabil reboot után; max mért gap 34ms |
+
+### LiDAR — RPLidar A2M12
+
+Validálva fizikai mérés alapján (korrigálva 2026-05-08):
+
+| Paraméter | Érték | Módszer |
+|-----------|-------|---------|
+| URDF xyz | `-0.035 0.0 0.430` | Fizikai mérés: 600mm a robot elejétől, 310mm a chassis aljától, szimmetriatengelyen |
+| URDF rpy | `0 0 0` | Vízszintes síkú forgató scan, Z-tengellyel felfelé |
+| scan range_max | 16.0m | Mért a LaserScan üzenetből |
+| scan rays | 1800 | 0.2°/ray, 360° |
+
+### Proximity zóna kalibráció (2026-05-08)
+
+Tartóoszlopok mért pozíciója a scan-ben (`scan_self_filter_calibrate.py`):
+
+| Oszlop | Szög | Távolság |
+|--------|------|---------|
+| HÁTUL_JOBB | -164.2° → -145.9° | ~0.29m |
+| ELÖL_JOBB | -35.7° → -23.9° | ~0.36m |
+| ELÖL_BAL | +25.7° → +34.9° | ~0.36m |
+| HÁTUL_BAL | +140.7° → +164.4° | ~0.28m |
+
+Szűrési stratégia: `proximity_min_range_m: 0.45` kizárja a tartóoszlopokat (max 0.42m), szögmaszk +0.5° margóval biztonsági rétegként.
+
+Minimális objektumméret kalibráció (ceruza, 0.584m @ robot front):
+- avg: 2.7 pont/scan, max: 7 pont/scan, szögkitérés: ~0.4°
+- `proximity_min_points: 10` → ceruza szűrve, valódi akadály (ember, fal, bútor) triggerel

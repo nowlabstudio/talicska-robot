@@ -14,6 +14,7 @@ find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 add_executable(safety_supervisor src/safety_supervisor.cpp)
 ament_target_dependencies(safety_supervisor
@@ -21,6 +22,7 @@ ament_target_dependencies(safety_supervisor
   std_msgs
   sensor_msgs
   geometry_msgs
+  visualization_msgs
 )
 
 add_executable(startup_supervisor src/startup_supervisor.cpp)

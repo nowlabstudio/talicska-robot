@@ -10,7 +10,7 @@
     Chassis front:  240 mm behind vehicle front → +325 mm from base_link
     Platform:       1100 × 750 × 300 mm, bottom at 450 mm, tilts forward
     Tilt hinge:     chassis top (260 mm), 20 mm from chassis front → +305 mm from base_link
-    LiDAR:          on chassis, 340 mm from chassis front → -15 mm from base_link, Z=295 mm
+    LiDAR:          on chassis, 600 mm from robot front, 360 mm from chassis front → -35 mm from base_link, Z=430 mm
     Camera:         chassis front edge, Z=290 mm (lens centre 30 mm above chassis top)
 
   Wheel naming convention:
@@ -260,7 +260,7 @@
   <joint name="lidar_joint" type="fixed">
     <parent link="base_link"/>
     <child  link="lidar_link"/>
-    <origin xyz="-0.015 0 0.295" rpy="0 0 0"/>
+    <origin xyz="-0.035 0.0 0.430" rpy="0 0 0"/>
   </joint>
 
   <!-- ============================================================
@@ -312,12 +312,11 @@
   <!-- ============================================================
        IMU — BNO085 (GY-BM0085)
        Dedikált 9-DOF IMU, I2C (i2c-7, 0x4B).
-       Pozíció: robot hossztengelyén középen, LiDAR magasságán (X=0, Y=0, Z=0.295).
-         X=0: tengelyközép (base_link origó)
+       Pozíció (2026-05-07): 700mm robot elejétől, chassis aljától 250mm, szimmetriatengelyen.
+         X=-0.135: 565mm (base_link a fronttól) - 700mm = -135mm
          Y=0: szimmetriatengelyen
-         Z=0.295: LiDAR magassága (lidar_joint Z)
-       TODO: rpy — az IMU chip X/Y/Z tengelyeinek base_link-hez képesti forgatása.
-             Helytelen rpy → EKF hibás orientáció-korrekció.
+         Z=0.370: chassis alja (120mm) + 250mm
+       rpy=0: chip face-up, X→előre = REP-103 natív, koordináta-transzformáció nem kell.
        ============================================================ -->
   <link name="imu_link">
     <visual>
@@ -331,8 +330,8 @@
   <joint name="imu_joint" type="fixed">
     <parent link="base_link"/>
     <child  link="imu_link"/>
-    <!-- xyz mérve (2026-03-26). rpy TODO: mérés után frissítendő! -->
-    <origin xyz="0.0 0.0 0.295" rpy="0 0 0"/>
+    <!-- xyz mérve (2026-05-07): 700mm robot elejétől → x=-0.135 (base_link 565mm a fronttól), chassis aljától 250mm → z=0.370. rpy=0: chip face-up, X→előre = REP-103 natív. -->
+    <origin xyz="-0.135 0.0 0.370" rpy="0 0 0"/>
   </joint>
 
   <!-- ============================================================

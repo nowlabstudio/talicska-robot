@@ -425,11 +425,30 @@ safety_supervisor:
     # TODO: rpy orientáció URDF-ben (imu_joint) véglegesítése után validálni!
     tilt_roll_limit_deg:  25.0
     tilt_pitch_limit_deg: 20.0
-    # PROXIMITY: 0.0 = kikapcsolva
-    # Visszakapcsoláshoz előfeltétel: LiDAR szögmaszk (alkatrészek kitakarása)
-    # Backlog: "LiDAR szögmaszk — robot saját alkatrészeinek kitakarása"
-    proximity_distance_m: 0.0
-    proximity_angle_deg:  30.0
+    # PROXIMITY ZONE — 360° körszenzor
+    # Ha felépítmény cserélődik: csak superstructure_circumradius_m-t kell frissíteni.
+    # proximity_dist (runtime) = circumradius + safety_margin
+    #
+    # Jelenlegi felépítmény (tilt platform 1100×750mm):
+    #   legtávolabbi sarok LiDAR-tól: sqrt(0.570²+0.375²) = 0.682m
+    #   → proximity_dist = 0.682 + 0.10 = 0.782m
+    #
+    # proximity_min_range_m: önárnyékolás kizárása (tartóoszlopok: 0.27-0.42m)
+    # Foxglove: /safety/proximity_zone (zöld = ok, piros = fault/latch)
+    superstructure_circumradius_m: 0.682
+    proximity_safety_margin_m:     0.10
+    proximity_min_range_m:         0.45
+    proximity_angle_deg:           180.0  # nem használt (360° check), kompatibilitásból megmarad
+    # Szögmaszk — tartóoszlopok kizárása (scan_self_filter_calibrate.py értékei + 0.5° margó)
+    # Frissítsd ha felépítmény cserélődik: futtasd újra scan_self_filter_calibrate.py-t
+    proximity_exclusion_angle_starts_deg: [-164.7, -36.2,  25.2, 140.2]
+    proximity_exclusion_angle_ends_deg:   [-145.4, -23.4,  38.4, 167.9]
+    # Minimális objektumméret — ennyi egymás melletti scan pont kell a fault-hoz
+    # Ceruza mérés (2026-05-08): avg=2.7, max=7 pont @ 0.584m → küszöb=10
+    # Kisebb érték érzékenyebb; növeld ha hamis pozitív; csökkentsd ha vékony akadályt akar érzékelni
+    proximity_min_points: 10
+    # Proximity zóna ki/be kapcsoló — false: a teljes proximity check inaktív (E-Stop nem triggel)
+    proximity_enabled: true
     # watchdog_rate_hz: Hz-ben ellenőrzi az E-Stop üzenet frissességét
     watchdog_rate_hz:     20.0
     # imu_process_rate_hz: IMU adat feldolgozási ráta a tilt check-hez

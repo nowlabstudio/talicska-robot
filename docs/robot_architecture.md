@@ -544,6 +544,67 @@ A Tier 2-n futó ROS2 node, amely magasabb szintű viselkedésbiztonságot való
 
 **Fontos korlát:** a Safety Supervisor szoftver, ezért nem helyettesíti az 1. és 2. réteget. Kiegészíti azokat viselkedési szinten.
 
+#### Tényleges implementáció — Talicska robot (2026-05)
+
+A `robot_safety/safety_supervisor.cpp` node a következő védelmi funkciókat valósítja meg:
+
+| Funkció | Viselkedés |
+|---------|-----------|
+| IMU tilt (roll/pitch) | Limit túllépésnél latch → E-Stop reset szükséges |
+| LiDAR proximity zóna | Akadály jelenlétéig fault, elhagyáskor automatikus recovery |
+| LiDAR scan dropout | Timeout esetén latch → E-Stop reset szükséges |
+| IMU dropout | Timeout esetén latch → E-Stop reset szükséges |
+| RealSense dropout | Timeout esetén latch → E-Stop reset szükséges |
+| E-Stop bridge | Külső E-Stop jel, hardware watchdog |
+
+**Szenzorpozíciók (URDF, validálva 2026-05-08):**
+
+| Szenzor | xyz (base_link-től) | rpy | Megjegyzés |
+|---------|---------------------|-----|-----------|
+| IMU (BNO085) | `-0.135 0.0 0.370` | `0 0 0` | 700mm a robot elejétől, 250mm chassis aljától; face-up, REP-103 natív |
+| LiDAR (RPLidar A2M12) | `-0.035 0.0 0.430` | `0 0 0` | 600mm a robot elejétől, 310mm chassis aljától |
+
+*base_link referencia: tengelyközép, talajszint (z=0), 565mm a jármű elejétől.*
+
+**Proximity zóna design:**
+
+A zóna sugara futásidőben számított, rebuild nélkül állítható:
+
+```
+proximity_dist = superstructure_circumradius_m + proximity_safety_margin_m
+              = 0.682m + 0.10m = 0.782m
+```
+
+- `superstructure_circumradius_m`: a felépítmény legtávolabbi sarkának távolsága a LiDAR-tól. Felépítmény cserekor csak ezt a paramétert kell frissíteni (YAML + container restart, rebuild nem szükséges).
+- `proximity_safety_margin_m`: biztonsági sáv a geometriai határon túl.
+
+**Önárnyékolás kizárás — két réteg:**
+
+1. `proximity_min_range_m: 0.45` — távolságalapú szűrő: kizárja a robot saját tartóoszlopait (mért: 0.27–0.42m). Az összes pont ezen belül figyelmen kívül marad.
+2. `proximity_exclusion_angle_starts/ends_deg` — szögalapú maszkok a 4 tartóoszlop irányában (kalibrálva `scripts/scan_self_filter_calibrate.py`-val + 0.5° margó).
+
+**Clusteres minimális objektumméret szűrő:**
+
+Egyetlen scan pont nem triggerel. A rendszer megszámlálja a küszöbön belüli egymás melletti (index-szomszédos) scan sugarakat, és csak akkor jelez hibát, ha a legnagyobb cluster eléri a minimumot.
+
+- `proximity_min_points: 10` — ceruza mérés (2026-05-08) alapján: avg 2.7, max 7 pont → küszöb 10.
+
+**YAML paraméterek (robot_params.yaml, `safety_supervisor`):**
+
+| Paraméter | Érték | Leírás |
+|-----------|-------|--------|
+| `proximity_enabled` | `true` | Proximity check ki/be kapcsoló. `false` esetén teljesen inaktív, E-Stop nem triggerel |
+| `superstructure_circumradius_m` | `0.682` | Felépítmény legtávolabbi sarka LiDAR-tól (m) |
+| `proximity_safety_margin_m` | `0.10` | Biztonsági sáv (m) |
+| `proximity_min_range_m` | `0.45` | Önárnyékolás kizárási határ (m) |
+| `proximity_min_points` | `10` | Min. egymás melletti scan pont a fault-hoz |
+| `proximity_exclusion_angle_starts_deg` | `[-164.7, -36.2, 25.2, 140.2]` | Kizárási szögtartományok kezdete |
+| `proximity_exclusion_angle_ends_deg` | `[-145.4, -23.4, 38.4, 167.9]` | Kizárási szögtartományok vége |
+
+**Foxglove vizualizáció:** `/safety/proximity_zone` — CYLINDER marker `lidar_link` frame-ben. Zöld = szabad, piros = akadály a zónában.
+
+**USB port konvenció:** a RPLidar A2M12 vendor-alapú udev rule-lal van azonosítva (`99-lidar.rules`). Az összes USB3 port egyenértékű; dedikált port-pin csak akkor szükséges, ha a LiDAR instabilnak bizonyul terhelés alatt.
+
 ### 6.5 4. Réteg — Mission Safety Layer
 
 A Mission Executive saját biztonsági korlátokkal dolgozik:
