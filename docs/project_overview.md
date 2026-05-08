@@ -40,10 +40,11 @@ Architektúra doksi: `/home/eduard/Dropbox/Development/RobotEcosystem/robot_arch
 | RC mód | 14 km/h (3.89 m/s) |
 | ROS mód | 8 km/h (2.22 m/s) |
 
-**Nav2 footprint** (base_link a forgásközpontnál, 2026-05-08: -100mm x eltolás alkalmazva):
+**Nav2 footprint** (base_link a forgásközpontnál, 2026-05-08: +100mm x eltolás alkalmazva hátra):
 ```yaml
-footprint: "[[0.405, 0.4], [0.405, -0.4], [-0.695, -0.4], [-0.695, 0.4]]"
-# Elülső él: +405mm, hátsó él: -695mm base_link-től (= LiDAR-tól: +440mm / -660mm)
+footprint: "[[0.605, 0.4], [0.605, -0.4], [-0.495, -0.4], [-0.495, 0.4]]"
+# Elülső él: +605mm, hátsó él: -495mm base_link-től
+# Megjegyzés: a robot koordináta rendszerben x+ a hátsó irány
 ```
 
 ---
@@ -383,7 +384,7 @@ footprint: "[[0.405, 0.4], [0.405, -0.4], [-0.695, -0.4], [-0.695, 0.4]]"
 safety_supervisor:
   ros__parameters:
     # Stop zóna — stadiongörbe
-    stop_zone_center_offset_x_m:  -0.100   # középpont eltolás a LiDAR-tól (negatív = hátra)
+    stop_zone_center_offset_x_m:   0.100   # középpont eltolás a LiDAR-tól (pozitív = hátra)
     stop_zone_front_back_m:        0.65    # félhossz, margin nélkül
     stop_zone_side_m:              0.40    # oldalsugár, margin nélkül
     proximity_safety_margin_m:     0.10    # hozzáadódik front_back és side méretekhez
