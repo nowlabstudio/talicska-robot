@@ -159,6 +159,65 @@ Ideiglenesen: RealSense D435i = elülső kamera, hátsó kamera nincs.
 
 ## Biztonság / Robustness
 
+- **Proximity zóna V2 — stadiongörbe stop zone + lassítási zóna + irányfelismerés** — 2026-05-08
+
+  A jelenlegi körös proximity zóna három irányban fejlesztendő:
+
+  **1. Stop zone alakja — stadiongörbe (rectangle with rounded ends)**
+
+  A kör helyett a robot valódi lábnyomát közelítő stadiongörbe (vagy ellipszis): oldalra 10cm túlnyúlás a robottól, előre-hátra arányosan és egyformán. YAML paraméterek:
+  - `stop_zone_side_m` — oldalsó túlnyúlás (m), alap: 0.10
+  - `stop_zone_front_back_m` — elülső és hátsó túlnyúlás (m), alap: arányos a robot hosszához
+
+  Megvalósítás: a scan_cb-ben az `r < proximity_dist_` feltétel helyett szögenként számított, irányból függő küszöb: `threshold(angle) = stop_zone_side_m / |sin(angle)|` vagy `stop_zone_front_back_m / |cos(angle)|` minimuma (ellipszis képlet). Ez rebuild, de a konkrét méretek YAML + restart.
+
+  **2. Slow zone — 1 méteres körös lassítási zóna**
+
+  Egy második, nagyobb zóna ahol a robot nem áll meg, hanem maximális sebességét csökkenti. Referenciapont: a robot szimmetriaközepe (`base_link`), nem a LiDAR. Ez azért fontos, mert a LiDAR offcenter van, és a slow zone-nak a robot geometriájához kell illeszkednie.
+
+  YAML paraméterek:
+  - `slow_zone_enabled` — ki/be kapcsoló
+  - `slow_zone_radius_m` — sugár (m), alap: 1.0
+  - `slow_zone_max_speed_mps` — max sebesség a lassítási zónában (m/s)
+
+  Megvalósítás: a cmd_vel_raw_cb-ben, ha slow zone aktív és van pont a zónán belül (de stop zone-on kívül), a `cmd_vel.linear.x` amplitúdóját csökkenti `slow_zone_max_speed_mps`-re. A slow zone check a LiDAR távolságból base_link-re transzformált értékekkel dolgozik (LiDAR offset figyelembevétele).
+
+  **3. Irányfelismerő stop zone**
+
+  Jelenleg ha a stop zone-ban van akadály, a robot minden irányban megáll — beragad, ha az akadály tartósan jelen van. A helyes viselkedés:
+
+  - Ha a robot **előre** akar menni (`cmd_vel.linear.x > 0`) és az **elülső** stop zone teli → megáll
+  - Ha a robot **hátra** akar menni (`cmd_vel.linear.x < 0`) és az **elülső** stop zone teli, de a **hátsó** üres → hátrafele mehet
+  - **Helyszíni fordulatnál** (`cmd_vel.linear.x ≈ 0`, `cmd_vel.angular.z ≠ 0`): a robot diff drive-ban forgásnál az oldalát kinyújtja → ellenőrizni kell a **baloldali** és **jobboldali** stop zone szektort is, ne csak előre/hátra. Ha az adott irányba forgatva a stop zone teli → az angular parancsot is blokkolja.
+
+  Szektorok (javasolt felosztás, YAML-ból paraméterezhetők):
+  - `FRONT`: -45° → +45°
+  - `REAR`: ±135° → ±180°
+  - `LEFT`: +45° → +135°
+  - `RIGHT`: -135° → -45°
+
+  A cmd_vel_raw_cb-ben: `cmd_vel.linear.x > 0` → csak FRONT szektort ellenőrzi, `< 0` → csak REAR, `angular.z > 0` (balra fordul) → LEFT + FRONT, `angular.z < 0` → RIGHT + FRONT.
+
+  **4. Módhoz kötött aktiválás**
+
+  A proximity zóna csak navigációs üzemmódokban legyen aktív: NAVIGATION, FOLLOW (autonóm mód). RC módban és IDLE-ben inaktív — az operátor saját felelőssége.
+
+  Implementáció: `safety_supervisor` figyeli a `/robot/mode` topicot (már megvan). Ha `state_ == "RC"` vagy `state_ == "IDLE"` → proximity check skip.
+
+  **5. Meglévő YAML kapcsolók megmaradnak**
+
+  `proximity_enabled: true/false` globális kapcsoló megmarad. Az új paraméterek mellette:
+  ```yaml
+  proximity_enabled:         true
+  stop_zone_front_back_m:    0.15      # felépítmény + túlnyúlás előre/hátra
+  stop_zone_side_m:          0.10      # oldalsó túlnyúlás
+  slow_zone_enabled:         true
+  slow_zone_radius_m:        1.0       # base_link középponttól
+  slow_zone_max_speed_mps:   0.2       # max sebesség a lassítási zónában
+  ```
+
+  **Érintett fájlok:** `robot_safety/src/safety_supervisor.cpp`, `config/robot_params.yaml` — Docker build szükséges (új paraméter declare). A konkrét mértékek ezután YAML + container restart.
+
 - **`safety_supervisor` STOPPING állapot — watchdogok elnémítása tervezett leállítás alatt** — 2026-03-24. Jelenleg: restart/shutdown alatt a `safety_supervisor` `STARTING` állapotot jelent watchdog fault latch-ekkel (scan dropout, E-Stop watchdog, RC timeout), mert nem tudja hogy a leállítás szándékos. Tervezett fix: `safety_supervisor` feliratkozik `/robot/shutdown` és `/robot/restart` topic-okra → `STOPPING` állapotba lép → összes watchdog timer frozen (nincs új fault a graceful shutdown folyamat alatt), cmd_vel = 0. Szükséges változtatások: (1) `stopping_requested_` flag + `enter_stopping()` metódus, (2) `determine_state()`: Priority 0 = STOPPING, (3) `watchdog_tick()`: watchdog check-ek kihagyva ha stopping, (4) `publish_state()`: `"is_stopping"` mező. Ez C++ módosítás, Docker build szükséges. Érintett: `robot_safety/src/safety_supervisor.cpp`.
 
 - **~~Nav2 SIGABRT crash — params_file scope szivárgás~~** — ✅ **KÉSZ (2026-03-22):** `robot.launch.py` navigation include-ban explicit `params_file: PathJoinSubstitution([pkg, "config", "nav2_params.yaml"])` hozzáadva. A LaunchConfiguration scope-ból örökölt `robot_params.yaml` Nav2 node-okba kerülésekor SIGABRT-ot okozott. Érintett: `robot_bringup/launch/robot.launch.py`.
