@@ -1,8 +1,8 @@
 # Robot Project — Teljes Projekt Áttekintés
 
-**Verzió:** 2.9
+**Verzió:** 3.0
 **Dátum:** 2026-05-08
-**Státusz:** Nav2 + SLAM + LiDAR stabil. Safety latch rendszer kész. Proximity zóna V1 kész (non-latching, clusteres szűrő, 4 kizárási tartomány). RC safety policy redesign: csak IMU tilt blokkolja RC-t, szenzor latchek RC módban felfüggesztve. BNO085 IMU stabil (~100Hz). ZED 2i szervizen — D435i elülső kamera átmenetileg.
+**Státusz:** Nav2 + SLAM + LiDAR stabil. Safety latch rendszer kész. Proximity zóna V2 kész: stadiongörbe stop zóna, 4 Foxglove marker réteg, costmap footprint offset. RC safety policy redesign: csak IMU tilt blokkolja RC-t, szenzor latchek RC módban felfüggesztve. BNO085 IMU stabil (~100Hz). ZED 2i szervizen — D435i elülső kamera átmenetileg.
 
 ---
 
@@ -40,9 +40,10 @@ Architektúra doksi: `/home/eduard/Dropbox/Development/RobotEcosystem/robot_arch
 | RC mód | 14 km/h (3.89 m/s) |
 | ROS mód | 8 km/h (2.22 m/s) |
 
-**Nav2 footprint** (base_link a forgásközpontnál):
+**Nav2 footprint** (base_link a forgásközpontnál, 2026-05-08: -100mm x eltolás alkalmazva):
 ```yaml
-footprint: "[[0.505, 0.4], [0.505, -0.4], [-0.595, -0.4], [-0.595, 0.4]]"
+footprint: "[[0.405, 0.4], [0.405, -0.4], [-0.695, -0.4], [-0.695, 0.4]]"
+# Elülső él: +405mm, hátsó él: -695mm base_link-től (= LiDAR-tól: +440mm / -660mm)
 ```
 
 ---
@@ -179,36 +180,245 @@ footprint: "[[0.505, 0.4], [0.505, -0.4], [-0.595, -0.4], [-0.595, 0.4]]"
 
 ## 7. Biztonsági Architektúra
 
-### 7a. LiDAR közelségi biztonsági zóna (Proximity Zone V1, 2026-05-08) ✅
+### 7a. LiDAR közelségi biztonsági zóna (Proximity Zone V2, 2026-05-08) ✅
 
-**Típus:** Non-latching, valós idejű — automatikusan törlődik ha az akadály elhagyja a zónát. Nincs szükség E-Stop resetelésre.
+#### Alapelv
 
-| Paraméter | Érték | Leírás |
+A proximity zóna egy **valós idejű, nem latchelő** biztonsági réteg: automatikusan törlődik, ha az akadály elhagyja a zónát. Nem igényel E-Stop resetet. Ez szándékos — a szomszédban álló ember, egy oszlop, egy fal nem szabad, hogy tartós FAULT állapotot okozzon; a robot megáll, kivár, majd ha az útja szabad, folytatja a mozgást.
+
+A proximity zóna a **legalsó, legszigorúbb szoftver szintű vészstop réteg** az autonóm módokban. A védelmi lánc:
+
+```
+Fizikai tér  →  LiDAR scan  →  proximity_supervisor  →  cmd_vel gate  →  motor
+                                     ↑
+                          Ez a szekció dokumentálja
+```
+
+A LiDAR scan (`/scan`) szűretlenül megy tovább SLAM-nek és Nav2 costmap-nek is — a proximity check a `safety_supervisor` belső logikája, nem módosítja a scan topicot.
+
+---
+
+#### Koordináta rendszer
+
+A LiDAR (`lidar_link`) az RPLidar A2M12 fizikai középpontja. **Nem esik egybe** a robot geometriai középpontjával:
+
+```
+Robot elülső éle
+      │
+      │← 440mm →│← LiDAR →│← 660mm →│
+                            ↑
+                       lidar_link (0,0)
+                            │
+                      ← 100mm →
+                            │
+                     robot geometriai
+                       középpont
+                      (stop_zone_cx_)
+```
+
+A `stop_zone_center_offset_x_m: -0.100` paraméter a stop zóna középpontját a LiDAR-tól 100mm-rel a robot hátulja felé tolja — így a biztonsági buborék szimmetrikusan körülveszi a robotot, nem a LiDAR-t.
+
+---
+
+#### Stop zóna alakja — stadiongörbe (kapszula)
+
+A V2 előtt a stop zóna egy kör volt (circumradius + margin). Ez több problémát okozott:
+- Oldalra kisebb védelmet nyújtott mint előre/hátra (a robot téglalap, nem kör)
+- A LiDAR-t középpontnak véve a robot geometriájától eltolódott
+
+**A V2 stadiongörbe (2D kapszula):** egy téglalap, amelynek két rövidebb oldala félkör. Matematikailag: a középvonal-szegmens körüli összes pont összessége, ahol a távolság ≤ oldalsugár.
+
+```
+                     stop_zone_half_len_ = 0.75m
+              ┌────────────────────────────────────┐
+              │         (cx - hl)    (cx + hl)     │
+         ◯────┤             ●────────────●          ├────◯
+              │         hátsó           elülső      │
+              └────────────────────────────────────┘
+                     stop_zone_side_ = 0.50m
+                   (oldalsugár + félkör sugara)
+```
+
+**Kapszula ellenőrzés algoritmusa** (scan_cb, minden LiDAR pontra):
+```
+px = r · cos(angle)          // pont x koordináta lidar_link frame-ben
+py = r · sin(angle)          // pont y koordináta
+
+// Legközelebbi pont a középvonal-szegmensen
+closest_x = clamp(px, cx - half_len, cx + half_len)
+
+// Távolság a kapszula középvonalától
+dist = hypot(px - closest_x, py)
+
+// Zónán belül van?
+in_zone = dist < stop_zone_side_
+```
+
+Ez egyetlen képlet, amely egyszerre kezeli:
+- az egyenes oldalakat (ahol `px` a `[cx-hl, cx+hl]` tartományban van → `closest_x = px` → `dist = |py|`)
+- a lekerekített végeket (ahol `px` kívül esik → `closest_x` a végpont → körös távolság)
+
+**Aktuális paraméterek:**
+
+| Paraméter | YAML kulcs | Érték | Effektív |
+|---|---|---|---|
+| Középpont eltolás | `stop_zone_center_offset_x_m` | −0.100 m | — |
+| Félhossz (margin nélkül) | `stop_zone_front_back_m` | 0.65 m | — |
+| Oldalsugár (margin nélkül) | `stop_zone_side_m` | 0.40 m | — |
+| Biztonsági margó | `proximity_safety_margin_m` | 0.10 m | mindkét dim. |
+| **Effektív félhossz** | — | — | **0.75 m** |
+| **Effektív oldalsugár** | — | — | **0.50 m** |
+
+A margó és a fizikai méretek külön vannak tartva, hogy felépítmény cserekor csak a fizikai méretet kelljen frissíteni.
+
+---
+
+#### Szögkizárási zónák (önárnyékolás szűrése)
+
+A robot saját felépítménye (tartóoszlopok, elülső elem) LiDAR scan pontokat generál a stop zónán belül. Ezeket szögkizárással szűrjük — a kizárt szögekben a LiDAR méréseit a proximity check figyelmen kívül hagyja.
+
+**Kalibráció módszere (2026-05-08):** 5 scan átlagából azonosítjuk a `< 0.45 m` tartományban konzisztensen megjelenő szögcsoportokat. Minden csoporthoz ±2° (elülső elemnél ±3°) puffert adunk, hogy mechanikai rezgések és enyhe robotforgás esetén se legyen false positive.
+
+**Aktuális kizárási zónák (2026-05-08, váz csere után újrakalibrálva):**
+
+| Elem | Kizárt szögek | Távolság | Puffer |
+|---|---|---|---|
+| Bal-hátsó tartóoszlop | −162.8° .. −147.1° | 0.28–0.30 m | ±2° |
+| Jobb-elülső tartóoszlop | −33.9° .. −25.1° | 0.36–0.37 m | ±2° |
+| Elülső rögzítő elem | −3.0° .. +6.2° | 0.53–0.55 m | ±3° |
+| Bal-elülső tartóoszlop | +26.7° .. +36.9° | 0.36–0.37 m | ±2° |
+| Jobb-hátsó tartóoszlop | +141.7° .. +164.2° | 0.26–0.29 m | ±2° |
+
+> **Fontos:** Az elülső elem (0° körül, 0.54 m) az alapértelmezett `proximity_min_range_m: 0.45 m` szűrőn **átesik** (0.54 > 0.45), ezért kötelező a szögkizárás. Puffer is nagyobb (±3°), mert kisebb szögszélességű és a mechanikai pozíciója kevésbé stabil.
+
+**Felépítmény csere esetén:** 5 scan átlagos elemzéssel újrakalibrálni (`docker exec robot python3` alapú scan dump, ld. session napló 2026-05-08).
+
+---
+
+#### Clusteres szűrő (zajelnyomás)
+
+Egyetlen LiDAR pont (pl. porcikák, elektromos zaj, cérnaszálak) nem vált triggert. Csak egybefüggő scan pontok sorozata (szomszédos indexek) okoz fault-ot.
+
+| Paraméter | Érték | Indoklás |
 |---|---|---|
-| Zóna sugara (`proximity_dist`) | 0.782 m | circumradius (0.682 m) + margin (0.10 m) |
-| Min. mérési távolság (`proximity_min_range_m`) | 0.45 m | Tartóoszlopok (~0.42 m) kiszűrése |
-| Min. pontszám (`proximity_min_points`) | 10 | Ceruza (~7 pt max) és zaj kiszűrése |
-| Aktív módok (`proximity_active_modes`) | `"robot"` | RC módban az operátor felel — inaktív |
-| Be/ki kapcsoló (`proximity_enabled`) | `true` | YAML-ból kapcsolható |
+| `proximity_min_points` | 10 | Ceruza mérés: max 7 pont @ 0.58 m (2026-05-08 teszt) |
 
-**Szögkizárás — 4 tartóoszlop (kalibrált, +0.5° margin):**
+Ha a fal 10+ szomszédos LiDAR sugáron belül van a stop zónában → fault. Ha csak 3 pont → zaj, figyelmen kívül hagyva.
 
-| Tartóoszlop | Kizárt szögek (deg) |
-|---|---|
-| Hátsó-bal | −164.7° .. −145.4° |
-| Hátsó-jobb | −36.2° .. −23.4° |
-| Elülső-jobb | 25.2° .. 38.4° |
-| Elülső-bal | 140.2° .. 167.9° |
+---
 
-**Működési logika:**
-1. Min. tartomány szűrés: `r < proximity_min_range_m` → kihagyás (önárnyékolás)
-2. Szögkizárás: tartóoszlop tartományba eső ray → kihagyás
-3. Clusteres szűrő: csak egybefüggő (szomszédos index), `proximity_min_points` vagy több, zónán belüli ray triggerel
-4. `proximity_fault_` flag valós idejű: ha fault && !fault → WARN log, ha fault→fault → csak `last_proximity_range_` frissül
+#### Működési logika (scan_cb, teljes folyamat)
 
-**Foxglove vizualizáció:** `/safety/proximity_zone` marker — CYLINDER a `lidar_link`-nél, zöld (szabad) / piros (fault)
+```
+Minden LiDAR frame (~13 Hz RPLidar A2M12):
 
-**Tervezett fejlesztés (backlog):** Proximity V2 — stadion alakú stop-zóna, slow zone (1 m), irányfelismerés, mód-alapú aktiválás kibővítve.
+1. r ≤ proximity_min_range_m (0.45 m)  → KIHAGYÁS (önárnyékolás, min-range)
+2. r ≥ range_max                        → KIHAGYÁS (érvénytelen mérés)
+3. angle ∈ kizárási tartomány           → KIHAGYÁS (tartóoszlop / elülső elem)
+4. Kapszula check: dist_to_zone < stop_zone_side_  → pont a zónában
+5. Cluster számolás: szomszédos indexek sorozata
+6. max_cluster_size ≥ proximity_min_points  →  proximity_fault_ = true
+
+Trigger rising edge (false → true):
+  - Cluster centroidját eltároljuk (trigger_x_, trigger_y_)
+  - trigger_time_ = now()   → Foxglove trigger pont animáció indul
+
+Fault törlés: automatikus, ha az akadály elhagyja a zónát (következő scan frame)
+```
+
+**Aktív módok:** `proximity_active_modes: "robot"` — csak autonóm módokban aktív (ROBOT, FOLLOW, SHUTTLE). RC módban az operátor felel, proximity inaktív és automatikusan törlődik.
+
+---
+
+#### Foxglove vizualizáció — 4 marker réteg
+
+Mind a négy réteg külön topic-on jelenik meg Foxglove-ban, és egyenként ki/bekapcsolható a panel layerlistájában.
+
+| Topic | Típus | Forma | Szín | Frissítés |
+|---|---|---|---|---|
+| `/safety/proximity_zone` | `Marker` | LINE_STRIP stadiongörbe | Zöld (szabad) / Piros (fault) | 20 Hz |
+| `/safety/slow_zone` | `Marker` | LINE_STRIP stadiongörbe (nagyobb) | Sárga | 20 Hz |
+| `/safety/exclusion_zones` | `MarkerArray` | TRIANGLE_LIST pie-szeletek | Kék, 35% átlátszó | 1 Hz |
+| `/safety/trigger_point` | `Marker` | SPHERE | Piros, fade | 20 Hz, 3 mp-ig |
+
+**Stop zone** (`/safety/proximity_zone`): a tényleges stop zóna körvonala. Zöldből pirosba vált, ha `proximity_fault_` aktív. A vonalvastagság 3 cm, így jól látható kisebb Foxglove ablakban is.
+
+**Slow zone** (`/safety/slow_zone`): egy nagyobb, sárga stadiongörbe — a tervezett lassítási zóna előnézete. Jelenleg csak vizualizáció (logika V2 backlogban). A sárga szín figyelmeztetés: "ide ne tegyünk embert, mert a robot lassítani fog majd."
+
+**Exclusion zones** (`/safety/exclusion_zones`): a 4+1 kizárási szektort kék átlátszó "pite szelet" formájában rajzolja ki. Segít operátornak és fejlesztőnek megérteni, hogy a robot a saját felépítményének mely szögeit "nem látja". Ritkábban frissül (1 Hz), mert statikus.
+
+**Trigger point** (`/safety/trigger_point`): amikor proximity fault keletkezik, megjelenik a kiváltó LiDAR cluster centroidján egy piros gömb. Az alpha értéke `3 mp` alatt lineárisan 0-ra csökken. Segíti az utólagos elemzést: "mi volt az akadály, honnan jött?"
+
+```
+t=0s: alpha=1.0  ●  (teli piros gömb, 15 cm átmérő)
+t=1s: alpha=0.67 ●  (33% halványabb)
+t=2s: alpha=0.33 ●  (67% halványabb)
+t=3s: alpha=0.0     (eltűnt)
+```
+
+---
+
+#### Nav2 costmap footprint összehangolás
+
+A Nav2 local és global costmap footprintje a `base_link` frame-ben van megadva. Mivel a LiDAR az egyetlen távolságmérő szenzor és a safety zone is LiDAR-centrikus, a footprintnek is ugyanazt a geometriát kell tükröznie.
+
+**2026-05-08 módosítás:** -100 mm x eltolás alkalmazva mindkét costmapben, hogy a Nav2 ütközéstervező ugyanolyan "biztonsági buborékban" gondolkozzon, mint a proximity supervisor.
+
+```yaml
+# Volt:
+footprint: "[[0.505, 0.4], [0.505, -0.4], [-0.595, -0.4], [-0.595, 0.4]]"
+# base_link-től: elöl +505mm, hátul -595mm
+
+# Lett:
+footprint: "[[0.405, 0.4], [0.405, -0.4], [-0.695, -0.4], [-0.695, 0.4]]"
+# base_link-től: elöl +405mm, hátul -695mm
+# LiDAR-tól (lidar_joint x=-35mm): elöl +440mm, hátul -660mm
+```
+
+---
+
+#### YAML paraméter referencia
+
+```yaml
+safety_supervisor:
+  ros__parameters:
+    # Stop zóna — stadiongörbe
+    stop_zone_center_offset_x_m:  -0.100   # középpont eltolás a LiDAR-tól (negatív = hátra)
+    stop_zone_front_back_m:        0.65    # félhossz, margin nélkül
+    stop_zone_side_m:              0.40    # oldalsugár, margin nélkül
+    proximity_safety_margin_m:     0.10    # hozzáadódik front_back és side méretekhez
+    # → effektív: hl=0.75m, side=0.50m
+
+    # Önárnyékolás szűrés
+    proximity_min_range_m:         0.45    # ennél közelebb lévő pontok ignorálva
+    proximity_exclusion_angle_starts_deg: [-162.8, -33.9, -3.0, 26.7, 141.7]
+    proximity_exclusion_angle_ends_deg:   [-147.1, -25.1,  6.2, 36.9, 164.2]
+
+    # Cluster szűrő
+    proximity_min_points:          10      # ennyi szomszédos pont kell fault-hoz
+
+    # Mód kapcsolók
+    proximity_enabled:             true    # globális ki/be kapcsoló
+    proximity_active_modes:        "robot" # "all" | "robot" | "rc"
+
+    # Slow zone (vizuál, logika nincs)
+    slow_zone_marker_enabled:      true
+    slow_zone_front_back_m:        1.00
+    slow_zone_side_m:              0.70
+
+    # Trigger pont fade
+    trigger_fade_s:                3.0
+```
+
+---
+
+#### Tervezett fejlesztések (backlog)
+
+| Fejlesztés | Prioritás | Leírás |
+|---|---|---|
+| **Slow zone logika** | P2 | Ha objektum a slow zone-ban, de stop zone-on kívül → `cmd_vel.linear.x` capped `slow_zone_max_speed_mps`-re |
+| **Irányfelismerő stop zone** | P2 | `cmd_vel.linear.x > 0` → csak elülső szektort ellenőrzi; `< 0` → csak hátulsót; elakadás mentesítés lehetséges |
+| **Fizikai RESET gomb** | P2 | E-Stop bridge GPIO → `/robot/reset` topic — FAULT feloldás container restart nélkül |
 
 ### 7b. IMU tilt biztonsági szűrő
 
