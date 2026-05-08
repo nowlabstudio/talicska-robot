@@ -449,6 +449,8 @@ safety_supervisor:
     proximity_min_points: 10
     # Proximity zóna ki/be kapcsoló — false: a teljes proximity check inaktív (E-Stop nem triggel)
     proximity_enabled: true
+    # Aktív módok — "all": minden módban | "robot": csak autonóm (nem RC) | "rc": csak RC módban
+    proximity_active_modes: "robot"
     # watchdog_rate_hz: Hz-ben ellenőrzi az E-Stop üzenet frissességét
     watchdog_rate_hz:     20.0
     # imu_process_rate_hz: IMU adat feldolgozási ráta a tilt check-hez

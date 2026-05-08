@@ -122,6 +122,7 @@ public:
     this->declare_parameter("proximity_exclusion_angle_ends_deg",   std::vector<double>{});
     this->declare_parameter("proximity_min_points",                 10);
     this->declare_parameter("proximity_enabled",                    true);
+    this->declare_parameter("proximity_active_modes",               std::string("robot"));
     this->declare_parameter("watchdog_rate_hz",     20.0);
     this->declare_parameter("imu_process_rate_hz",  20.0);
     this->declare_parameter("rc_mode_threshold",     0.5);
@@ -160,13 +161,15 @@ public:
       exclusion_ends_.push_back(deg2rad(ex_ends_deg[i]));
     }
     proximity_min_points_ = this->get_parameter("proximity_min_points").as_int();
-    proximity_enabled_    = this->get_parameter("proximity_enabled").as_bool();
+    proximity_enabled_      = this->get_parameter("proximity_enabled").as_bool();
+    proximity_active_modes_ = this->get_parameter("proximity_active_modes").as_string();
 
     RCLCPP_INFO(get_logger(),
-      "Proximity zone: circumradius=%.3fm + margin=%.2fm = %.3fm (min_range=%.2fm, exclusions=%zu, min_points=%d, %s)",
+      "Proximity zone: circumradius=%.3fm + margin=%.2fm = %.3fm (min_range=%.2fm, exclusions=%zu, min_points=%d, %s, active_in=%s)",
       circumradius, safety_margin, proximity_dist_, proximity_min_range_,
       exclusion_starts_.size(), proximity_min_points_,
-      proximity_enabled_ ? "ENABLED" : "DISABLED");
+      proximity_enabled_ ? "ENABLED" : "DISABLED",
+      proximity_active_modes_.c_str());
     rc_mode_threshold_    = this->get_parameter("rc_mode_threshold").as_double();
     mode_topic_timeout_s_ = this->get_parameter("mode_topic_timeout_s").as_double();
     double rate_hz        = this->get_parameter("watchdog_rate_hz").as_double();
@@ -453,6 +456,21 @@ private:
     scan_received_  = true;
 
     if (!proximity_enabled_) {
+      return;
+    }
+
+    // Mód-alapú aktiválás: "all" = mindig, "robot" = nem RC, "rc" = csak RC
+    const bool mode_active =
+      (proximity_active_modes_ == "all") ||
+      (proximity_active_modes_ == "rc"   &&  current_state_ == "RC") ||
+      (proximity_active_modes_ == "robot" && current_state_ != "RC");
+
+    if (!mode_active) {
+      if (proximity_fault_) {
+        proximity_fault_ = false;
+        RCLCPP_INFO(get_logger(),
+          "Proximity inaktív ebben a módban (%s) — fault törölve", current_state_.c_str());
+      }
       return;
     }
 
@@ -1059,7 +1077,8 @@ private:
   double      proximity_angle_;
   double      proximity_min_range_;
   int         proximity_min_points_; // min egymás melletti scan pont fault-hoz (ceruza-szűrő)
-  bool        proximity_enabled_;    // false = proximity check teljesen kikapcsolt (YAML)
+  bool        proximity_enabled_;       // false = proximity check teljesen kikapcsolt (YAML)
+  std::string proximity_active_modes_;  // "all" | "robot" (nem RC) | "rc" (csak RC)
   std::vector<double> exclusion_starts_;  // rad
   std::vector<double> exclusion_ends_;    // rad
   double      rc_mode_threshold_;
