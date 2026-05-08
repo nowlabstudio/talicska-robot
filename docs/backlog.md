@@ -75,7 +75,6 @@ Ideiglenesen: RealSense D435i = elülső kamera, hátsó kamera nincs.
 ### 🔴 Magas prioritás (Biztonsági / Kritikus)
 
 - **SLAM lifecycle versió buildelése forrásból** — Bond timeout workaround (0.0) veszélyes
-- **E-Stop bridge pub frekvencia** — ~1 Hz jelenleg, cél ≥10 Hz (100ms reaction time)
 
 ### 🟡 Közepes prioritás (Funkcionalitás)
 
@@ -132,8 +131,6 @@ Ideiglenesen: RealSense D435i = elülső kamera, hátsó kamera nincs.
 - **RC expo görbe — alacsony stick állásban finomabb vezérlés** — 2026-05-03. Jelenleg a `rc_teleop_node` lineárisan konvertálja a stick értéket sebességgé (`input * max_linear_vel`). 100kg-os robotnál ez nehézzé teszi a lassú, pontos mozgást — az alsó stick állások is azonnali gyorsulást okoznak. Tervezett fix: expo görbe bevezetése a `publish_tick()`-ben: `output = (1 - expo) * x + expo * x³`. Paraméter: `expo_factor` (0.0 = lineáris, 1.0 = kubikus; ajánlott: 0.5-0.7). Runtime frissíthető: `declare_parameter` + `param_cb_handle_` callback (mint `rc_mode_invert`) → Foxglove Parameters panelből állítható rebuild nélkül. YAML-ban: `rc_teleop_node/ros__parameters/expo_factor: 0.6`. Docker build szükséges az implementációhoz. Érintett: `robot_teleop/src/rc_teleop_node.cpp`, `config/robot_params.yaml`.
 
 - **RC módban a jobb motor gyorsabban forog mint a bal** — Enkóder nélkül tesztelve (2026-03-15, open-loop). Lehetséges okok: (1) RoboClaw M1/M2 eltérő kalibrációja, (2) mechanikai ellenállás különbség, (3) RC mixer aszimmetria az adón. Enkóder bekötése + PID tuning után visszatérni — closed-loop-ban a controller kompenzálja. Addig: adón trimmelhető.
-
-- **E-Stop bridge publikálási frekvencia túl alacsony (~1 Hz)** — 2026-03-16, mérve. Egy 100kg-os robotnál az E-Stop jelzésnek ≤100ms-en belül meg kell érkeznie. Jelenlegi ~1 Hz = legrosszabb eset ~1s reakcióidő, elfogadhatatlan. Fix: bridge firmware publish rate emelése ≥10 Hz-re (100ms). Érintett firmware: ROS2-Bridge E-Stop (10.0.10.23), `/robot/estop` topic.
 
 - **E-Stop bridge (10.0.10.23) nem csatlakozik a microros agent-hez stack újraindítás után** — 2026-03-16, többször reprodukálva. A `/robot/estop` topic nem jelenik meg, bridge reset után feljön. Az RC bridge (10.0.10.22) és Pedal bridge (10.0.10.21) ugyanazzal a firmware-rel működik — tehát nem firmware hiba. Valószínűleg hálózati/UDP szintű probléma: microros agent újrainduláskor a bridge nem tud újracsatlakozni (UDP session elvész). Vizsgálandó: (1) microros agent reconnect logika, (2) bridge-oldali watchdog/reconnect timeout, (3) SW1 port/kábel fizikai állapot, (4) ARP cache / UDP port reuse a Jetsonon.
 

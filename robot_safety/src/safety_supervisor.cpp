@@ -86,6 +86,7 @@
 #include "std_msgs/msg/header.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "visualization_msgs/msg/marker.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 
 namespace robot_safety
 {
@@ -105,7 +106,8 @@ public:
     scan_first_received_time_(now()),
     last_imu_time_(now()),
     scan_recovery_start_(now()),
-    imu_recovery_start_(now())
+    imu_recovery_start_(now()),
+    trigger_time_(now())
   {
     this->declare_parameter("estop_timeout_s",          2.0);
     this->declare_parameter("rc_timeout_s",             5.0);
@@ -114,10 +116,16 @@ public:
     this->declare_parameter("latch_state_path",         std::string("/tmp/safety_latch_state"));
     this->declare_parameter("tilt_roll_limit_deg",  25.0);
     this->declare_parameter("tilt_pitch_limit_deg", 20.0);
-    this->declare_parameter("superstructure_circumradius_m", 0.7);
-    this->declare_parameter("proximity_safety_margin_m",    0.10);
-    this->declare_parameter("proximity_angle_deg",          30.0);
-    this->declare_parameter("proximity_min_range_m",        0.45);
+    this->declare_parameter("stop_zone_center_offset_x_m",  -0.100);
+    this->declare_parameter("stop_zone_front_back_m",        0.65);
+    this->declare_parameter("stop_zone_side_m",              0.40);
+    this->declare_parameter("proximity_safety_margin_m",     0.10);
+    this->declare_parameter("proximity_angle_deg",           30.0);  // nem használt, kompatibilitás
+    this->declare_parameter("proximity_min_range_m",         0.45);
+    this->declare_parameter("slow_zone_marker_enabled",      true);
+    this->declare_parameter("slow_zone_front_back_m",        1.00);
+    this->declare_parameter("slow_zone_side_m",              0.70);
+    this->declare_parameter("trigger_fade_s",                3.0);
     this->declare_parameter("proximity_exclusion_angle_starts_deg", std::vector<double>{});
     this->declare_parameter("proximity_exclusion_angle_ends_deg",   std::vector<double>{});
     this->declare_parameter("proximity_min_points",                 10);
@@ -148,10 +156,14 @@ public:
     latch_state_path_          = this->get_parameter("latch_state_path").as_string();
     tilt_roll_limit_      = deg2rad(this->get_parameter("tilt_roll_limit_deg").as_double());
     tilt_pitch_limit_     = deg2rad(this->get_parameter("tilt_pitch_limit_deg").as_double());
-    const double circumradius    = this->get_parameter("superstructure_circumradius_m").as_double();
-    const double safety_margin   = this->get_parameter("proximity_safety_margin_m").as_double();
-    proximity_dist_       = circumradius + safety_margin;
-    proximity_angle_      = deg2rad(this->get_parameter("proximity_angle_deg").as_double());
+    const double safety_margin    = this->get_parameter("proximity_safety_margin_m").as_double();
+    stop_zone_cx_         = this->get_parameter("stop_zone_center_offset_x_m").as_double();
+    stop_zone_half_len_   = this->get_parameter("stop_zone_front_back_m").as_double() + safety_margin;
+    stop_zone_side_       = this->get_parameter("stop_zone_side_m").as_double() + safety_margin;
+    slow_zone_half_len_   = this->get_parameter("slow_zone_front_back_m").as_double() + safety_margin;
+    slow_zone_side_       = this->get_parameter("slow_zone_side_m").as_double() + safety_margin;
+    slow_zone_marker_enabled_ = this->get_parameter("slow_zone_marker_enabled").as_bool();
+    trigger_fade_s_       = this->get_parameter("trigger_fade_s").as_double();
     proximity_min_range_  = this->get_parameter("proximity_min_range_m").as_double();
 
     auto ex_starts_deg = this->get_parameter("proximity_exclusion_angle_starts_deg").as_double_array();
@@ -165,8 +177,8 @@ public:
     proximity_active_modes_ = this->get_parameter("proximity_active_modes").as_string();
 
     RCLCPP_INFO(get_logger(),
-      "Proximity zone: circumradius=%.3fm + margin=%.2fm = %.3fm (min_range=%.2fm, exclusions=%zu, min_points=%d, %s, active_in=%s)",
-      circumradius, safety_margin, proximity_dist_, proximity_min_range_,
+      "Proximity zone: stadium cx=%.3fm hl=%.3fm side=%.3fm (min_range=%.2fm, exclusions=%zu, min_points=%d, %s, active_in=%s)",
+      stop_zone_cx_, stop_zone_half_len_, stop_zone_side_, proximity_min_range_,
       exclusion_starts_.size(), proximity_min_points_,
       proximity_enabled_ ? "ENABLED" : "DISABLED",
       proximity_active_modes_.c_str());
@@ -185,7 +197,7 @@ public:
     roboclaw_status_timeout_s_ = this->get_parameter("roboclaw_status_timeout_s").as_double();
 
     // Watchdog activation conditions
-    scan_watchdog_active_ = (proximity_dist_ > 0.0) || enable_scan_watchdog_;
+    scan_watchdog_active_ = (stop_zone_side_ > 0.0) || enable_scan_watchdog_;
     imu_watchdog_active_  = (tilt_roll_limit_ < deg2rad(90.0)) || enable_imu_watchdog_;
 
     // --- subscriptions ---
@@ -291,7 +303,10 @@ public:
     cmd_vel_pub_            = create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel", rclcpp::QoS(10));
     state_pub_              = create_publisher<std_msgs::msg::String>("/safety/state", rclcpp::QoS(10));
     heartbeat_pub_          = create_publisher<std_msgs::msg::Header>("/robot/heartbeat", rclcpp::QoS(10));
-    proximity_marker_pub_   = create_publisher<visualization_msgs::msg::Marker>("/safety/proximity_zone", rclcpp::QoS(10));
+    proximity_marker_pub_   = create_publisher<visualization_msgs::msg::Marker>("/safety/proximity_zone",  rclcpp::QoS(10));
+    slow_zone_marker_pub_   = create_publisher<visualization_msgs::msg::Marker>("/safety/slow_zone",       rclcpp::QoS(10));
+    exclusion_marker_pub_   = create_publisher<visualization_msgs::msg::MarkerArray>("/safety/exclusion_zones", rclcpp::QoS(10));
+    trigger_marker_pub_     = create_publisher<visualization_msgs::msg::Marker>("/safety/trigger_point",   rclcpp::QoS(10));
 
     // --- watchdog timer (20 Hz — state machine + change detection) ---
     auto wd_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -314,14 +329,13 @@ public:
 
     RCLCPP_INFO(get_logger(),
       "SafetySupervisor ready. Holding until startup/armed + E-Stop bridge online. "
-      "Limits: roll±%.0f° pitch±%.0f°, proximity %.2fm front±%.0f°. "
+      "Limits: roll±%.0f° pitch±%.0f°, stop zone: cx=%.3fm hl=%.3fm side=%.3fm. "
       "IMU throttle: %.0f Hz. RC threshold: %.2f (timeout: %.1fs). Heartbeat: %.0f Hz. "
       "Scan watchdog: %s. IMU watchdog: %s. RealSense watchdog: %s (%.1fs). "
       "RoboClaw dropout: /hardware/roboclaw/connected topic (silence timeout: %.2fs). Latch state: %s",
       this->get_parameter("tilt_roll_limit_deg").as_double(),
       this->get_parameter("tilt_pitch_limit_deg").as_double(),
-      proximity_dist_,
-      this->get_parameter("proximity_angle_deg").as_double(),
+      stop_zone_cx_, stop_zone_half_len_, stop_zone_side_,
       imu_hz, rc_mode_threshold_, rc_timeout_s_, hb_hz,
       scan_watchdog_active_ ? "ON" : "OFF",
       imu_watchdog_active_  ? "ON" : "OFF",
@@ -482,6 +496,8 @@ private:
     size_t max_cluster_size = 0;
     size_t cur_cluster_size = 0;
     size_t prev_idx         = SIZE_MAX;
+    double sum_px = 0.0, sum_py = 0.0;
+    size_t in_zone_count = 0;
 
     for (size_t i = 0; i < msg->ranges.size(); ++i) {
       const float r = msg->ranges[i];
@@ -503,8 +519,16 @@ private:
         prev_idx = SIZE_MAX;
         continue;
       }
+      // Stadium check: kapszula cx=(stop_zone_cx_, 0), félhossz=stop_zone_half_len_, sugár=stop_zone_side_
+      const float px = r * std::cos(static_cast<float>(angle));
+      const float py = r * std::sin(static_cast<float>(angle));
+      const float clamped_x = std::clamp(px,
+        static_cast<float>(stop_zone_cx_ - stop_zone_half_len_),
+        static_cast<float>(stop_zone_cx_ + stop_zone_half_len_));
+      const float dist_to_zone = std::hypot(px - clamped_x, py);
       min_range = std::min(min_range, r);
-      if (r < static_cast<float>(proximity_dist_)) {
+      if (dist_to_zone < static_cast<float>(stop_zone_side_)) {
+        sum_px += px; sum_py += py; ++in_zone_count;
         cur_cluster_size = (prev_idx == i - 1) ? cur_cluster_size + 1 : 1;
         prev_idx = i;
         if (cur_cluster_size > max_cluster_size) {
@@ -518,6 +542,12 @@ private:
 
     const bool fault = (static_cast<int>(max_cluster_size) >= proximity_min_points_);
 
+    if (fault && !proximity_fault_ && in_zone_count > 0) {
+      trigger_x_      = sum_px / static_cast<double>(in_zone_count);
+      trigger_y_      = sum_py / static_cast<double>(in_zone_count);
+      trigger_time_   = now();
+      trigger_active_ = true;
+    }
     if (fault != proximity_fault_) {
       proximity_fault_      = fault;
       last_proximity_range_ = static_cast<double>(min_range);
@@ -764,29 +794,56 @@ private:
     const double since_publish = (now() - last_baseline_publish_).seconds();
     if (since_publish >= 1.0) {
       publish_state();
+      if (!exclusion_starts_.empty()) {
+        exclusion_marker_pub_->publish(make_exclusion_markers(
+          "lidar_link", now(), exclusion_starts_, exclusion_ends_, stop_zone_side_));
+      }
       last_baseline_publish_ = now();
     }
 
-    // 14. Proximity zone marker — Foxglove vizualizáció (minden tick-en)
-    if (proximity_dist_ > 0.0) {
-      visualization_msgs::msg::Marker m;
-      m.header.stamp    = now();
-      m.header.frame_id = "lidar_link";
-      m.ns              = "safety";
-      m.id              = 0;
-      m.type            = visualization_msgs::msg::Marker::CYLINDER;
-      m.action          = visualization_msgs::msg::Marker::ADD;
-      m.pose.orientation.w = 1.0;
-      m.scale.x = proximity_dist_ * 2.0;
-      m.scale.y = proximity_dist_ * 2.0;
-      m.scale.z = 0.02;
-      const bool zone_active = proximity_fault_;
-      m.color.r = zone_active ? 1.0f : 0.0f;
-      m.color.g = zone_active ? 0.0f : 1.0f;
-      m.color.b = 0.0f;
-      m.color.a = 0.35f;
-      m.lifetime = rclcpp::Duration::from_seconds(1.0);
-      proximity_marker_pub_->publish(m);
+    // 14. Foxglove vizualizáció — 4 safety marker réteg (minden tick-en)
+    {
+      const auto t = now();
+      // Stop zone (stadiongörbe) — zöld/piros fault szerint
+      const bool zf = proximity_fault_;
+      proximity_marker_pub_->publish(make_stadium_marker(
+        "lidar_link", t, "safety", 0,
+        stop_zone_cx_, stop_zone_half_len_, stop_zone_side_,
+        zf ? 1.0f : 0.0f, zf ? 0.0f : 1.0f, 0.0f, 0.6f, 0.015));
+
+      // Slow zone (stadiongörbe) — sárga, csak vizuál, logika nincs
+      if (slow_zone_marker_enabled_) {
+        slow_zone_marker_pub_->publish(make_stadium_marker(
+          "lidar_link", t, "safety", 1,
+          stop_zone_cx_, slow_zone_half_len_, slow_zone_side_,
+          1.0f, 0.8f, 0.0f, 0.3f, 0.005));
+      }
+
+      // Trigger pont — piros gömb, alpha fade
+      if (trigger_active_) {
+        const double elapsed = (t - trigger_time_).seconds();
+        const float alpha = static_cast<float>(std::max(0.0, 1.0 - elapsed / trigger_fade_s_));
+        if (alpha > 0.0f) {
+          visualization_msgs::msg::Marker tm;
+          tm.header.frame_id    = "lidar_link";
+          tm.header.stamp       = t;
+          tm.ns                 = "trigger";
+          tm.id                 = 0;
+          tm.type               = visualization_msgs::msg::Marker::SPHERE;
+          tm.action             = visualization_msgs::msg::Marker::ADD;
+          tm.pose.position.x    = trigger_x_;
+          tm.pose.position.y    = trigger_y_;
+          tm.pose.position.z    = 0.05;
+          tm.pose.orientation.w = 1.0;
+          tm.scale.x = tm.scale.y = tm.scale.z = 0.15;
+          tm.color.r = 1.0f; tm.color.g = 0.2f; tm.color.b = 0.0f;
+          tm.color.a = alpha;
+          tm.lifetime = rclcpp::Duration::from_seconds(trigger_fade_s_ + 0.5);
+          trigger_marker_pub_->publish(tm);
+        } else {
+          trigger_active_ = false;
+        }
+      }
     }
   }
 
@@ -1078,6 +1135,88 @@ private:
     return out;
   }
 
+  static visualization_msgs::msg::Marker make_stadium_marker(
+    const std::string& frame_id, const rclcpp::Time& stamp,
+    const std::string& ns, int id,
+    double cx, double half_len, double side_r,
+    float cr, float cg, float cb, float ca, double z = 0.015)
+  {
+    visualization_msgs::msg::Marker m;
+    m.header.frame_id    = frame_id;
+    m.header.stamp       = stamp;
+    m.ns                 = ns;
+    m.id                 = id;
+    m.type               = visualization_msgs::msg::Marker::LINE_STRIP;
+    m.action             = visualization_msgs::msg::Marker::ADD;
+    m.scale.x            = 0.03;
+    m.color.r = cr; m.color.g = cg; m.color.b = cb; m.color.a = ca;
+    m.lifetime           = rclcpp::Duration::from_seconds(1.0);
+    m.pose.orientation.w = 1.0;
+    const int N = 24;
+    // Elülső félkör: center = (cx + half_len, 0), szögek -π/2 → +π/2
+    for (int i = 0; i <= N; ++i) {
+      const double a = -M_PI / 2.0 + M_PI * i / N;
+      geometry_msgs::msg::Point p;
+      p.x = (cx + half_len) + side_r * std::cos(a);
+      p.y = side_r * std::sin(a);
+      p.z = z;
+      m.points.push_back(p);
+    }
+    // Hátsó félkör: center = (cx - half_len, 0), szögek +π/2 → +3π/2
+    for (int i = 0; i <= N; ++i) {
+      const double a = M_PI / 2.0 + M_PI * i / N;
+      geometry_msgs::msg::Point p;
+      p.x = (cx - half_len) + side_r * std::cos(a);
+      p.y = side_r * std::sin(a);
+      p.z = z;
+      m.points.push_back(p);
+    }
+    // Zárás: vissza az elülső félkör első pontjára
+    geometry_msgs::msg::Point close;
+    close.x = (cx + half_len);
+    close.y = -side_r;
+    close.z = z;
+    m.points.push_back(close);
+    return m;
+  }
+
+  static visualization_msgs::msg::MarkerArray make_exclusion_markers(
+    const std::string& frame_id, const rclcpp::Time& stamp,
+    const std::vector<double>& starts, const std::vector<double>& ends,
+    double radius)
+  {
+    visualization_msgs::msg::MarkerArray arr;
+    const int N = 16;
+    for (size_t i = 0; i < starts.size(); ++i) {
+      visualization_msgs::msg::Marker m;
+      m.header.frame_id    = frame_id;
+      m.header.stamp       = stamp;
+      m.ns                 = "exclusion";
+      m.id                 = static_cast<int>(i);
+      m.type               = visualization_msgs::msg::Marker::TRIANGLE_LIST;
+      m.action             = visualization_msgs::msg::Marker::ADD;
+      m.scale.x = m.scale.y = m.scale.z = 1.0;
+      m.color.r = 0.3f; m.color.g = 0.5f; m.color.b = 1.0f; m.color.a = 0.35f;
+      m.lifetime           = rclcpp::Duration::from_seconds(2.0);
+      m.pose.orientation.w = 1.0;
+      const double span = ends[i] - starts[i];
+      geometry_msgs::msg::Point origin;
+      origin.x = 0.0; origin.y = 0.0; origin.z = 0.01;
+      for (int j = 0; j < N; ++j) {
+        const double a0 = starts[i] + span * j / N;
+        const double a1 = starts[i] + span * (j + 1) / N;
+        geometry_msgs::msg::Point p0, p1;
+        p0.x = radius * std::cos(a0); p0.y = radius * std::sin(a0); p0.z = 0.01;
+        p1.x = radius * std::cos(a1); p1.y = radius * std::sin(a1); p1.z = 0.01;
+        m.points.push_back(origin);
+        m.points.push_back(p0);
+        m.points.push_back(p1);
+      }
+      arr.markers.push_back(m);
+    }
+    return arr;
+  }
+
   static std::string fmt(double v)
   {
     char buf[32];
@@ -1096,10 +1235,15 @@ private:
   double      realsense_timeout_s_;
   double      tilt_roll_limit_;
   double      tilt_pitch_limit_;
-  double      proximity_dist_;       // = circumradius + safety_margin (computed on init)
-  double      proximity_angle_;
+  double      stop_zone_cx_;            // stadium center x (lidar_link-hez képest, negatív = hátra)
+  double      stop_zone_half_len_;      // stadium félhossz (front_back_m + margin)
+  double      stop_zone_side_;          // stadium oldalsugár (side_m + margin)
+  double      slow_zone_half_len_;      // slow zone félhossz
+  double      slow_zone_side_;          // slow zone oldalsugár
+  bool        slow_zone_marker_enabled_;
+  double      trigger_fade_s_;          // trigger pont fade idő (mp)
   double      proximity_min_range_;
-  int         proximity_min_points_; // min egymás melletti scan pont fault-hoz (ceruza-szűrő)
+  int         proximity_min_points_;    // min egymás melletti scan pont fault-hoz (ceruza-szűrő)
   bool        proximity_enabled_;       // false = proximity check teljesen kikapcsolt (YAML)
   std::string proximity_active_modes_;  // "all" | "robot" (nem RC) | "rc" (csak RC)
   std::vector<double> exclusion_starts_;  // rad
@@ -1157,6 +1301,11 @@ private:
   // Proximity
   bool   proximity_fault_       = false;
   double last_proximity_range_  = 0.0;
+  // Trigger pont
+  double         trigger_x_      = 0.0;
+  double         trigger_y_      = 0.0;
+  rclcpp::Time   trigger_time_;
+  bool           trigger_active_ = false;
 
   // IMU callback throttle
   int64_t imu_min_interval_ns_ = 0;
@@ -1241,7 +1390,10 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr  cmd_vel_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr             state_pub_;
   rclcpp::Publisher<std_msgs::msg::Header>::SharedPtr             heartbeat_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr   proximity_marker_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr      proximity_marker_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr      slow_zone_marker_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr exclusion_marker_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr      trigger_marker_pub_;
 
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
   rclcpp::TimerBase::SharedPtr heartbeat_timer_;

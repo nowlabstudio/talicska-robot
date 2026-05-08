@@ -425,24 +425,37 @@ safety_supervisor:
     # TODO: rpy orientáció URDF-ben (imu_joint) véglegesítése után validálni!
     tilt_roll_limit_deg:  25.0
     tilt_pitch_limit_deg: 20.0
-    # PROXIMITY ZONE — 360° körszenzor
-    # Ha felépítmény cserélődik: csak superstructure_circumradius_m-t kell frissíteni.
-    # proximity_dist (runtime) = circumradius + safety_margin
+    # PROXIMITY ZONE — stadiongörbe (kapszula) alakú stop zóna
+    # Középpont a lidar_link-hez képest: stop_zone_center_offset_x_m (negatív = robot hátulja felé)
+    # Effektív méret: (front_back_m + margin) félhossz, (side_m + margin) oldalsugár
     #
-    # Jelenlegi felépítmény (tilt platform 1100×750mm):
-    #   legtávolabbi sarok LiDAR-tól: sqrt(0.570²+0.375²) = 0.682m
-    #   → proximity_dist = 0.682 + 0.10 = 0.782m
+    # Jelenlegi felépítmény (tilt platform 1100×750mm, LiDAR xoffset=-35mm):
+    #   Robot elülső él LiDAR-tól: ~0.54m, hátsó él: ~0.56m
+    #   Geometriai középpont LiDAR-tól: -100mm (hátrafelé)
+    #   stop_zone: 0.65+0.10=0.75m félhossz, 0.40+0.10=0.50m oldalsugár
     #
-    # proximity_min_range_m: önárnyékolás kizárása (tartóoszlopok: 0.27-0.42m)
-    # Foxglove: /safety/proximity_zone (zöld = ok, piros = fault/latch)
-    superstructure_circumradius_m: 0.682
-    proximity_safety_margin_m:     0.10
+    # Foxglove rétegek (külön kapcsolhatók):
+    #   /safety/proximity_zone  — stop zóna (zöld/piros)
+    #   /safety/slow_zone       — slow zóna (sárga, csak vizuál)
+    #   /safety/exclusion_zones — kizárási szektorok (kék)
+    #   /safety/trigger_point   — utolsó trigger pont (piros, fade)
+    stop_zone_center_offset_x_m:  -0.100   # lidar_link-hez képest, negatív = hátra
+    stop_zone_front_back_m:        0.65    # félhossz (margin nélkül)
+    stop_zone_side_m:              0.40    # oldalsugár (margin nélkül)
+    proximity_safety_margin_m:     0.10    # mindkét dimenzióhoz hozzáadódik
+    proximity_angle_deg:           180.0   # nem használt, kompatibilitásból megmarad
     proximity_min_range_m:         0.45
-    proximity_angle_deg:           180.0  # nem használt (360° check), kompatibilitásból megmarad
+    # Slow zone — csak marker, logika nincs (V2 backlog)
+    slow_zone_marker_enabled:      true
+    slow_zone_front_back_m:        1.00
+    slow_zone_side_m:              0.70
+    # Trigger pont fade idő
+    trigger_fade_s:                3.0
     # Szögmaszk — tartóoszlopok kizárása (scan_self_filter_calibrate.py értékei + 0.5° margó)
-    # Frissítsd ha felépítmény cserélődik: futtasd újra scan_self_filter_calibrate.py-t
-    proximity_exclusion_angle_starts_deg: [-164.7, -36.2,  25.2, 140.2]
-    proximity_exclusion_angle_ends_deg:   [-145.4, -23.4,  38.4, 167.9]
+    # Kalibrálva: 2026-05-08 (váz csere után újramérve, 5 scan átlag)
+    # Zónák: bal-hátsó, jobb-elülső tartóoszlop, elülső elem (0.54m, 3° puffer), bal-elülső tartóoszlop, jobb-hátsó
+    proximity_exclusion_angle_starts_deg: [-162.8, -33.9,  -3.0,  26.7, 141.7]
+    proximity_exclusion_angle_ends_deg:   [-147.1, -25.1,  +6.2,  36.9, 164.2]
     # Minimális objektumméret — ennyi egymás melletti scan pont kell a fault-hoz
     # Ceruza mérés (2026-05-08): avg=2.7, max=7 pont @ 0.584m → küszöb=10
     # Kisebb érték érzékenyebb; növeld ha hamis pozitív; csökkentsd ha vékony akadályt akar érzékelni
