@@ -440,14 +440,14 @@ safety_supervisor:
     #   /safety/exclusion_zones — kizárási szektorok (kék)
     #   /safety/trigger_point   — utolsó trigger pont (piros, fade)
     stop_zone_center_offset_x_m:   0.100   # lidar_link-hez képest, pozitív = hátra
-    stop_zone_front_back_m:        0.65    # félhossz (margin nélkül)
+    stop_zone_front_back_m:        0.455   # félhossz (margin nélkül)
     stop_zone_side_m:              0.40    # oldalsugár (margin nélkül)
     proximity_safety_margin_m:     0.10    # mindkét dimenzióhoz hozzáadódik
     proximity_angle_deg:           180.0   # nem használt, kompatibilitásból megmarad
     proximity_min_range_m:         0.45
     # Slow zone — csak marker, logika nincs (V2 backlog)
     slow_zone_marker_enabled:      true
-    slow_zone_front_back_m:        1.00
+    slow_zone_front_back_m:        0.700
     slow_zone_side_m:              0.70
     # Trigger pont fade idő
     trigger_fade_s:                3.0
