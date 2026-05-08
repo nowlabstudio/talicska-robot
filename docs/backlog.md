@@ -161,7 +161,9 @@ Ideiglenesen: RealSense D435i = elülső kamera, hátsó kamera nincs.
 
 - **Proximity zóna V2 — stadiongörbe stop zone + lassítási zóna + irányfelismerés** — 2026-05-08
 
-  A jelenlegi körös proximity zóna három irányban fejlesztendő:
+  **V1 státusz (2026-05-08, commit 1fd6cb3):** ✅ Éles teszten validálva. Non-latching, 360° körzetfigyelés, clusteres szűrő (min_points=10), 4 kizárási tartomány tartóoszlopokhoz, RC módban inaktív, Foxglove marker. JSON stale mező: `"proximity_latch"` kulcsnév megmaradt (mindig false), `"proximity_fault"` helyett — következő rebuild-nél javítandó.
+
+  A körös proximity zóna három irányban fejlesztendő:
 
   **1. Stop zone alakja — stadiongörbe (rectangle with rounded ends)**
 
@@ -246,9 +248,9 @@ Ideiglenesen: RealSense D435i = elülső kamera, hátsó kamera nincs.
 
 - **~~Több egyidejű hiba megjelenítése — `active_faults` lista a `/safety/state` JSON-ban~~** — ✅ **KÉSZ (2026-03-20):** Implementálva. `/safety/state` JSON `active_faults: [...]` tömb mező az összes aktív latch tartalmával (tilt, proximity, scan_dropout, imu_dropout, watchdog). `build_active_faults()` segédfüggvény. Latch bool mezők: `tilt_latch`, `proximity_latch`, `scan_dropout_latch`, `imu_dropout_latch`, `watchdog_latch`. Change detektálás `active_faults_json_prev_` összehasonlítással. **TODO:** Foxglove `startupstate.ts` script frissítése az új mezők megjelenítéséhez. Érintett: `robot_safety/src/safety_supervisor.cpp`.
 
-- **Proximity visszakapcsolása** (`PROXIMITY_DISTANCE_M=0.3` a `.env`-ben) — halasztva, mert robot alkatrészek belelógnak a LiDAR látóterébe és false positive stop-ot okoznak. Előfeltétel: LiDAR maszk implementálása.
+- **~~Proximity visszakapcsolása~~** — ✅ **KÉSZ (2026-05-08):** Proximity V1 implementálva és éles teszten validálva. Commit: `1fd6cb3`. Paraméter: `superstructure_circumradius_m + proximity_safety_margin_m = 0.782m`, non-latching, `proximity_enabled: true`.
 
-- **LiDAR szögmaszk — robot saját alkatrészeinek kitakarása** — `laser_filters` package, `sensors.launch.py`-ba filter node, YAML-ban konfigurálható szögtartomány-kizárás. Elvégzési feltétel: robot felszerelt állapotban, fizikai mérés alapján meghatározott problémás szögtartományok. Utána proximity visszakapcsolható.
+- **~~LiDAR szögmaszk — robot saját alkatrészeinek kitakarása~~** — ✅ **KÉSZ (2026-05-08):** Kalibrált exclusion zónák (`proximity_exclusion_angle_starts_deg`/`_ends_deg`) a 4 tartóoszlophoz `safety_supervisor`-ban, nem `laser_filters` package-ként — mert a szűrés proximity-specifikus (nem kell a scan többi felhasználójára hatni). Min-range filter (0.45m) az önárnyékolás-szűrőként. Clusteres min_points=10 szűrő a ceruza/zaj kiszűrésére.
 
 - **Fizikai RESET gomb az E-Stop bridge-en — FAULT feloldás container restart nélkül** — Jelenleg a startup_supervisor FAULT állapota latchelt: csak container restart oldja fel. Terepen ez nehézkes. Megoldás: fizikai nyomógomb az E-Stop bridge RP2040-en (szabad GPIO), firmware-ből `/robot/reset` topic (Bool, rising edge, debounce). A startup_supervisor FAULT állapotból `/robot/reset` rising edge-re → INIT, újrafuttatja a check-eket (motion, tilt, estop). Ha minden OK → ARMED, ha nem → marad FAULT. A szándékos operátori döntés megmarad (fizikai gomb = nem auto-recover), de nem kell docker restart. Firmware oldal: Zephyr + MicroROS, meglévő ROS2-Bridge platform. ROS2 oldal: startup_supervisor kap egy `/robot/reset` subscriber-t, FAULT→INIT transition logika.
 
