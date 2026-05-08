@@ -720,7 +720,22 @@ private:
 
     determine_state(new_state, new_mode, new_fault_reason, new_error_reason);
 
-    // 10. Publish immediately on any change
+    // 10. RC→robot váltás: sensor latch-ek törlése
+    // Ha az előző állapot RC volt és most robot módba lép, az E-Stop-ot nem igénylő sensor
+    // latch-ek törlődnek. Ha a hiba még fennáll, a watchdog sensor_timeout_s_-en belül újra beállítja.
+    if (current_state_ == "RC" && new_state != "RC") {
+      bool any_cleared = false;
+      if (scan_dropout_latch_)      { scan_dropout_latch_      = false; any_cleared = true; }
+      if (imu_dropout_latch_)       { imu_dropout_latch_       = false; any_cleared = true; }
+      if (realsense_dropout_latch_) { realsense_dropout_latch_ = false; any_cleared = true; }
+      if (any_cleared) {
+        RCLCPP_INFO(get_logger(),
+          "RC→robot váltás: sensor latch-ek törölve — robot mód újraellenőriz (%.1fs timeout)",
+          sensor_timeout_s_);
+      }
+    }
+
+    // 11. Publish immediately on any change
     bool changed = (new_state        != current_state_) ||
                    (new_mode         != current_mode_)  ||
                    (new_fault_reason != fault_reason_)  ||
@@ -742,17 +757,17 @@ private:
         fault_reason_.empty() ? "" : fault_reason_.c_str());
     }
 
-    // 11. Latch állapot perzisztálása (csak ha változott)
+    // 12. Latch állapot perzisztálása (csak ha változott)
     persist_latches();
 
-    // 12. 1 Hz baseline keepalive
+    // 13. 1 Hz baseline keepalive
     const double since_publish = (now() - last_baseline_publish_).seconds();
     if (since_publish >= 1.0) {
       publish_state();
       last_baseline_publish_ = now();
     }
 
-    // 13. Proximity zone marker — Foxglove vizualizáció (minden tick-en)
+    // 14. Proximity zone marker — Foxglove vizualizáció (minden tick-en)
     if (proximity_dist_ > 0.0) {
       visualization_msgs::msg::Marker m;
       m.header.stamp    = now();
@@ -825,32 +840,40 @@ private:
       return;
     }
 
-    // Priority 4: sensor/tilt/proximity/realsense ERROR
-    // proximity_fault_ nem latch-el — automatikusan törlődik ha akadály elhagyja a zónát
-    if (tilt_latch_ || proximity_fault_ || scan_dropout_latch_ || imu_dropout_latch_ ||
-        realsense_dropout_latch_) {
+    // Priority 4a: tilt latch — egyetlen sensor-alapú fault ami RC-t is blokkolja (borulás veszély)
+    if (tilt_latch_) {
       state = "ERROR";
       mode  = last_active_mode_;
-      if (tilt_latch_) {
-        error_reason = "Tilt fault: roll=" + fmt(rad2deg(last_roll_)) +
-                       "° pitch=" + fmt(rad2deg(last_pitch_)) + "°";
-      } else if (proximity_fault_) {
-        error_reason = "Proximity fault: " + fmt(last_proximity_range_) + "m";
-      } else if (scan_dropout_latch_) {
-        error_reason = "LiDAR timeout";
-      } else if (imu_dropout_latch_) {
-        error_reason = "IMU timeout";
-      } else {
-        error_reason = "RealSense timeout";
-      }
+      error_reason = "Tilt fault: roll=" + fmt(rad2deg(last_roll_)) +
+                     "° pitch=" + fmt(rad2deg(last_pitch_)) + "°";
       return;
     }
 
-    // Priority 5: RC mode active
+    // Priority 4b: RC mode — minden más sensor latch felett
+    // RC módban az operátor teljes felelősséget vállal; sensor latch-ek felfüggesztve.
+    // RC→robot váltáskor a watchdog_tick() törli a sensor latch-eket és újraindítja az ellenőrzést.
     if (static_cast<double>(rc_mode_) > rc_mode_threshold_) {
       last_active_mode_ = "RC";
       state = "RC";
       mode  = "RC";
+      return;
+    }
+
+    // Priority 5: sensor dropout latch-ek — csak robot módban aktívak
+    if (scan_dropout_latch_ || imu_dropout_latch_ || realsense_dropout_latch_) {
+      state = "ERROR";
+      mode  = last_active_mode_;
+      if (scan_dropout_latch_)      { error_reason = "LiDAR timeout"; }
+      else if (imu_dropout_latch_)  { error_reason = "IMU timeout"; }
+      else                          { error_reason = "RealSense timeout"; }
+      return;
+    }
+
+    // Priority 6: proximity_fault_ — nem latch-el, automatikusan törlődik
+    if (proximity_fault_) {
+      state = "ERROR";
+      mode  = last_active_mode_;
+      error_reason = "Proximity fault: " + fmt(last_proximity_range_) + "m";
       return;
     }
 

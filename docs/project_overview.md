@@ -1,8 +1,8 @@
 # Robot Project — Teljes Projekt Áttekintés
 
-**Verzió:** 2.8
-**Dátum:** 2026-03-24
-**Státusz:** Implementáció folyamatban — Nav2 + SLAM + LiDAR működik, safety teljes latch rendszer kész, RPLidar graceful shutdown kész, startup_supervisor RESTARTING/STOPPING állapotok kész, restart+shutdown watchdog (Foxglove) kész, boot auto-start kész, navigációs teszt folyamatban
+**Verzió:** 2.9
+**Dátum:** 2026-05-08
+**Státusz:** Nav2 + SLAM + LiDAR stabil. Safety latch rendszer kész. Proximity zóna V1 kész (non-latching, clusteres szűrő, 4 kizárási tartomány). RC safety policy redesign: csak IMU tilt blokkolja RC-t, szenzor latchek RC módban felfüggesztve. BNO085 IMU stabil (~100Hz). ZED 2i szervizen — D435i elülső kamera átmenetileg.
 
 ---
 
@@ -179,19 +179,36 @@ footprint: "[[0.505, 0.4], [0.505, -0.4], [-0.595, -0.4], [-0.595, 0.4]]"
 
 ## 7. Biztonsági Architektúra
 
-### 7a. LiDAR biztonsági zónák (koncentrikus körök)
+### 7a. LiDAR közelségi biztonsági zóna (Proximity Zone V1, 2026-05-08) ✅
 
-| Zóna | Sugár | Reakció | Szűrés |
-|---|---|---|---|
-| Szabad | > 2.5m | Folytatás | — |
-| Figyelmeztetés | 1.5–2.5m | Sebesség 50%-ra csökkentve | Csak személy/állat |
-| Stop | < 0.5m | STO trigger | Személy/állat + minden akadály |
+**Típus:** Non-latching, valós idejű — automatikusan törlődik ha az akadály elhagyja a zónát. Nincs szükség E-Stop resetelésre.
 
-**Személy detekció:**
-- RPLidar A2: leg detection (kis hengeres clusterek, ~15-20cm átmérő)
-- RealSense depth: 3D alakzat alapú detekció
-- Kombinált fúzió → megbízhatóbb person detection
-- Falak, fák: Nav2 costmap kezeli (nem triggerel safety zónát)
+| Paraméter | Érték | Leírás |
+|---|---|---|
+| Zóna sugara (`proximity_dist`) | 0.782 m | circumradius (0.682 m) + margin (0.10 m) |
+| Min. mérési távolság (`proximity_min_range_m`) | 0.45 m | Tartóoszlopok (~0.42 m) kiszűrése |
+| Min. pontszám (`proximity_min_points`) | 10 | Ceruza (~7 pt max) és zaj kiszűrése |
+| Aktív módok (`proximity_active_modes`) | `"robot"` | RC módban az operátor felel — inaktív |
+| Be/ki kapcsoló (`proximity_enabled`) | `true` | YAML-ból kapcsolható |
+
+**Szögkizárás — 4 tartóoszlop (kalibrált, +0.5° margin):**
+
+| Tartóoszlop | Kizárt szögek (deg) |
+|---|---|
+| Hátsó-bal | −164.7° .. −145.4° |
+| Hátsó-jobb | −36.2° .. −23.4° |
+| Elülső-jobb | 25.2° .. 38.4° |
+| Elülső-bal | 140.2° .. 167.9° |
+
+**Működési logika:**
+1. Min. tartomány szűrés: `r < proximity_min_range_m` → kihagyás (önárnyékolás)
+2. Szögkizárás: tartóoszlop tartományba eső ray → kihagyás
+3. Clusteres szűrő: csak egybefüggő (szomszédos index), `proximity_min_points` vagy több, zónán belüli ray triggerel
+4. `proximity_fault_` flag valós idejű: ha fault && !fault → WARN log, ha fault→fault → csak `last_proximity_range_` frissül
+
+**Foxglove vizualizáció:** `/safety/proximity_zone` marker — CYLINDER a `lidar_link`-nél, zöld (szabad) / piros (fault)
+
+**Tervezett fejlesztés (backlog):** Proximity V2 — stadion alakú stop-zóna, slow zone (1 m), irányfelismerés, mód-alapú aktiválás kibővítve.
 
 ### 7b. IMU tilt biztonsági szűrő
 
@@ -278,7 +295,8 @@ Output mezők: `shutdown_reason`, `is_off`, `is_passed`, `is_fault`, `is_checkin
 #### State enum és prioritási sorrend
 
 A `determine_state()` függvény felülről lefelé haladva az első igaz feltételnél megáll.
-**2026-03-20 óta latch-alapú**: a fault conditionok latchelnek, automatikusan nem törlődnek.
+**2026-03-20 óta latch-alapú**: a legtöbb fault condition latchel, automatikusan nem törlődik.
+**2026-05-08 RC redesign**: RC mód a szenzor latchek felett van — csak IMU tilt blokkolja RC-t.
 
 ```
 Prioritás  State     Feltétel
@@ -295,27 +313,66 @@ Prioritás  State     Feltétel
 3.         ESTOP     estop_active_ == true
                      (/robot/estop = true → fizikai gomb lenyomva)
 
-4.         ERROR     tilt_latch_ VAGY proximity_latch_
-                     VAGY scan_dropout_latch_ VAGY imu_dropout_latch_
-                     VAGY realsense_dropout_latch_
-                     (bármelyik latchelt szenzor/fizikai hibafeltétel)
-                     error_reason = az első aktív latch szöveges leírása
-                     ("Tilt fault", "Proximity fault", "LiDAR timeout",
-                      "IMU timeout", "RealSense timeout")
+4a.        ERROR     tilt_latch_ == true
+                     (IMU roll/pitch > limit — fizikai borulás veszély)
+                     error_reason = "Tilt fault: roll=X.XX° pitch=X.XX°"
+                     → RC-t is blokkolja (egyetlen szenzor ami RC-t felülír)
 
-5.         RC        rc_mode_ > rc_mode_threshold_ (0.5)
+4b.        RC        rc_mode_ > rc_mode_threshold_ (0.5)
                      (/robot/rc_mode Float32 > küszöb → RC adó aktív)
+                     → RC MEGELŐZI a szenzor dropout latcheket
                      → last_active_mode_ = "RC"
 
-6.         ROBOT     commanded_mode_ == "ROBOT" && mode_age < mode_topic_timeout_s
+5.         ERROR     scan_dropout_latch_ VAGY imu_dropout_latch_
+                     VAGY realsense_dropout_latch_
+                     (szenzor dropout latchek — RC módban FELFÜGGESZTVE)
+                     error_reason = "LiDAR timeout" / "IMU timeout" / "RealSense timeout"
+
+6.         ERROR     proximity_fault_ == true
+                     (non-latching — automatikusan törlődik ha akadály elhagyja a zónát)
+                     error_reason = "Proximity fault: X.XXm"
+
+7.         ROBOT     commanded_mode_ == "ROBOT" && mode_age < mode_topic_timeout_s
            FOLLOW    commanded_mode_ == "FOLLOW" && ...
            SHUTTLE   commanded_mode_ == "SHUTTLE" && ...
                      (/robot/mode String topic, max 2s régi adat fogadható el)
                      → last_active_mode_ = commanded_mode_
 
-7.         IDLE      minden fenti feltétel hamis
+8.         IDLE      minden fenti feltétel hamis
                      (startup kész, biztonságos, nincs RC jel, nincs /robot/mode adat)
 ```
+
+---
+
+#### RC mód biztonsági politika (2026-05-08)
+
+**Elv:** RC módban az operátor teljes irányítási felelősséget vállal. Szenzor-alapú latchek nem blokkolhatják az RC módot — ha egy szenzor hibáját az operátor látja, ő dönt. Az RC nem hagy vakon operálni egy 100 kg-os robotot szenzor nélkül: az operátor fizikailag jelen van és látja a helyzetet.
+
+**Egyetlen kivétel: `tilt_latch_`** — fizikai borulás veszély esetén az RC is blokkolva van (Priority 4a > 4b).
+
+| Latch | RC módban aktív? | Viselkedés |
+|---|---|---|
+| `tilt_latch_` | ✅ IGEN | Fizikai borulás — operátor sem vehet kockázatot |
+| `scan_dropout_latch_` | ❌ FELFÜGGESZTVE | Priority 4b (RC) > 5 (sensor dropouts) |
+| `imu_dropout_latch_` | ❌ FELFÜGGESZTVE | Priority 4b (RC) > 5 (sensor dropouts) |
+| `realsense_dropout_latch_` | ❌ FELFÜGGESZTVE | Priority 4b (RC) > 5 (sensor dropouts) |
+| `proximity_fault_` | ❌ INAKTÍV | `proximity_active_modes: "robot"` → auto-cleared RC-ben |
+
+**RC→robot átmenet (auto-clear, 2026-05-08):**
+
+Amikor a robot RC módból robot módba vált (rc_mode_ visszaesik), a szenzor latchek automatikusan törlődnek:
+```cpp
+if (current_state_ == "RC" && new_state != "RC") {
+  scan_dropout_latch_      = false;  // ha hiba RC alatt megoldódott → clean start
+  imu_dropout_latch_       = false;
+  realsense_dropout_latch_ = false;
+  // RCLCPP_INFO: "RC→robot váltás: sensor latch-ek törölve"
+}
+```
+Ha a hiba RC alatt is fennált, a watchdog `sensor_timeout_s_` (2 s) belül újra latchel.
+Ha a hiba RC alatt megoldódott, a robot azonnal hibamentes állapotban indul el.
+
+**Miért nem kell E-Stop reset az RC→robot átmenetnél?** Az RC alatt az operátor folyamatosan figyelemmel kísérte a helyzetet, és döntött arról, hogy visszavált autonóm módba. A robot ezt trusted operator-gesztusnak tekinti. Az E-Stop reset mechanizmus (press+release) az olyan latchekhez kell, ahol az operátor fizikailag nincs jelen és a fault okát el kell hárítani (pl. tilt).
 
 ---
 
@@ -323,18 +380,19 @@ Prioritás  State     Feltétel
 
 **Miért szükséges:** egy 100kg-os safety-kritikus robottól elfogadhatatlan, hogy ha a tilt visszaáll vagy a LiDAR visszajön, a state automatikusan törlődik operátori jóváhagyás nélkül.
 
-**Latch flagek:**
+**Latch flagek (2026-05-08, proximity redesign után):**
 
-| Latch | Szint | Mi aktiválja | Mi törli |
-|---|---|---|---|
-| `tilt_latch_` | ERROR | IMU roll/pitch > limit | E-Stop press + release |
-| `proximity_latch_` | ERROR | LiDAR front arc < proximity_distance_m | E-Stop press + release |
-| `scan_dropout_latch_` | ERROR | `/scan` topic timeout | E-Stop press + release |
-| `imu_dropout_latch_` | ERROR | `/camera/camera/imu` topic timeout | E-Stop press + release |
-| `realsense_dropout_latch_` | ERROR | `/camera/camera/color/camera_info` timeout | E-Stop press + release VAGY `/robot/reset` ha `recovered` |
-| `watchdog_latch_` | FAULT | E-Stop bridge timeout | `/robot/reset` topic (Bool true), csak ha bridge online |
-| `rc_watchdog_latch_` | FAULT | `/robot/rc_mode` topic timeout (rc_received_ után) | `/robot/reset` |
-| `joint_states_dropout_latch_` | FAULT | RoboClaw TCP disconnect (`/hardware/roboclaw/connected = false`) vagy topic csend > 0.3s | `/robot/reset` VAGY E-Stop (ha RoboClaw reconnected) |
+| Latch | Szint | Mi aktiválja | Mi törli | RC módban |
+|---|---|---|---|---|
+| `tilt_latch_` | ERROR | IMU roll/pitch > limit | E-Stop press + release | ✅ AKTÍV (blokkolja RC-t is) |
+| `scan_dropout_latch_` | ERROR | `/scan` topic timeout | E-Stop press + release VAGY RC→robot átmenet | ❌ felfüggesztve (Priority 4b > 5) |
+| `imu_dropout_latch_` | ERROR | `/camera/camera/imu` topic timeout | E-Stop press + release VAGY RC→robot átmenet | ❌ felfüggesztve |
+| `realsense_dropout_latch_` | ERROR | `/camera/camera/color/camera_info` timeout | E-Stop press + release VAGY `/robot/reset` ha `recovered` VAGY RC→robot átmenet | ❌ felfüggesztve |
+| `watchdog_latch_` | FAULT | E-Stop bridge timeout | `/robot/reset` topic (Bool true), csak ha bridge online | N/A (FAULT > RC) |
+| `rc_watchdog_latch_` | FAULT | `/robot/rc_mode` topic timeout (rc_received_ után) | `/robot/reset` | N/A (FAULT > RC) |
+| `joint_states_dropout_latch_` | FAULT | RoboClaw TCP disconnect (`/hardware/roboclaw/connected = false`) vagy topic csend > 0.3s | `/robot/reset` VAGY E-Stop (ha RoboClaw reconnected) | N/A (FAULT > RC) |
+
+**Megjegyzés:** `proximity_latch_` eltávolítva (2026-05-08) — a proximity nem latchel. A `proximity_fault_` valós idejű flag: automatikusan törlődik ha az akadály elhagyja a zónát. Latch fájlba nem kerül, E-Stop reset nem szükséges.
 
 **E-Stop reset szekvencia:**
 ```
@@ -343,7 +401,6 @@ estop_was_pressed_for_reset_ = false (induláskor)
 /robot/estop false → true:  estop_was_pressed_for_reset_ = true
 /robot/estop true  → false: ha estop_was_pressed_for_reset_ == true:
                               → tilt_latch_ = false
-                              → proximity_latch_ = false
                               → scan_dropout_latch_ = false
                               → imu_dropout_latch_ = false
                               → realsense_dropout_latch_ = false
@@ -360,7 +417,7 @@ Véletlen felengedés (press nélkül) **nem resetel** — az `estop_was_pressed
 - Törli: `watchdog_latch_`, `rc_watchdog_latch_`, `joint_states_dropout_latch_`
 - Törli `realsense_dropout_latch_` **csak ha** `realsense_dropout_recovered_ && !realsense_dropout_`
   (kamera visszatért és stabil volt `sensor_recovery_stable_s` másodpercig)
-- NEM törli: `tilt_latch_`, `proximity_latch_`, `scan_dropout_latch_`, `imu_dropout_latch_`
+- NEM törli: `tilt_latch_`, `scan_dropout_latch_`, `imu_dropout_latch_`
   → ezekhez fizikai E-Stop press + release szükséges
 
 **Gyorshivatkozás (terminálból):**
@@ -420,7 +477,7 @@ Az összes egyidejűleg fennálló fault megjelenik a `/safety/state` JSON-ban.
 build_active_faults(t):
   active_faults_.clear()
   if (tilt_latch_)         → "Tilt fault: roll=X.XX° pitch=X.XX°"
-  if (proximity_latch_)    → "Proximity fault: X.XXm"
+  if (proximity_fault_)    → "Proximity fault: X.XXm"   // non-latching, valós idejű
   if (scan_dropout_latch_) → "LiDAR timeout (X.XXs)"  // + " [recovered]" ha visszajött
   if (imu_dropout_latch_)  → "IMU timeout (X.XXs)"    // + " [recovered]" ha visszajött
   if (watchdog_latch_)     → "E-Stop watchdog timeout"
@@ -468,7 +525,7 @@ is_safe() = startup_passed_
          && !rc_watchdog_latch_           // FAULT: RC bridge timeout (ha rc_received_)
          && !joint_states_dropout_latch_  // FAULT: RoboClaw TCP disconnect
          && !tilt_latch_                  // ERROR: IMU tilt
-         && !proximity_latch_             // ERROR: LiDAR proximity
+         && !proximity_fault_             // ERROR: LiDAR proximity (non-latching, valós idejű)
          && !scan_dropout_latch_          // ERROR: LiDAR topic timeout
          && !imu_dropout_latch_           // ERROR: IMU topic timeout
          && !realsense_dropout_latch_     // ERROR: RealSense camera_info timeout
@@ -506,7 +563,7 @@ Két timer fut párhuzamosan:
   "proximity":                 false,
   "active_faults":             ["RealSense timeout (0.00s) [recovered]"],
   "tilt_latch":                false,
-  "proximity_latch":           false,
+  "proximity_fault":           false,
   "scan_dropout_latch":        false,
   "imu_dropout_latch":         false,
   "watchdog_latch":            false,
@@ -569,8 +626,6 @@ Output mezők: `active_faults[]`, `active_faults_count`, `active_faults_str`, ö
 estop_timeout_s:      5.0    # 2026-03-23: javítva 2.0→5.0 (E-Stop firmware ~1Hz pub, UDP jitter → 5s timeout safety margin)
 tilt_roll_limit_deg:  90.0   # 90° = kikapcsolva (éles: 25°, kamera frame fix után)
 tilt_pitch_limit_deg: 90.0   # 90° = kikapcsolva (éles: 20°)
-proximity_distance_m: 0.0    # 0.0 = kikapcsolva (LiDAR szögmaszk fix után)
-proximity_angle_deg:  30.0   # ±30° front arc
 watchdog_rate_hz:     20.0   # state machine tick + change detection
 imu_process_rate_hz:  20.0   # IMU callback throttle (RealSense 200Hz → 20Hz)
 rc_mode_threshold:    0.5    # rc_mode_ > 0.5 → RC state
@@ -578,7 +633,7 @@ mode_topic_timeout_s: 2.0    # /robot/mode ennyi másodperce nem jön → IDLE
 heartbeat_rate_hz:    10.0   # /robot/heartbeat rate
 rc_timeout_s:         5.0    # /robot/rc_mode csend (rc_received_ után) → FAULT
 
-# Szenzor watchdog (ÚJ, 2026-03-20)
+# Szenzor watchdog (2026-03-20)
 sensor_timeout_s:                2.0   # topic csend → dropout fault + latch (runtime)
 sensor_recovery_stable_s:        2.0   # ennyi stabil adat → [recovered] jelölés (latch megmarad)
 scan_watchdog_startup_grace_s:   5.0   # 2026-03-24: motor warmup backup grace (elsődleges: rplidar_node motor_min_hz_)
@@ -589,6 +644,17 @@ realsense_timeout_s:             2.0   # RealSense camera_info csend → realsen
 roboclaw_status_timeout_s:       2.0   # 2026-03-23: javítva 0.3→2.0 /hardware/roboclaw/connected topic csend → FAULT
 # enable_zed_watchdog:           false # PLACEHOLDER
 # enable_ext_imu_watchdog:       false # PLACEHOLDER
+
+# LiDAR proximity zóna (V1, 2026-05-08)
+superstructure_circumradius_m:            0.682  # robot forgóköre — mért: 4 tartóoszlop max távolsága
+proximity_safety_margin_m:                0.10   # circumradius + margin = proximity_dist (0.782m)
+proximity_min_range_m:                    0.45   # min önárnyékolás-szűrő (tartóoszlopok ~0.42m)
+proximity_angle_deg:                      180.0  # legacy paraméter (teljes 360° lefedésnél nem használt)
+proximity_exclusion_angle_starts_deg: [-164.7, -36.2,  25.2, 140.2]  # 4 tartóoszlop kizárás start
+proximity_exclusion_angle_ends_deg:   [-145.4, -23.4,  38.4, 167.9]  # 4 tartóoszlop kizárás end
+proximity_min_points:                     10     # min. cluster méret — ceruza max ~7pt (kiszűrve)
+proximity_enabled:                        true   # YAML kapcsoló (false → proximity teljesen inaktív)
+proximity_active_modes:                   "robot" # "all"|"robot"|"rc" — RC módban operátor felel
 ```
 
 ---
@@ -867,6 +933,13 @@ launch_arguments={
 | `/tmp/safety_latch_state` latch fájl persistent maradt restart után (Docker writable layer) — robot fault state-ben indult | Makefile, safety_supervisor | ✅ `make down` és watchdog SHUTDOWN branch törli a latch fájlt leállítás előtt (`rm -f /tmp/safety_latch_state`) 2026-03-24 |
 | `talicska-robot.service` DISABLED volt — power-on után manuális `make up` kellett, robot nem volt önálló | install.sh, systemd | ✅ `systemctl enable talicska-robot.service` — boot-kor automatikusan indul 2026-03-24 |
 | `talicska-restart-watchdog.service` `install.sh` csak enable-ölte, de nem indította el — első futtatás után reboot kellett | install.sh | ✅ `systemctl start` hozzáadva az enable után 2026-03-24 |
+| LiDAR proximity zóna nem volt implementálva — csak placeholder paraméter (`proximity_distance_m: 0.0`) | robot_safety | ✅ Proximity V1 implementálva 2026-05-08: 360° körzetfigyelés, clusteres szűrő, 4 kizárási tartomány, non-latching |
+| LiDAR tartóoszlopok proximity false positive-ot okoztak | robot_safety | ✅ Kalibrált szögkizárás 4 tartóoszlophoz + min_range=0.45m önárnyékolás-szűrő 2026-05-08 |
+| Vékony tárgyak (ceruza, bot) proximity fault-ot okozhattak | robot_safety | ✅ `proximity_min_points=10` clusteres szűrő — ceruza max 7pt < 10 → kiszűrve 2026-05-08 |
+| Proximity fault E-Stop reset nélkül nem törlődött — operátor deadlock ha akadály elhúzódott | robot_safety | ✅ Non-latching proximity: `proximity_fault_` valós idejű, E-Stop reset nem szükséges 2026-05-08 |
+| RC módba váltás blokkolva volt ha proximity_fault_ aktív — deadlock | robot_safety | ✅ RC safety policy redesign: Priority 4b (RC) > 6 (proximity) 2026-05-08 |
+| Szenzor latchek (scan/imu/realsense dropout) RC módban is aktívak voltak — operátor nem tudta, mi okozza a leállást | robot_safety | ✅ RC safety policy: csak tilt_latch_ blokkolja RC-t; sensor latchek RC módban felfüggesztve 2026-05-08 |
+| RC→robot váltásnál régi szenzor latchek megmaradtak — E-Stop reset kellett még ha a hiba RC alatt megoldódott | robot_safety | ✅ RC→robot auto-clear: scan/imu/realsense dropout latchek automatikusan törlődnek a váltáskor 2026-05-08 |
 
 ---
 
