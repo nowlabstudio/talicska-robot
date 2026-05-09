@@ -6,20 +6,27 @@
   Foxglove Studio WebSocket-en (TCP) csatlakozik, nem DDS-en.
 
   Interfészek:
-    lo       (multicast=false): gyors adat path konténerek között
-    enP1p1s0 (multicast=default, 10.0.10.1/24): DDS discovery multicast;
+    lo       (multicast=false): gyors intra-host adat path konténerek között
+    enP8p1s0 (multicast=default, 192.168.68.x): DDS discovery multicast;
              FastDDS (microros_agent, rmw_fastrtps_cpp) ezen találja a
-             CycloneDDS robot nodokat — mindig UP, enP8p1s0-tól független.
+             CycloneDDS nodokat. Statikus fallback IP kell ha DHCP nem fut
+             (enP8p1s0 NO-CARRIER esetén): 192.168.68.200/24 via NetworkManager.
 
-  WiFi (wlx*), tailscale0 és enP8p1s0 szándékosan KIZÁRVA:
-  WiFi multicast → DTIM buffering + basic-rate → 10s+ latencia.
+  KIZÁRT interfészek (és miért):
+    enP1p1s0 (10.0.10.x): RP2040 bridge-ek hálózata — DDS multicast elárasztaná
+             → RC/E-stop/MicroROS UDP timeout. SOHA ne kerüljön DDS-be.
+    WiFi (wlx*): DTIM buffering + basic-rate multicast → 10s+ latencia
+    tailscale0: VPN overhead
+
+  Foxglove Studio WebSocket TCP-n csatlakozik (nem DDS-en) → enP8p1s0 Foxglove
+  cross-host DDS-hez kell (microros_agent discovery), Foxglove maga WebSocket.
 
   - MaxMessageSize: 65500B — RPLidar A2 scan message elfér egy UDP datagramban.
   - Discovery: ParticipantIndex auto, max 32.
 
-  Network layout (referencia):
-    Jetson enP1p1s0: 10.0.10.1/24  — robot internal (RP2040s) + DDS discovery
-    Jetson enP8p1s0: 192.168.68.x  — lab LAN (dev laptop, Foxglove) — DDS-ből kizárva
+  Network layout:
+    Jetson enP1p1s0: 10.0.10.1/24  — robot internal (RP2040s) — DDS-ből KIZÁRVA
+    Jetson enP8p1s0: 192.168.68.x  — lab LAN (Foxglove laptop, dev) — DDS discovery
     lo:              127.0.0.1      — intra-host adat path
 
   Usage:
@@ -29,12 +36,15 @@
 <CycloneDDS>
   <Domain>
     <General>
-      <!-- lo + enP1p1s0: lo = gyors adat path; enP1p1s0 = discovery multicast (mindig UP,
-           FastDDS microros_agent is ezen találja a CycloneDDS robot nodokat).
-           enP8p1s0 / WiFi / tailscale: KIZÁRVA — WiFi multicast 10s+ latenciát okoz. -->
+      <!-- lo + enP8p1s0: eredeti, bizonyítottan működő konfig.
+           lo: gyors intra-host adat path.
+           enP8p1s0 (192.168.68.x): DDS discovery multicast — FastDDS (microros_agent) is
+           ezen találja a CycloneDDS nodokat. Mindig van IP (statikus fallback ha DHCP hiányzik).
+           enP1p1s0 KIZÁRVA: RP2040 hálózat (10.0.10.x) — DDS multicast elárasztaná.
+           WiFi/tailscale KIZÁRVA: WiFi multicast 10s+ latenciát okoz. -->
       <Interfaces>
         <NetworkInterface name="lo"       priority="default" multicast="false"/>
-        <NetworkInterface name="enP1p1s0" priority="default" multicast="default"/>
+        <NetworkInterface name="enP8p1s0" priority="default" multicast="default"/>
       </Interfaces>
       <AllowMulticast>true</AllowMulticast>
       <MaxMessageSize>65500B</MaxMessageSize>

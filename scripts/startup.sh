@@ -49,7 +49,21 @@ else
     log "WARN: jetson_clocks sikertelen (exit: $?) — folytatás"
 fi
 
-# ── 3. prestart.sh (hardware check) ──────────────────────────────────────────
+# ── 3. enP8p1s0 fallback IP ──────────────────────────────────────────────────
+# CycloneDDS "does not match an available interface" ha enP8p1s0-nak nincs IP-je.
+# Ha DHCP nem fut (NO-CARRIER), statikus fallback 192.168.68.200/24 → DDS indul.
+log "enP8p1s0 fallback IP ellenőrzés..."
+if ! ip addr show enP8p1s0 2>/dev/null | grep -q "inet "; then
+    if ip addr add 192.168.68.200/24 dev enP8p1s0 2>/dev/null; then
+        log "enP8p1s0: fallback IP hozzárendelve (192.168.68.200/24)"
+    else
+        log "WARN: enP8p1s0 fallback IP sikertelen — CycloneDDS megpróbálja"
+    fi
+else
+    log "enP8p1s0: IP már létezik, fallback nem szükséges"
+fi
+
+# ── 4. prestart.sh (hardware check) ──────────────────────────────────────────
 log "prestart.sh futtatása (max 60s)..."
 if timeout 60 "${SCRIPT_DIR}/prestart.sh" >> "${LOG_FILE}" 2>&1; then
     log "prestart.sh: PASSED"
@@ -62,7 +76,7 @@ else
     fi
 fi
 
-# ── 4. Docker stack indítás ───────────────────────────────────────────────────
+# ── 5. Docker stack indítás ───────────────────────────────────────────────────
 log "make up-boot indítása (exec — prestart kész, camera + stack)..."
 cd "${ROBOT_DIR}"
 exec make up-boot >> "${LOG_FILE}" 2>&1
