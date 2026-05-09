@@ -1,39 +1,28 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!--
   CycloneDDS configuration for Talicska robot (Jetson Orin Nano)
-  Transport: UDP loopback (lo) + UDP unicast (enP8p1s0)
 
-  - lo ELSŐ: intra-host DDS forgalom (konténer ↔ konténer) a loopbacken megy,
-    nem a fizikai NIC-en → recvMC thread CPU overhead elmarad.
-  - enP8p1s0 MÁSODIK: cross-host discovery + Foxglove (dev laptop, lab LAN).
+  Auto-detect mode: nincs explicit <Interfaces> lista.
+  CycloneDDS csak az UP állapotú interfészeket veszi fel → ha enP8p1s0 DOWN
+  (Foxglove laptop kábel kihúzva), a stack enP1p1s0 + WiFi-n folytatja.
+
   - MaxMessageSize: 65500B — RPLidar A2 scan message elfér egy UDP datagramban.
-  - Discovery lab subnettre korlátozva (ParticipantIndex auto, max 32).
+  - Discovery: ParticipantIndex auto, max 32.
 
   Network layout:
     Jetson enP1p1s0: 10.0.10.1/24  — robot internal (RP2040s, RoboClaw)
-    Jetson enP8p1s0: 192.168.68.x  — lab LAN (dev laptop, Foxglove)
+    Jetson enP8p1s0: 192.168.68.x  — lab LAN (dev laptop, Foxglove) — opcionális
     lo:              127.0.0.1      — intra-host DDS (konténerek közt)
-
-  Audit eredmény (2026-03-19):
-    CPU: ~130% (recvUC thread, stabil)  RAM: ~325 MiB  /scan delay: 76 ms stabil
 
   Usage:
     export CYCLONEDDS_URI=file:///path/to/cyclonedds.xml
     (docker-compose .env-ből kerül beállításra)
-
-  Tune NetworkInterfaceAddress if NIC name differs:
-    ip -br addr show | grep 192.168.68
 -->
 <CycloneDDS>
   <Domain>
     <General>
-      <!-- lo első: intra-host forgalom loopbacken megy, nem a fizikai NIC-en.
-           enP8p1s0 második: cross-host discovery (dev laptop, Foxglove).
-           AllowMulticast csak az enP8p1s0-n; lo-n unicast elegendő.        -->
-      <Interfaces>
-        <NetworkInterface name="lo"        priority="default" multicast="false"/>
-        <NetworkInterface name="enP8p1s0"  priority="default" multicast="default"/>
-      </Interfaces>
+      <!-- Nincs explicit Interfaces lista → auto-detect, DOWN interfészek kihagyva.
+           Fix: 2026-05-09 — hardcoded enP8p1s0 DOWN esetén minden node crashelt. -->
       <AllowMulticast>true</AllowMulticast>
       <MaxMessageSize>65500B</MaxMessageSize>
     </General>

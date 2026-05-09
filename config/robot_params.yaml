@@ -417,7 +417,7 @@ safety_supervisor:
     roboclaw_status_timeout_s: 2.0   # Workaround: RoboClaw TCP reconnect loop ~0.1s cycle (SetTimeout EEPROM issue)
     # RealSense watchdog — /camera/camera/color/camera_info timeout → ERROR + realsense_dropout_latch
     # Előfeltétel: camera_info QoS kompatibilitás (SensorDataQoS — BEST_EFFORT)
-    enable_realsense_watchdog: true
+    enable_realsense_watchdog: false   # DISABLED: D435i Right MIPI hardware hiba (2026-05-09)
     realsense_timeout_s:  3.0
     # Latch perzisztencia — node crash + ROS2 restart után is megmarad a FAULT állapot
     latch_state_path:     "/run/robot/safety_latch_state"
