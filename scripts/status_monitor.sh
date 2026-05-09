@@ -244,10 +244,10 @@ else
     warn "Power Mode: ${POWER} (recommend: MAXN)"
 fi
 
-if pgrep -x "jetson_clocks" &>/dev/null; then
-    ok "jetson_clocks: RUNNING"
+if systemctl is-active --quiet talicska-power.service; then
+    ok "jetson_clocks: APPLIED (talicska-power.service OK)"
 else
-    warn "jetson_clocks: STOPPED (run: sudo jetson_clocks)"
+    warn "jetson_clocks: NOT APPLIED (talicska-power.service failed — run: sudo jetson_clocks)"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════════
