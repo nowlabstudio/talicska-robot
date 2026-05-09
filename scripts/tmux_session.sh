@@ -44,6 +44,7 @@ tmux send-keys -t "${SESSION}:docker" "docker stats" Enter
 
 # 4. ablak: claude — gyorsindító helper + /home/eduard könyvtár
 tmux new-window -t "${SESSION}" -n "claude" -c "/home/eduard"
+tmux send-keys -t "${SESSION}:claude" "cd /home/eduard && clear" Enter
 tmux send-keys -t "${SESSION}:claude" \
     'printf "\n\033[1;36m  ════════════════════════════════════════════════════\033[0m\n\033[1;36m              CLAUDE CODE — GYORSINDITO\033[0m\n\033[1;36m  ════════════════════════════════════════════════════\033[0m\n\n  \033[1mParancs:\033[0m  claude\n\n  \033[1mInditasi prompt (memoria + policy betoltes):\033[0m\n  \033[33m  \"olvasd be a memoriat es a policy.md-t\"\033[0m\n\n  \033[1mTeljes parancs:\033[0m\n  \033[32m  claude \"olvasd be a memoriat es a policy.md-t\"\033[0m\n\n\033[1;36m  ════════════════════════════════════════════════════\033[0m\n\n"' Enter
 
