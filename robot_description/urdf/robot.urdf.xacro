@@ -264,8 +264,10 @@
   </joint>
 
   <!-- ============================================================
-       CAMERA — RealSense D435i (végleges pozíció, 2026-05-09)
-       Mért pozíció: előlap 270mm robot elejétől, 160mm chassis aljától, szimmetriatengelyen.
+       CAMERA — RealSense D435i
+       IDEIGLENES KONFIGURÁCIÓ: ZED 2i szervizen van, D435i helyettesíti.
+       Visszaállításkor: ZED 2i link+joint visszaállítandó (lásd backlog), D435i → hátsó kamera.
+       Mért pozíció (2026-05-09): előlap 270mm robot elejétől, 160mm chassis aljától, szimmetriatengelyen.
          X=+0.2825: vehicle front (565mm) − 270mm előlap − 12.5mm félmélység
          Y=0.0:     szimmetriatengelyen
          Z=0.28:    chassis alja (120mm) + 160mm
