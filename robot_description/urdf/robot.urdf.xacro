@@ -11,7 +11,7 @@
     Platform:       1100 × 750 × 300 mm, bottom at 450 mm, tilts forward
     Tilt hinge:     chassis top (260 mm), 20 mm from chassis front → +305 mm from base_link
     LiDAR:          on chassis, 600 mm from robot front, 360 mm from chassis front → -35 mm from base_link, Z=430 mm
-    Camera:         chassis front edge, Z=290 mm (lens centre 30 mm above chassis top)
+    Camera:         front face 270 mm from vehicle front → centre X=+0.2825 m; Z=280 mm (160 mm above chassis bottom)
 
   Wheel naming convention:
     rear_left / rear_right   — driven by RoboClaw (ros2_control joints)
@@ -264,11 +264,11 @@
   </joint>
 
   <!-- ============================================================
-       CAMERA — RealSense D435i
-       IDEIGLENES KONFIGURÁCIÓ (2026-05-05): ZED 2i szervizen van.
-       A D435i előre néző kameraként üzemel a ZED helyett.
-       Pozíció: x=0.325 (chassis front edge), z=0.29 (lens centre ~30mm above top)
-       Visszaállításkor: ZED 2i link+joint visszaállítandó (lásd backlog)
+       CAMERA — RealSense D435i (végleges pozíció, 2026-05-09)
+       Mért pozíció: előlap 270mm robot elejétől, 160mm chassis aljától, szimmetriatengelyen.
+         X=+0.2825: vehicle front (565mm) − 270mm előlap − 12.5mm félmélység
+         Y=0.0:     szimmetriatengelyen
+         Z=0.28:    chassis alja (120mm) + 160mm
        ============================================================ -->
   <link name="camera_link">
     <visual>
@@ -285,7 +285,7 @@
   <joint name="camera_joint" type="fixed">
     <parent link="base_link"/>
     <child  link="camera_link"/>
-    <origin xyz="0.325 0 0.29" rpy="0 0 0"/>
+    <origin xyz="0.2825 0.0 0.28" rpy="0 0 0"/>
   </joint>
 
   <!-- ZED 2i frame eltávolítva (2026-05-05) — kamera szervizen van.
