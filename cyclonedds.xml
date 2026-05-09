@@ -2,17 +2,25 @@
 <!--
   CycloneDDS configuration for Talicska robot (Jetson Orin Nano)
 
-  Auto-detect mode: nincs explicit <Interfaces> lista.
-  CycloneDDS csak az UP állapotú interfészeket veszi fel → ha enP8p1s0 DOWN
-  (Foxglove laptop kábel kihúzva), a stack enP1p1s0 + WiFi-n folytatja.
+  Architektúra: minden container network_mode:host → DDS intra-host.
+  Foxglove Studio WebSocket-en (TCP) csatlakozik, nem DDS-en.
+
+  Interfészek:
+    lo       (multicast=false): gyors adat path konténerek között
+    enP1p1s0 (multicast=default, 10.0.10.1/24): DDS discovery multicast;
+             FastDDS (microros_agent, rmw_fastrtps_cpp) ezen találja a
+             CycloneDDS robot nodokat — mindig UP, enP8p1s0-tól független.
+
+  WiFi (wlx*), tailscale0 és enP8p1s0 szándékosan KIZÁRVA:
+  WiFi multicast → DTIM buffering + basic-rate → 10s+ latencia.
 
   - MaxMessageSize: 65500B — RPLidar A2 scan message elfér egy UDP datagramban.
   - Discovery: ParticipantIndex auto, max 32.
 
-  Network layout:
-    Jetson enP1p1s0: 10.0.10.1/24  — robot internal (RP2040s, RoboClaw)
-    Jetson enP8p1s0: 192.168.68.x  — lab LAN (dev laptop, Foxglove) — opcionális
-    lo:              127.0.0.1      — intra-host DDS (konténerek közt)
+  Network layout (referencia):
+    Jetson enP1p1s0: 10.0.10.1/24  — robot internal (RP2040s) + DDS discovery
+    Jetson enP8p1s0: 192.168.68.x  — lab LAN (dev laptop, Foxglove) — DDS-ből kizárva
+    lo:              127.0.0.1      — intra-host adat path
 
   Usage:
     export CYCLONEDDS_URI=file:///path/to/cyclonedds.xml
@@ -21,8 +29,13 @@
 <CycloneDDS>
   <Domain>
     <General>
-      <!-- Nincs explicit Interfaces lista → auto-detect, DOWN interfészek kihagyva.
-           Fix: 2026-05-09 — hardcoded enP8p1s0 DOWN esetén minden node crashelt. -->
+      <!-- lo + enP1p1s0: lo = gyors adat path; enP1p1s0 = discovery multicast (mindig UP,
+           FastDDS microros_agent is ezen találja a CycloneDDS robot nodokat).
+           enP8p1s0 / WiFi / tailscale: KIZÁRVA — WiFi multicast 10s+ latenciát okoz. -->
+      <Interfaces>
+        <NetworkInterface name="lo"       priority="default" multicast="false"/>
+        <NetworkInterface name="enP1p1s0" priority="default" multicast="default"/>
+      </Interfaces>
       <AllowMulticast>true</AllowMulticast>
       <MaxMessageSize>65500B</MaxMessageSize>
     </General>
