@@ -306,10 +306,11 @@ Dev laptop (bárhol)                  Jetson (robot, terepen)
 
 A dev laptopról a `10.0.10.x` címek közvetlenül elérhetők:
 ```bash
+ssh eduard@synapse.tailbbafca.ts.net   # Jetson SSH (MagicDNS névvel)
 ssh eduard@100.116.200.82              # Jetson SSH (Tailscale IP-n)
 ping 10.0.10.24                        # RoboClaw (subnet routing-on keresztül)
-http://100.116.200.82:8765             # Foxglove WebSocket
-http://100.116.200.82:9443             # Portainer
+http://synapse.tailbbafca.ts.net:8765  # Foxglove WebSocket
+http://synapse.tailbbafca.ts.net:9443  # Portainer
 http://10.0.10.24                      # RoboClaw / USR-K6 web UI
 ```
 
