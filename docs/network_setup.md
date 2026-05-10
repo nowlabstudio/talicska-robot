@@ -23,7 +23,7 @@
 [SW-MAIN]  ── Dev laptop (192.168.68.125)    │  ← Tailscale mesh VPN
     │                                        │     (WireGuard tunnel)
 Jetson enP8p1s0 (DHCP, 192.168.68.x)    ← lab LAN, internet, SSH  [DEFAULT ROUTE]
-Jetson tailscale0 (100.71.242.128)       ← Tailscale VPN interfész
+Jetson tailscale0 (100.116.200.82)       ← Tailscale VPN interfész
     │                                        subnet router: 10.0.10.0/24
 Jetson enP1p1s0 (static, 10.0.10.1)     ← robot belső hálózat     [NO DEFAULT ROUTE]
     │
@@ -59,7 +59,7 @@ a Tailscale tunnel is elérhetetlenné válik, a robot csak konzolon (HDMI/UART)
 | 192.168.68.125| Dev laptop                | MAC-alapú DHCP      | Fejlesztői gép                  | ✅ aktív        |
 | 192.168.68.x  | Jetson **enP8p1s0**       | `ip link show enP8p1s0` | SSH, internet, default route | 🔧 nmcli (DHCP) |
 | **Tailscale overlay — 100.64.0.0/10, WireGuard mesh VPN** |||||
-| 100.71.242.128| Jetson (synapse)          | tailscale0           | VPN + subnet router 10.0.10.0/24| ✅ aktív        |
+| 100.116.200.82| Jetson (synapse)          | tailscale0           | VPN + subnet router 10.0.10.0/24| ✅ aktív        |
 | 100.x.y.z     | Dev laptop                | tailscale0           | VPN kliens, eléri robot subnetet| ✅ aktív        |
 | **Robot belső — 10.0.10.0/24, gateway: 10.0.10.1, mask: 255.255.255.0** |||||
 | 10.0.10.1     | Jetson **enP1p1s0**       | `ip link show enP1p1s0` | MicroROS agent, ROS2, Nav2 | 🔧 nmcli (static)|
@@ -291,7 +291,7 @@ nélkül. A Tailscale WireGuard-alapú mesh VPN, amely:
 
 ```
 Dev laptop (bárhol)                  Jetson (robot, terepen)
-  tailscale0: 100.x.y.z               tailscale0: 100.71.242.128
+  tailscale0: 100.x.y.z               tailscale0: 100.116.200.82
        │                                    │
        └──── WireGuard tunnel ──────────────┘
              (Tailscale DERP relay ha p2p nem lehetséges)
@@ -306,10 +306,10 @@ Dev laptop (bárhol)                  Jetson (robot, terepen)
 
 A dev laptopról a `10.0.10.x` címek közvetlenül elérhetők:
 ```bash
-ssh eduard@100.71.242.128              # Jetson SSH (Tailscale IP-n)
+ssh eduard@100.116.200.82              # Jetson SSH (Tailscale IP-n)
 ping 10.0.10.24                        # RoboClaw (subnet routing-on keresztül)
-http://100.71.242.128:8765             # Foxglove WebSocket
-http://100.71.242.128:9443             # Portainer
+http://100.116.200.82:8765             # Foxglove WebSocket
+http://100.116.200.82:9443             # Portainer
 http://10.0.10.24                      # RoboClaw / USR-K6 web UI
 ```
 
@@ -363,14 +363,14 @@ sudo tailscale up --accept-routes
 tailscale status
 
 # Jetson elérhetősége a VPN-en
-ping 100.71.242.128
+ping 100.116.200.82
 
 # Robot belső hálózat elérhetősége (subnet routing)
 ping 10.0.10.1        # Jetson ETH0
 ping 10.0.10.24       # RoboClaw
 
 # Foxglove WebSocket
-curl -s http://100.71.242.128:8765 | head -1
+curl -s http://100.116.200.82:8765 | head -1
 ```
 
 ### Üzemeltetés
