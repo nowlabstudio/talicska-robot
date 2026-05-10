@@ -596,17 +596,21 @@ foxglove_bridge:
     port:              8765
     address:           "0.0.0.0"
     tls:               false
-    send_buffer_limit: 10000000
+    send_buffer_limit: 2000000
     asset_uri_allowlist: ["^package://.*"]
     # /scan: RPLidar BEST_EFFORT publisher-rel egyeznie kell
     "qos_overrides./scan.subscription.reliability": best_effort
     "qos_overrides./scan.subscription.depth":       1
-    # RealSense kamera streamek: Tailscale VPN-en stabil streameléshez BEST_EFFORT kell
-    # (RELIABLE retry overhead Tailscale WireGuard tunnelen késést okoz)
+    # RealSense raw streamek: BEST_EFFORT kell (WiFi/Tailscale kompatibilitás)
     "qos_overrides./camera/camera/color/image_raw.subscription.reliability":    best_effort
     "qos_overrides./camera/camera/color/image_raw.subscription.depth":          1
     "qos_overrides./camera/camera/depth/color/points.subscription.reliability": best_effort
     "qos_overrides./camera/camera/depth/color/points.subscription.depth":       1
+    # Compressed topicok: image_transport BEST_EFFORT publisherek — QoS mismatch nélkül
+    "qos_overrides./camera/camera/color/image_raw/compressed.subscription.reliability":              best_effort
+    "qos_overrides./camera/camera/color/image_raw/compressed.subscription.depth":                   1
+    "qos_overrides./camera/camera/depth/image_rect_raw/compressedDepth.subscription.reliability":   best_effort
+    "qos_overrides./camera/camera/depth/image_rect_raw/compressedDepth.subscription.depth":         1
 
 # ── Micro-ROS Agent ────────────────────────────────────────────────────────────
 # NEM ROS2 node — docker-compose.yml command argumentumok forrása.
