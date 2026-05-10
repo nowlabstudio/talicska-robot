@@ -415,6 +415,78 @@ sudo tailscale up --advertise-routes=10.0.10.0/24 --accept-dns=false
 
 ---
 
+## Multi-homed routing — enP8p1s0 + wlx ugyanazon a /24-en
+
+A Jetson `enP8p1s0` (Ethernet) és `wlx*` (WiFi) **gyakran ugyanazt a lab LAN-t**
+(`192.168.68.0/24`) látja. Ez kényelmes mert mindkét interfészen használható
+ugyanaz a Foxglove URL, de **klasszikus aszimmetrikus routing csapdát** rejt:
+
+- A bejövő TCP packet az **enP8p1s0**-ra érkezik (Layer 2 ARP a 200-as IP-hez).
+- A kimenő válasz a **wlx**-en megy ki, mert a kernel main routing táblájában
+  `192.168.68.0/24` csak a wlx-hez van rendelve.
+- **WiFi DTIM buffering** a kimenő irányban → konstans **5–6 másodperces lag**
+  minden TCP/UDP forgalomra. Foxglove WebSocket-en végigsöpör.
+
+### Tünet
+
+`Foxglove minden topicon konstans 5-6s késés, kamera+LiDAR+RC reakció egyaránt`.
+Két különböző kliens-gépen reprodukálható → **server-oldali probléma**, nem
+kliens vagy hálózat-oldali.
+
+### Detektálás
+
+```bash
+# Aszimmetrikus routing igazolása:
+ip route get 192.168.68.<kliens-IP> from 192.168.68.200
+
+# Ha "dev wlx*" jön ki ÉS van enP8p1s0 link → aszimmetrikus
+# Helyes: "dev enP8p1s0"
+```
+
+A `ss -tinp 'sport = :8765'` is segít: `delivery_rate` jóval alacsonyabb mint
+`pacing_rate` ÚGY, hogy `rwnd_limited: 0%` és `retrans` minimális → **nem**
+kliens vagy network throughput, hanem path-aszimmetria.
+
+### Fix — NetworkManager profile-ban rögzítve
+
+A `enP8p1s0` statikus fallback profile-hez (uuid `35cf553d-...` az install.sh
+által létrehozott) **explicit /24 connected route** alacsony metric-kel:
+
+```bash
+nmcli connection modify <enP8p1s0_uuid> \
+    +ipv4.routes "192.168.68.0/24 0.0.0.0 100"
+```
+
+Eredmény (`ip route show`):
+
+```
+192.168.68.0/24 dev enP8p1s0 proto kernel scope link src 192.168.68.200 metric 101  ← preferált
+192.168.68.0/24 dev wlx*      proto kernel scope link src 192.168.68.124 metric 600  ← fallback
+```
+
+A wlx **megmarad** mint hátrébb prioritású route — ha az Ethernet kábel kihúzva,
+automatikusan átvált a WiFi. A 100/101-es kis metric NEM ütközik a default
+route-tal (default csak a wlx-en van metric 600-on, mert az enP8p1s0 statikus
+profile `ipv4.never-default: no` de gateway nincs benne).
+
+### Miért nem jött auto
+
+A NetworkManager a `wlx` profilját **előbb aktiválta** (boot-time), így ő foglalta
+le a `192.168.68.0/24` connected route-ot a main táblában. Amikor az enP8p1s0
+statikus profilja később aktiválódik a fallback IP-vel, a kernel **nem ad**
+második connected route-ot ugyanarra a destinationra, és a profile `ipv4.routes`
+listája üres — eredmény: csak local-tábla bejegyzés, NEM main.
+
+A `+ipv4.routes` explicit szabály ezt kerüli meg.
+
+### rp_filter
+
+A Jetsonon `net.ipv4.conf.all.rp_filter = 2` (loose mode), ezért az aszimmetrikus
+forgalom nem dropolódik bejövő irányban. Ha strict (1) lenne, a kapcsolat
+egyáltalán nem épülne fel — most az 5-6s lag a tünet, nem a teljes blokkolás.
+
+---
+
 ## Gyors diagnózis
 
 ```bash

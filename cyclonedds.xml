@@ -36,24 +36,46 @@
 <CycloneDDS>
   <Domain>
     <General>
-      <!-- lo + enP8p1s0: eredeti, bizonyítottan működő konfig.
-           lo: gyors intra-host adat path.
-           enP8p1s0 (192.168.68.x): DDS discovery multicast — FastDDS (microros_agent) is
-           ezen találja a CycloneDDS nodokat. Mindig van IP (statikus fallback ha DHCP hiányzik).
-           enP1p1s0 KIZÁRVA: RP2040 hálózat (10.0.10.x) — DDS multicast elárasztaná.
-           WiFi/tailscale KIZÁRVA: WiFi multicast 10s+ latenciát okoz. -->
+      <!-- lo + wlx (AllowMulticast=false, unicast only):
+           - lo: intra-host adat path konténerek között (gyors, nincs overhead)
+           - wlx (multicast=false): CycloneDDS interfészként regisztrálva, de
+             multicast=false + AllowMulticast=false → nincs WiFi DTIM buffering,
+             nincs multicast flood; unicast discovery/adat loopbacken.
+           - AllowMulticast=false: minden DDS forgalom unicast → nincs WiFi DTIM
+             (5-6s késés) amit multicast data okozna WiFi AP DTIM buffering miatt.
+           - Explicit peer 127.0.0.1: CycloneDDS SPDP-t küld 127.0.0.1:7400-ra →
+             default FastDDS (microros_agent) bound to 0.0.0.0:7400 megkapja →
+             cross-RMW discovery fastdds_loopback.xml nélkül is működik.
+
+           enP8p1s0 KIZÁRVA: NO-CARRIER esetén dead endpoint (192.168.68.200) →
+             FastDDS retry 5-6s timeout minden DDS kommunikációban.
+           enP1p1s0 KIZÁRVA: RP2040 hálózat — DDS multicast elárasztaná.
+           tailscale0 KIZÁRVA: VPN overhead.
+           Foxglove WebSocket TCP-n csatlakozik (nem DDS) → interfész konfigtól
+           független, de wlx-en keresztül elérhető marad. -->
       <Interfaces>
-        <NetworkInterface name="lo"       priority="default" multicast="false"/>
-        <NetworkInterface name="enP8p1s0" priority="default" multicast="default"/>
+        <NetworkInterface name="lo"              priority="default" multicast="false"/>
+        <NetworkInterface name="wlx7cdd908b2391" priority="default" multicast="false"/>
       </Interfaces>
-      <AllowMulticast>true</AllowMulticast>
+      <AllowMulticast>false</AllowMulticast>
       <MaxMessageSize>65500B</MaxMessageSize>
     </General>
 
     <Discovery>
-      <!-- Restrict discovery to lab subnet -->
       <ParticipantIndex>auto</ParticipantIndex>
-      <MaxAutoParticipantIndex>32</MaxAutoParticipantIndex>
+      <!-- 64: a stack ~33 participant-ot futtat (rplidar, slam_toolbox, ekf,
+           ros2_control, twist_mux, behavior_server, planner_server, controller_server,
+           waypoint_follower, velocity_smoother, safety_supervisor, startup_supervisor,
+           foxglove_bridge, microros_agent FastDDS×3, realsense2_camera,
+           robot_state_publisher, rc_teleop, winch_node, bno08x_driver, ros2cli temp).
+           A 32-es default elérve volt → "Failed to find a free participant index"
+           hiba új processek indításakor. 64 ad fejlesztési + fault-recovery margint. -->
+      <MaxAutoParticipantIndex>64</MaxAutoParticipantIndex>
+      <!-- Explicit unicast peer: FastDDS (microros_agent) lo-only konfig esetén
+           multicast nélkül is megtalálják egymást a résztvevők. -->
+      <Peers>
+        <Peer address="127.0.0.1"/>
+      </Peers>
     </Discovery>
 
     <Tracing>

@@ -6,6 +6,56 @@
 
 ---
 
+## 2026-05-10 — Foxglove 5-6s lag gyökoki fix: aszimmetrikus routing | ✅ TESZTELVE
+
+**Tünet:** Foxglove minden topicon (kamera, LiDAR, RC reakció) konstans **5-6s lag**.
+Két különböző kliens-gépen reprodukálható (Mac mini + laptop) → server-oldali.
+
+**Vizsgálati út és kizárt hipotézisek:**
+- ❌ Stale konténer bind mount (`foxglove_bridge` + `ros2_realsense` régi
+  `cyclonedds.xml` inode-on) — **megszüntetve** (`docker compose up -d --force-recreate`),
+  de a 5-6s **NEM múlt el** → nem ez volt.
+- ❌ CycloneDDS `MaxAutoParticipantIndex=32` exhaustion (67 UDP listener / 33 participant
+  → új processzek "Failed to find a free participant index" hibával) — **megemelve 64-re**,
+  stack restart, de 5-6s **NEM múlt el**.
+- ❌ WiFi sávszélesség / WebSocket backpressure — Foxglove `192.168.68.200` Ethernet IP-n
+  is **változatlanul 5-6s**. Layout szűkítés (csak 1 topic) sem javított.
+- ❌ Foxglove kliens-oldali render — két különböző gépen ugyanaz a lag, kizárva.
+- ❌ TCP konfiguráció probléma — `ss -tinp` mutatta: `0% rwnd_limited`, `0.04% loss`,
+  `pmtu:1500 mss:1448`, `pacing_rate 107 Mbps` >> `delivery_rate 15.5 Mbps` →
+  network réteg egészséges, de az alkalmazás visszatartja az írást a `send_buffer_limit`
+  miatt → backpressure másik forrásból.
+- ❌ Tailscale iptables (`ts-input`/`ts-forward` chains) → 192.168.68.x forgalom nem érinti.
+
+**Gyök ok — aszimmetrikus routing (multi-homed Jetson):**
+A Jetson `enP8p1s0` (Ethernet) és `wlx*` (WiFi) **ugyanazon a `192.168.68.0/24` subneten**
+volt. Bejövő TCP packet az enP8p1s0-on érkezett, de a kimenő válasz a wlx-en ment ki,
+mert a kernel main routing táblájában csak a wlx volt regisztrálva /24 connected
+route-tal. **WiFi DTIM buffering a kimenő irányon → konstans 5-6s lag.**
+
+`ip route get 192.168.68.<kliens> from 192.168.68.200` → `dev wlx*` (rossz!)
+
+**Fix (NetworkManager perzisztens):**
+```bash
+nmcli connection modify <enP8p1s0_uuid> \
+    +ipv4.routes "192.168.68.0/24 0.0.0.0 100"
+```
+
+Eredmény: enP8p1s0 metric 101 (preferált) + wlx metric 600 (fallback). Routing
+szimmetrikus, **minden Foxglove panel azonnal reagál**.
+
+**Mellékfix közben:**
+- `cyclonedds.xml` `MaxAutoParticipantIndex` 32 → 64 (participant exhaustion).
+- `cyclonedds.xml` `lo + wlx + AllowMulticast=false + Peers 127.0.0.1` (uncommitted
+  korábbi sessionből, megtartva — működik így is).
+- Stale bind mount tanulság: `docker compose up -d --force-recreate <service>` kell
+  amikor `cyclonedds.xml`-t atomi rename-mel mentik (új inode, futó konténer a régire mutat).
+
+**Érintett fájlok:** `cyclonedds.xml`, `docs/network_setup.md`, `docs/backlog.md`,
+`scripts/setup_network.sh` (perzisztens nmcli route).
+
+---
+
 ## 2026-05-04 — Startup robustness fix (dupla prestart + USB race) | 🔴 NEM TESZTELT
 
 **Probléma 1 — Dupla prestart (boot):**
