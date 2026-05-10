@@ -55,7 +55,9 @@ fi
 log "enP8p1s0 fallback IP ellenőrzés..."
 if ! ip addr show enP8p1s0 2>/dev/null | grep -q "inet "; then
     if ip addr add 192.168.68.200/24 dev enP8p1s0 2>/dev/null; then
-        log "enP8p1s0: fallback IP hozzárendelve (192.168.68.200/24)"
+        # metric 700 > WiFi metric 600 → WiFi subnet route marad preferált, ha van
+        ip route change 192.168.68.0/24 dev enP8p1s0 metric 700 2>/dev/null || true
+        log "enP8p1s0: fallback IP hozzárendelve (192.168.68.200/24, metric 700)"
     else
         log "WARN: enP8p1s0 fallback IP sikertelen — CycloneDDS megpróbálja"
     fi
