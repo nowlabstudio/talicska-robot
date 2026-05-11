@@ -58,7 +58,7 @@ a Tailscale tunnel is elérhetetlenné válik, a robot csak konzolon (HDMI/UART)
 | 192.168.68.1  | Gateway / Router          | —                   | LAN gateway, DHCP               | ✅ aktív        |
 | 192.168.68.125| Dev laptop                | MAC-alapú DHCP      | Fejlesztői gép                  | ✅ aktív        |
 | 192.168.68.x  | Jetson **enP8p1s0**       | `3C:6D:66:A4:13:9F` | SSH, internet, default route (metric 100) | 🔧 nmcli (DHCP) |
-| 192.168.68.x  | Jetson **wlx7cdd908b2391**| `7C:DD:90:8B:23:91` | WiFi fallback (metric 600), `txqueuelen=100` | 🔧 nmcli (DHCP) + `systemd.link` |
+| 192.168.68.x  | Jetson **wlan0** (MAC-alapú `wlx*` predictable név instabil) | `7C:DD:90:8B:23:91` | WiFi fallback (metric 600), `txqueuelen=100` | 🔧 nmcli (DHCP) + `systemd.link` |
 | **Tailscale overlay — 100.64.0.0/10, WireGuard mesh VPN** |||||
 | 100.116.200.82| Jetson (synapse)          | tailscale0           | VPN + subnet router 10.0.10.0/24| ✅ aktív        |
 | 100.x.y.z     | Dev laptop                | tailscale0           | VPN kliens, eléri robot subnetet| ✅ aktív        |
@@ -513,11 +513,82 @@ reboot után sem jön vissza.
 **Tanulság:**
 - NM profil törlés ELŐTT `nmcli con down` — különben az IP a kernelben maradhat,
   és NM "externally connected" módban újra felveszi
-- Linkdown route a kernel route-lookupban **nem** automatikusan kizárt — ha
-  problémát okoz, `net.ipv4.conf.all.ignore_routes_with_linkdown=1` sysctl-lel
-  szigorítható (jelenleg default=0, nincs perzisztálva)
 - Multi-homed /24 mindig potenciális csapda — két interfész ugyanazon a subneten
   csak egyértelmű metric+UP-állapot esetén stabil
+
+### Hibakör 3 regresszió + perzisztens védelem (2026-05-11 este)
+
+Néhány órával a Hibakör 3 fix után **újra előfordult** — az `enP8p1s0` (DOWN!)
+megint felvette a `192.168.68.200/24` címet, és új NM in-memory "externally
+connected" profil képződött (új uuid `5a003914-1218-443d-a3bc-bbc3e7327bee`,
+előzőleg `ae5c1b30…`). SSH WiFi-n ismét timeout. Visszakerülés forrása nem
+azonosított — a config-fájlok továbbra sem tartalmazzák a 200/24-et.
+
+**Perzisztens megelőzés (alkalmazva):** A `net.ipv4.conf.*.ignore_routes_with_linkdown=1`
+sysctl bekapcsolva. Ezzel a `linkdown`-flag-elt 0-metric route soha nem nyerhet
+a wlan0 metric 600 felett — akkor sem ha az árva IP egy reboot vagy újraindulás
+után visszakerül az interfészre. Hozzáadva: `/etc/sysctl.d/10-network-security.conf`.
+
+```
+# /etc/sysctl.d/10-network-security.conf — releváns sorok
+net.ipv4.conf.default.rp_filter=2
+net.ipv4.conf.all.rp_filter=2
+net.ipv4.conf.default.ignore_routes_with_linkdown=1
+net.ipv4.conf.all.ignore_routes_with_linkdown=1
+```
+
+**Tanulság ebből az ismétlésből:**
+- A `nmcli con down ELŐSZÖR` szabály szükséges, de **nem elégséges** — perzisztens
+  kernel-szintű védelem is kell. Most már a `ignore_routes_with_linkdown=1`
+  megoldja a tüneti szintet attól függetlenül, hogy hányszor jelenik meg az
+  árva IP.
+
+---
+
+## Hibakör 4 — `cyclonedds.xml` interfész név sync (2026-05-11 este)
+
+### Tünet
+A `robot`, `microros_agent`, `foxglove_bridge`, `ros2_realsense` konténerek
+minden ROS2 process-e azonnal abort-olt rclcpp init közben:
+
+```
+wlx7cdd908b2391: does not match an available interface.
+[ERROR] rmw_create_node: failed to create domain, error Error
+terminate called: failed to initialize rcl node, at ./src/rcl/node.c:252
+```
+
+A robot konténer Docker healthcheck szempontjából `healthy` maradt
+(`ros_readiness_check.py` nem ezt méri), de `docker exec robot ros2 node list`
+**üres** — egyetlen ROS2 node sem jött létre.
+
+### Gyökér ok
+A 2026-05-11-i WiFi interfész átnevezés (`wlx7cdd908b2391` → `wlan0`,
+ugyanaz a MAC `7C:DD:90:8B:23:91`) után a `cyclonedds.xml:58`-on a
+`NetworkInterface name="wlx7cdd908b2391"` érvénytelen lett. CycloneDDS a
+megadott interfész nélkül nem tud domain-t létrehozni — minden node az
+`rclcpp::init()`-nél azonnali `std::terminate`-pel kilép.
+
+### Fix
+- `cyclonedds.xml:58`: `wlx7cdd908b2391` → `wlan0`
+- Volume-mounted config — build nem kell, force-recreate elég:
+  ```bash
+  sudo docker restart robot microros_agent
+  cd realsense-jetson && sudo docker compose up -d --force-recreate
+  sudo docker compose -f docker-compose.yml -f docker-compose.tools.yml up -d \
+      --force-recreate robot microros_agent foxglove_bridge
+  ```
+- Verify: `docker exec robot ros2 node list` → 34 node fut (rplidar, bno08x,
+  camera, slam_toolbox, ekf, Nav2 stack, roboclaw, rc_teleop, safety/startup
+  supervisor, foxglove_bridge).
+
+### Tanulság
+- A WiFi interfész név (`wlx*` MAC-alapú vs `wlan0` kernel-soros) **instabil**
+  lehet driver/kernel állapottól függően. A `cyclonedds.xml`-ben hardkódolt
+  név fragilis.
+- Hosszú távú megoldás: backlog "CycloneDDS `lo+wlx` → `lo-only` revízió" —
+  egyetlen Jetson, `network_mode:host` konténerek, Foxglove WebSocket TCP-n,
+  cross-host DDS nincs → DDS-nek nem kell wlan0. Teszt-igényes (microros_agent
+  FastDDS peer 127.0.0.1 ↔ CycloneDDS).
 
 ### Tünetek és gyors döntési mátrix
 
@@ -525,9 +596,10 @@ reboot után sem jön vissza.
 |---|---|---|
 | Foxglove lag csak WiFi-only (Eth DOWN) | wlx bufferbloat | `tx_queue_len 100` |
 | Foxglove lag mindkét linken (Eth UP-on is) | aszimm. routing vagy más | `ip route get`, `ss -ti`, `rp_filter` ellenőrzés |
-| TCP RTT 400-500 ms LAN-on | bufferbloat (qdisc backlog 700+ packet) | `tc -s qdisc show dev wlx*` |
+| TCP RTT 400-500 ms LAN-on | bufferbloat (qdisc backlog 700+ packet) | `tc -s qdisc show dev wlan0` |
 | `delivery_rate` ≪ `pacing_rate`, `retrans` minimális | bufferbloat vagy path aszimmetria | mindkettő |
-| SSH/TCP timeout egyik linken, lokálisan OK | DOWN interfészen árva IP nyer route-lookupban | `ip route get <peer>`, `ip addr del` a halott IP-t |
+| SSH/TCP timeout egyik linken, lokálisan OK | DOWN interfészen árva IP nyer route-lookupban | `ip route get <peer>`, `ip addr del` a halott IP-t — most már perzisztensen védve `ignore_routes_with_linkdown=1`-gyel |
+| ROS2 node-ok nem jönnek létre, `rmw_create_node: failed to create domain` | `cyclonedds.xml` hardkódolt interfész név (wlx* vs wlan0) | `cyclonedds.xml` `NetworkInterface name` sync az `ip -br link` alapján; `docker restart robot microros_agent` |
 
 ### rp_filter
 

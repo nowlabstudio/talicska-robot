@@ -55,7 +55,7 @@
            független, de wlx-en keresztül elérhető marad. -->
       <Interfaces>
         <NetworkInterface name="lo"              priority="default" multicast="false"/>
-        <NetworkInterface name="wlx7cdd908b2391" priority="default" multicast="false"/>
+        <NetworkInterface name="wlan0"           priority="default" multicast="false"/>
       </Interfaces>
       <AllowMulticast>false</AllowMulticast>
       <MaxMessageSize>65500B</MaxMessageSize>
