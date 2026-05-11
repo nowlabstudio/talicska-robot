@@ -361,23 +361,39 @@ setup_network() {
     log "INFO" "LAN interfész:   ${LAN_IFACE}   → DHCP"
 
     # LAN interfész (enP8p1s0): NetworkManager automatikusan kezeli DHCP-vel.
-    # Ha valamilyen okból nincs aktív DHCP kapcsolata, létrehozzuk.
+    # Multi-homed setup (Eth + WiFi ugyanazon a /24-en) miatt explicit route-metric=100
+    # az Eth-re — kisebb mint a WiFi default 600, így Eth UP esetén Eth a primer kimenő útvonal.
+    # Lásd: docs/network_setup.md "Multi-homed routing" szekció.
     if ! nmcli -g GENERAL.STATE connection show "${LAN_IFACE}" &>/dev/null 2>&1; then
         if nmcli connection show | grep -q "${LAN_IFACE}"; then
             step "LAN kapcsolat (${LAN_IFACE}) aktiválása..."
             run sudo nmcli connection up "$(nmcli -g NAME,DEVICE connection show | grep "${LAN_IFACE}" | cut -d: -f1 | head -1)" || true
         else
-            step "LAN kapcsolat létrehozása: ${LAN_IFACE} → DHCP..."
+            step "LAN kapcsolat létrehozása: ${LAN_IFACE} → DHCP, route-metric=100..."
             run sudo nmcli connection add \
                 type ethernet \
                 ifname "${LAN_IFACE}" \
                 con-name lan-external \
                 ipv4.method auto \
+                ipv4.route-metric 100 \
                 ipv6.method auto
             run sudo nmcli connection up lan-external || true
         fi
     else
         skip "LAN kapcsolat (${LAN_IFACE}): aktív"
+    fi
+
+    # Biztosítjuk hogy a primer LAN profil DHCP + route-metric=100 + autoconnect=yes
+    # (idempotens — meglévő profilon is alkalmaz, megelőzi a multi-homed routing zavart)
+    local lan_primer
+    lan_primer="$(nmcli -t -f NAME,DEVICE connection show 2>/dev/null \
+                  | awk -F: -v iface="${LAN_IFACE}" '$2==iface{print $1; exit}')"
+    if [[ -n "${lan_primer}" ]]; then
+        step "LAN profil (${lan_primer}): DHCP + route-metric=100 biztosítása..."
+        run sudo nmcli connection modify "${lan_primer}" \
+            ipv4.method auto \
+            ipv4.route-metric 100 \
+            connection.autoconnect yes
     fi
 
     # Robot interfész (enP1p1s0): static 10.0.10.1/24, no default route.
@@ -1058,6 +1074,52 @@ setup_wifi() {
     fi
 
     log "INFO" "WiFi konfiguráció kész"
+}
+
+# ── 8c. WiFi qdisc / bufferbloat fix (rt2800usb txqueuelen=100) ──────────────
+# Az rt2800usb USB WiFi adapter default txqueuelen=1000 + L4T kernel pfifo_fast
+# qdisc (nincs fq_codel/cake/sfq modul) → ~700 packet queue backlog → 400-500ms
+# RTT → Foxglove 4-6 s lag WiFi-only forgatókönyvben (2026-05-11 root cause).
+# Fix: tx_queue_len=100 perzisztens systemd.link-szel, Driver-alapú match.
+setup_wifi_qdisc() {
+    section "Fázis: WiFi bufferbloat fix (txqueuelen=100)"
+
+    local LINK_FILE="/etc/systemd/network/10-wifi-txqueuelen.link"
+
+    if [[ -f "${LINK_FILE}" ]]; then
+        skip "WiFi systemd.link már létezik: ${LINK_FILE}"
+    else
+        step "WiFi txqueuelen=100 systemd.link telepítése..."
+        sudo tee "${LINK_FILE}" > /dev/null <<'LINKEOF'
+# Talicska robot — WiFi bufferbloat mitigáció
+# rt2800usb default txqueuelen=1000 → ~700 packet qdisc backlog → 400-500ms RTT.
+# Csökkentés 100-ra: RTT 444ms → 57ms (~8x). Lásd docs/network_setup.md.
+# Driver-alapú match → minden rt2800usb USB WiFi adapterre érvényes (adapter-csere safe).
+
+[Match]
+Driver=rt2800usb
+
+[Link]
+TransmitQueueLength=100
+LINKEOF
+        run sudo udevadm control --reload
+    fi
+
+    # Trigger ha van WiFi interfész — egyébként boot/attach-kor érvényesül
+    local wifi_iface
+    wifi_iface="$(ip link show | grep -E 'wlx|wlan' | awk '{print $2}' | tr -d ':' | head -1)"
+    if [[ -n "${wifi_iface}" ]]; then
+        sudo udevadm trigger --action=add --subsystem-match=net "/sys/class/net/${wifi_iface}" 2>/dev/null || true
+        local txqlen
+        txqlen="$(cat "/sys/class/net/${wifi_iface}/tx_queue_len" 2>/dev/null || echo 'unknown')"
+        if [[ "${txqlen}" == "100" ]]; then
+            ok "WiFi txqueuelen: ${txqlen} (${wifi_iface})"
+        else
+            warn "WiFi txqueuelen: ${txqlen} (cél: 100) — reboot után helyreáll"
+        fi
+    else
+        ok "${LINK_FILE} létrehozva — WiFi interface attach-kor érvényes"
+    fi
 }
 
 # ── 9. Jetson Power Mode (nvpmodel MAXN_SUPER + jetson_clocks) ────────────────
@@ -2212,6 +2274,9 @@ main() {
 
     section "Fázis 7b — WiFi kapcsolat"
     setup_wifi || warn "WiFi kapcsolat konfig sikertelen — kézzel: nmcli device wifi connect T61"
+
+    section "Fázis 7c — WiFi bufferbloat fix"
+    setup_wifi_qdisc || warn "WiFi qdisc fix sikertelen — kézzel: docs/network_setup.md 'Hibakör 2'"
 
     section "Fázis 8 — udev szabályok"
     install_udev_rules           # RPLidar + RealSense udev rules

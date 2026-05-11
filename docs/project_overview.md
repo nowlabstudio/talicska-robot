@@ -65,7 +65,9 @@ footprint: "[[0.605, 0.4], [0.605, -0.4], [-0.495, -0.4], [-0.495, 0.4]]"
 | ZED 2i | Sztereó kamera (előre) | USB3 Jetsonen (bármely port, idVendor: 2b03) | — | RGB, depth, IMU, body tracking — FOLLOW/SHUTTLE módhoz |
 | RPLidar A2M12 | 2D LiDAR | USB Jetsonen → `/dev/rplidar` (udev) | — | SLAM + Nav2 + safety zónák |
 
-**Hálózat:** `10.0.10.x/24` robot-internal — Jetson enP8p1s0: 10.0.10.1/24 (nem labor LAN, hanem Jetson→bridge dedicated ethernetes hálózat)
+**Hálózat (két különálló sík):**
+- **Robot belső:** `10.0.10.x/24` — Jetson `enP1p1s0` 10.0.10.1/24 (static, no default route, dedicated ethernet a bridge-eknek)
+- **Lab/internet:** `192.168.68.0/24` — Jetson `enP8p1s0` (Eth, DHCP, route-metric 100) + `wlx7cdd908b2391` (USB WiFi rt2800usb, DHCP, metric 600). WiFi a primer kliens-útvonal (2026-05-11). WiFi-n `txqueuelen=100` bufferbloat fix `systemd.link`-szel perzisztens. Részletek: `docs/network_setup.md`.
 
 ---
 
