@@ -475,6 +475,50 @@ cat /sys/class/net/wlx7cdd908b2391/tx_queue_len   # → 100
 ping -c 10 -i 0.2 192.168.68.1                    # → avg ~50-70 ms WiFi-only
 ```
 
+### Hibakör 3 — Árva IP DOWN interfészen (2026-05-11, SSH WiFi timeout)
+
+A 2026-05-10-i NM-profil cleanup után az `enP8p1s0` interfészen **a kernelben
+felejtve maradt** egy `192.168.68.200/24` cím (a törölt statikus profil hagyatéka).
+A NetworkManager észlelte mint "valami már beállította" → létrehozott egy
+in-memory `connected (externally)` profilt (uuid `ae5c1b30…`, autoconnect=no,
+manual, 192.168.68.200/24), ami életben tartotta az állapotot.
+
+**Tünet:** `ssh eduard@192.168.68.124` WiFi-n **timeout**. SYN bejön a wlan0-ra,
+de SYN-ACK soha nem megy ki. A sshd lokálisan válaszol (loopback + wlan0 IP-n),
+tehát userspace OK.
+
+**Mérési igazolás:**
+```bash
+$ ip route get 192.168.68.109
+192.168.68.109 dev enP8p1s0 src 192.168.68.200    # ← DOWN interfész nyer!
+$ nstat -a | grep IPReverse
+TcpExtIPReversePathFilter       277
+```
+
+A kernel a `linkdown`-flag-elt 0-metric-ű route-ot **mégis választja** az
+azonos `192.168.68.0/24` wlan0 (metric 600) route felett, holott az enP8p1s0
+fizikai linkje DOWN. Eredmény: kimenő válasz egy halott interfészre megy.
+
+**Fix (immediate):**
+```bash
+sudo ip addr del 192.168.68.200/24 dev enP8p1s0
+sudo nmcli con down ae5c1b30-cd34-42e0-9a28-a3d8305033d4   # in-memory profil
+# Az árva profil deactivate után automatikusan eltűnik (nincs fájl)
+```
+
+**Perzisztencia:** A `192.168.68.200/24` címnek nincs config-forrása
+(`/etc/network/interfaces`, `/etc/netplan`, `systemd-networkd` mind üres) →
+reboot után sem jön vissza.
+
+**Tanulság:**
+- NM profil törlés ELŐTT `nmcli con down` — különben az IP a kernelben maradhat,
+  és NM "externally connected" módban újra felveszi
+- Linkdown route a kernel route-lookupban **nem** automatikusan kizárt — ha
+  problémát okoz, `net.ipv4.conf.all.ignore_routes_with_linkdown=1` sysctl-lel
+  szigorítható (jelenleg default=0, nincs perzisztálva)
+- Multi-homed /24 mindig potenciális csapda — két interfész ugyanazon a subneten
+  csak egyértelmű metric+UP-állapot esetén stabil
+
 ### Tünetek és gyors döntési mátrix
 
 | Tünet | Diagnózis | Fix |
@@ -483,6 +527,7 @@ ping -c 10 -i 0.2 192.168.68.1                    # → avg ~50-70 ms WiFi-only
 | Foxglove lag mindkét linken (Eth UP-on is) | aszimm. routing vagy más | `ip route get`, `ss -ti`, `rp_filter` ellenőrzés |
 | TCP RTT 400-500 ms LAN-on | bufferbloat (qdisc backlog 700+ packet) | `tc -s qdisc show dev wlx*` |
 | `delivery_rate` ≪ `pacing_rate`, `retrans` minimális | bufferbloat vagy path aszimmetria | mindkettő |
+| SSH/TCP timeout egyik linken, lokálisan OK | DOWN interfészen árva IP nyer route-lookupban | `ip route get <peer>`, `ip addr del` a halott IP-t |
 
 ### rp_filter
 
