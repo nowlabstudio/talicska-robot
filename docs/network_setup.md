@@ -590,6 +590,26 @@ megadott interfész nélkül nem tud domain-t létrehozni — minden node az
   cross-host DDS nincs → DDS-nek nem kell wlan0. Teszt-igényes (microros_agent
   FastDDS peer 127.0.0.1 ↔ CycloneDDS).
 
+### Megelőzés — MAC-alapú név rögzítés (2026-05-11)
+
+A systemd default `99-default.link` `NamePolicy=keep kernel database onboard
+slot path` szabálya megőrzi a kernel-adott `wlan0` nevet — de nem garantált
+(driver re-enumeration vagy concurrent WiFi adapter eseten `wlx<MAC>` jöhet).
+Explicit MAC-alapú rename rule garantálja a `wlan0` nevet minden esetben:
+
+```ini
+# /etc/systemd/network/15-wifi-name.link
+[Match]
+MACAddress=7c:dd:90:8b:23:91
+
+[Link]
+Name=wlan0
+```
+
+Telepítés után `udevadm control --reload-rules && udevadm trigger
+--action=add --subsystem-match=net`. Reboot után az interfész név
+garantáltan `wlan0` → a `cyclonedds.xml` érvényes marad.
+
 ### Tünetek és gyors döntési mátrix
 
 | Tünet | Diagnózis | Fix |
