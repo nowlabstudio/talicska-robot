@@ -57,7 +57,8 @@ a Tailscale tunnel is elérhetetlenné válik, a robot csak konzolon (HDMI/UART)
 | **Lab LAN — 192.168.68.0/24, gateway: 192.168.68.1, mask: 255.255.255.0** |||||
 | 192.168.68.1  | Gateway / Router          | —                   | LAN gateway, DHCP               | ✅ aktív        |
 | 192.168.68.125| Dev laptop                | MAC-alapú DHCP      | Fejlesztői gép                  | ✅ aktív        |
-| 192.168.68.x  | Jetson **enP8p1s0**       | `ip link show enP8p1s0` | SSH, internet, default route | 🔧 nmcli (DHCP) |
+| 192.168.68.x  | Jetson **enP8p1s0**       | `3C:6D:66:A4:13:9F` | SSH, internet, default route (metric 100) | 🔧 nmcli (DHCP) |
+| 192.168.68.x  | Jetson **wlx7cdd908b2391**| `7C:DD:90:8B:23:91` | WiFi fallback (metric 600), `txqueuelen=100` | 🔧 nmcli (DHCP) + `systemd.link` |
 | **Tailscale overlay — 100.64.0.0/10, WireGuard mesh VPN** |||||
 | 100.116.200.82| Jetson (synapse)          | tailscale0           | VPN + subnet router 10.0.10.0/24| ✅ aktív        |
 | 100.x.y.z     | Dev laptop                | tailscale0           | VPN kliens, eléri robot subnetet| ✅ aktív        |
@@ -415,75 +416,79 @@ sudo tailscale up --advertise-routes=10.0.10.0/24 --accept-dns=false
 
 ---
 
-## Multi-homed routing — enP8p1s0 + wlx ugyanazon a /24-en
+## Multi-homed routing + WiFi bufferbloat — Foxglove lag root cause
 
-A Jetson `enP8p1s0` (Ethernet) és `wlx*` (WiFi) **gyakran ugyanazt a lab LAN-t**
-(`192.168.68.0/24`) látja. Ez kényelmes mert mindkét interfészen használható
-ugyanaz a Foxglove URL, de **klasszikus aszimmetrikus routing csapdát** rejt:
+A Jetson `enP8p1s0` (Ethernet) és `wlx7cdd908b2391` (USB WiFi, rt2800usb) **ugyanazt
+a lab LAN-t** (`192.168.68.0/24`) látja. Mindkét interfész DHCP-n kap címet (eltérő
+host-részekkel), és a NetworkManager mindkettőre tesz `192.168.68.0/24` connected
+route-ot a main táblába:
 
-- A bejövő TCP packet az **enP8p1s0**-ra érkezik (Layer 2 ARP a 200-as IP-hez).
-- A kimenő válasz a **wlx**-en megy ki, mert a kernel main routing táblájában
-  `192.168.68.0/24` csak a wlx-hez van rendelve.
-- **WiFi DTIM buffering** a kimenő irányban → konstans **5–6 másodperces lag**
-  minden TCP/UDP forgalomra. Foxglove WebSocket-en végigsöpör.
+```
+default via 192.168.68.1 dev enP8p1s0         proto dhcp metric 100   ← preferált
+default via 192.168.68.1 dev wlx7cdd908b2391  proto dhcp metric 600   ← fallback (Eth DOWN esetén)
+192.168.68.0/24 dev enP8p1s0         proto kernel scope link metric 100
+192.168.68.0/24 dev wlx7cdd908b2391  proto kernel scope link metric 600
+```
 
-### Tünet
+Két különálló hibakör keveredett 2026-05-10-én — fontos szétválasztani őket:
 
-`Foxglove minden topicon konstans 5-6s késés, kamera+LiDAR+RC reakció egyaránt`.
-Két különböző kliens-gépen reprodukálható → **server-oldali probléma**, nem
-kliens vagy hálózat-oldali.
+### Hibakör 1 — Aszimmetrikus routing (Mac mini 109)
 
-### Detektálás
+Ha kliens a wlx IP-jén (.124) nyitotta a TCP kapcsolatot, de a kernel a kimenő
+választ a kisebb metric-ű `enP8p1s0`-on küldte vissza, az **aszimmetrikus** lett.
+`rp_filter=2` (loose) miatt nem dropolódott, de TCP retransmit/reorder magas
+értékeket dobott. **Fix:** mindkét interfész DHCP, a metric-eket explicit beállítva
+(`enP8p1s0: 100`, `wlx: 600`) — a kernel mindig a kisebb metric-ű interfészen
+küldi a választ, ami **konzisztens kimenő útvonalat** ad. Lásd `enP8p1s0`
+NM-profil `ipv4.route-metric=100` beállítását.
+
+### Hibakör 2 — wlx bufferbloat (T580 + WiFi-only forgatókönyv)
+
+A **rt2800usb** USB WiFi adapter alapértelmezett `txqueuelen=1000` + `pfifo_fast`
+qdisc-cel **óriás kimenő bufferbloatot** produkált: 700+ packet queue-mélység,
+ami ~400-500 ms RTT-t okozott a gateway-ig. Foxglove server→client forgalom
+99%-a, így a WebSocket lag 4-6 s lett. **Eth kihúzva → minden a wlx-en megy ki →
+azonnal érezhető.** Eth UP esetén a lag elbújik, mert a server→client forgalom
+az Eth-en megy ki (default gw metric 100), és a wlx csak bejövő ARP-választ ad.
+
+A Jetson L4T kernel **nem tartalmaz** `fq_codel`/`cake`/`sfq` modulokat
+(`/lib/modules/.../net/sched/` csak ETF/CBS/TAPRIO/MQPRIO/INGRESS qdisc-eket
+kínál — TSN, nem AQM). Workaround: a `txqueuelen`-t 1000-ről 100-ra csökkenteni
+**önmagában** RTT 444 ms → 57 ms javulást ad.
+
+**Fix — perzisztens `systemd.link`-szel** (NM-konfliktus-mentes, `systemd-udevd`
+applikálja interface attach pillanatában):
+
+```ini
+# /etc/systemd/network/10-wifi-txqueuelen.link
+[Match]
+MACAddress=7c:dd:90:8b:23:91
+
+[Link]
+TransmitQueueLength=100
+```
+
+Reboot után automatikus, ellenőrzés:
 
 ```bash
-# Aszimmetrikus routing igazolása:
-ip route get 192.168.68.<kliens-IP> from 192.168.68.200
-
-# Ha "dev wlx*" jön ki ÉS van enP8p1s0 link → aszimmetrikus
-# Helyes: "dev enP8p1s0"
+cat /sys/class/net/wlx7cdd908b2391/tx_queue_len   # → 100
+ping -c 10 -i 0.2 192.168.68.1                    # → avg ~50-70 ms WiFi-only
 ```
 
-A `ss -tinp 'sport = :8765'` is segít: `delivery_rate` jóval alacsonyabb mint
-`pacing_rate` ÚGY, hogy `rwnd_limited: 0%` és `retrans` minimális → **nem**
-kliens vagy network throughput, hanem path-aszimmetria.
+### Tünetek és gyors döntési mátrix
 
-### Fix — NetworkManager profile-ban rögzítve
-
-A `enP8p1s0` statikus fallback profile-hez (uuid `35cf553d-...` az install.sh
-által létrehozott) **explicit /24 connected route** alacsony metric-kel:
-
-```bash
-nmcli connection modify <enP8p1s0_uuid> \
-    +ipv4.routes "192.168.68.0/24 0.0.0.0 100"
-```
-
-Eredmény (`ip route show`):
-
-```
-192.168.68.0/24 dev enP8p1s0 proto kernel scope link src 192.168.68.200 metric 101  ← preferált
-192.168.68.0/24 dev wlx*      proto kernel scope link src 192.168.68.124 metric 600  ← fallback
-```
-
-A wlx **megmarad** mint hátrébb prioritású route — ha az Ethernet kábel kihúzva,
-automatikusan átvált a WiFi. A 100/101-es kis metric NEM ütközik a default
-route-tal (default csak a wlx-en van metric 600-on, mert az enP8p1s0 statikus
-profile `ipv4.never-default: no` de gateway nincs benne).
-
-### Miért nem jött auto
-
-A NetworkManager a `wlx` profilját **előbb aktiválta** (boot-time), így ő foglalta
-le a `192.168.68.0/24` connected route-ot a main táblában. Amikor az enP8p1s0
-statikus profilja később aktiválódik a fallback IP-vel, a kernel **nem ad**
-második connected route-ot ugyanarra a destinationra, és a profile `ipv4.routes`
-listája üres — eredmény: csak local-tábla bejegyzés, NEM main.
-
-A `+ipv4.routes` explicit szabály ezt kerüli meg.
+| Tünet | Diagnózis | Fix |
+|---|---|---|
+| Foxglove lag csak WiFi-only (Eth DOWN) | wlx bufferbloat | `tx_queue_len 100` |
+| Foxglove lag mindkét linken (Eth UP-on is) | aszimm. routing vagy más | `ip route get`, `ss -ti`, `rp_filter` ellenőrzés |
+| TCP RTT 400-500 ms LAN-on | bufferbloat (qdisc backlog 700+ packet) | `tc -s qdisc show dev wlx*` |
+| `delivery_rate` ≪ `pacing_rate`, `retrans` minimális | bufferbloat vagy path aszimmetria | mindkettő |
 
 ### rp_filter
 
-A Jetsonon `net.ipv4.conf.all.rp_filter = 2` (loose mode), ezért az aszimmetrikus
-forgalom nem dropolódik bejövő irányban. Ha strict (1) lenne, a kapcsolat
-egyáltalán nem épülne fel — most az 5-6s lag a tünet, nem a teljes blokkolás.
+`net.ipv4.conf.all.rp_filter = 2` (loose mode) — szándékos, hogy a multi-homed
+aszimmetrikus forgalom NE dropolódjon bejövő irányban. Strict (1) esetén a wlx-en
+érkező packet az `enP8p1s0` válaszra ellenőrizné a return path-t, és dobná.
 
 ---
 
