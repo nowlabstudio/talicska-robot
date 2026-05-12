@@ -18,8 +18,8 @@ diff_drive_controller:
     left_wheel_names:  [rear_left_wheel_joint]
     right_wheel_names: [rear_right_wheel_joint]
 
-    wheel_separation: 0.7    # 700 mm track width (centre-centre)
-    wheel_radius: 0.19       # 380 mm diameter
+    wheel_separation: 0.72   # 720 mm (fizikai mérés, mértékelt 2026-05-12)
+    wheel_radius: 0.19       # 380 mm diameter (kalibrált — encoder_counts_per_rev: 144525)
 
     # Velocity limits — nested format required in Jazzy diff_drive_controller 4.x.
     # max_velocity matches ~14 km/h = 3.89 m/s (physical max in RC mode).

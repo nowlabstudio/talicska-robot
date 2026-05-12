@@ -90,8 +90,17 @@
   <xacro:property name="chassis_z_centre"  value="${chassis_bottom_z + chassis_height / 2.0}"/> <!-- 0.19 m -->
 
   <!-- Wheels -->
-  <xacro:property name="wheel_radius"      value="0.19"/>
+  <!-- wheel_radius: fizikailag mért 385 mm átmérő (2026-05-12) → 0.1925 m sugár.
+       FIGYELEM: a `diff_drive_controller` (controllers.yaml + robot_params.yaml)
+       szándékosan 0.19 m-en marad, mert az `encoder_counts_per_rev: 144525`
+       kalibráció erre lett behangolva (3 m fizikai = 3.012 m EKF, 0.4% hiba).
+       Az URDF érték CSAK a robot_state_publisher TF-kozmetikát befolyásolja
+       (Foxglove vizualizáció), a diff_drive kinematika nem olvas innen. -->
+  <xacro:property name="wheel_radius"      value="0.1925"/>
   <xacro:property name="wheel_width"       value="0.1"/>
+  <!-- wheel_separation: kerék-közép → kerék-közép Y-irányban.
+       2026-05-12: visszaállítva 0.7-re az eredeti referenciára, friss
+       360°-os kalibrációs mérés folyamatban (pontosabb wheel-slip kompenzációval). -->
   <xacro:property name="wheel_separation"  value="0.7"/>
   <xacro:property name="axle_offset"       value="0.225"/>
 

@@ -6,6 +6,68 @@
 
 ---
 
+## 2026-05-12 — /robot/mode Int32 sub + wheel_separation fizikai mérés | ✅ ÉLŐ
+
+**Tünet:** A `/robot/mode` topicon a Pico E-Stop board 3-állású rotary kapcsoló
+(LEARN=0 / FOLLOW=1 / AUTO=2) állapota nem érkezett meg a Jetson-ra — sem a
+`/safety/state` JSON-ban, sem Foxglove-on.
+
+**Diagnózis:** A `safety_supervisor.cpp` `mode_sub_` `std_msgs/String`-ként deklarálta
+a `/robot/mode` topicot, miközben a **Pico-firmware Int32-t publikál**
+(`apps/estop/src/mode.c`, `MSG_INT32` típus). DDS-szintű típus-mismatch → a
+discovery NEM kötötte össze a publishert a subscriberrel → 0 üzenet.
+
+**Fix:**
+1. `safety_supervisor.cpp` `mode_sub_` típus: `String → Int32`. A callback
+   enum→String mapping-et végez:
+   - 0 (LEARN)     → `commanded_mode_ = ""`
+   - 1 (FOLLOW)    → `commanded_mode_ = "FOLLOW"`
+   - 2 (AUTO)      → `commanded_mode_ = "NAVIGATION"`
+   - egyéb         → WARN, üres
+2. A `commanded_mode_` String használata a `determine_state()`-ben **változatlan** —
+   a Priority 6 logika ugyanúgy működik (a `/safety/state` JSON szerkezet nem
+   változott, `/safety_parsed` panelek érintetlen).
+
+**Validáció:**
+- `ros2 topic info -v /robot/mode`: publisher (estop, Int32) + subscriber
+  (safety_supervisor, Int32) ✓
+- Foxglove kliens F5 után a `/robot/mode` Int32 értékkel megjelenik
+- `/safety_parsed.mode` "NAVIGATION" jelenik meg amikor kapcsoló AUTO=2 ✓
+
+**Plusz változtatások a session-ben:**
+
+- `wheel_separation: 0.7 → 0.72` (mind `controllers.yaml`-ban, mind
+  `robot_params.yaml`-ban): fizikailag mért 720 mm. A 360°-os helyben-forgás
+  kalibrációs teszt nem alkalmas a paraméter ellenőrzéséhez (gumi-talaj slip ~33%
+  dominál), de a fizikai mérőszalag-mérés referencia.
+
+- `wheel_radius` (URDF, csak vizualizáció): `0.19 → 0.1925` (fizikai 385 mm
+  átmérő). A **diff_drive_controller** szándékosan 0.19-en marad (a kalibrált
+  `encoder_counts_per_rev: 144525`-tel együtt 3 m fizikai = 3.012 m EKF, 0.4%
+  pontos).
+
+- BNO085 IMU yaw scale-bias vizsgálva — chip-DCD dinamikusan változik ±1% szórással
+  (3 mérés átlaga -0.35%, de szórása nagy). Fixed `yaw_scale_factor` nem stabil,
+  marad **1.0** (no scaling). EKF visszaállva `yaw + vyaw` módra (chip-fusion).
+
+**bno08x_ros2_driver patch (külön repo):** új `yaw_scale_factor` paraméter
+implementálva (`angular_velocity.z *= yaw_scale_factor_`). Most 1.0 (no-op),
+de a chip-DCD stabilizálódása után precíz scaling érték állítható.
+
+**SLAM mapping eredmény:** `map3.png` (a `/data/maps/slam_test3_*` bag-ből,
+~50 m kör 2.5 perc alatt). **Loop closure DETEKTÁLT** (a SLAM pose-graph-on
+kék "constraint edge" a kör eleje és vége között). A térkép drámaian tisztább
+a `map2`-höz képest:
+- Folyosó fala egyenes (előzőleg duplikálódott)
+- Kis terem körvonalai konzisztensek
+- Fan-ékek minimális mértékben (csak ablakokon át)
+- EKF végén ~1.5 m drift egy ~1 m fizikai eltérésre — a SLAM `map → odom`
+  TF korrigál → a robot a térkép-frame-ben helyesen pozícionált
+
+A térkép használható autonóm navigációhoz (külön ülésben).
+
+---
+
 ## 2026-05-12 — Wheel-odom kalibráció + EKF velocity-only mód | ✅ ÉLŐ
 
 **Tünet (földi RC-teszt fázis):** SLAM térkép inkonzisztens RC vezetés közben — a

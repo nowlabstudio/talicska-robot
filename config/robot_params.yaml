@@ -195,10 +195,13 @@ diff_drive_controller:
     left_wheel_names:  [rear_left_wheel_joint]
     right_wheel_names: [rear_right_wheel_joint]
 
-    # FONTOS: wheel_separation = 700mm tengelytáv (közepcenter → közepcenter).
-    # rc_teleop_node-ban ugyanezt a 0.7 értéket kell használni!
-    # Backlog BUG: teleop.launch.py-ban 0.8 volt (javítva rc_teleop_node szekcióban).
-    wheel_separation: 0.7    # 700 mm track width (centre-centre)
+    # wheel_separation = track width (kerékközép → kerékközép Y-irányban).
+    # Fizikai mérés 2026-05-12: 720 mm. Helyben-forgás kalibrációs teszttel NEM
+    # ellenőrizhető (gumi-talaj slip ~33% dominál), ezért fizikai mérőszalag-mérés
+    # a forrás. 360°-os pontos visszaállás teszt megerősítette: az IMU 0.55% skála-
+    # biast mutat (358° vs 360° fizikai) — ez BNO085 chip-szintű, kompenzálhatatlan
+    # a stack jelenlegi szintjén.
+    wheel_separation: 0.72   # 720 mm (fizikai mérés, mértékelt 2026-05-12)
     wheel_radius:     0.19   # 380 mm kerék átmérő → 190 mm sugár
 
     # Velocity limits — nested format required in Jazzy diff_drive_controller 4.x.
@@ -269,6 +272,14 @@ bno08x_driver:
       magnetic_field:
         enabled: true
         rate: 100
+    # 2026-05-12: gyro Z (yaw) skála-korrekció. BNO085 chip-szintű ~0.55%
+    # skálahibát mutat 360° pontos visszaállás teszten (358.02° mért / 360° fizikai).
+    # Az EKF csak a vyaw-t integrálja yaw-becsléshez (imu0_config[5] yaw = false),
+    # ezért az itt skálázott angular_velocity.z közvetlenül a yaw-pontosságra hat.
+    # Számítás: yaw_scale_factor = fizikai / mért = 360 / 358.024 ≈ 1.005533
+    # 2026-05-12: 1.0-ra resetelve — 3 mérés átlagával finomítjuk a chip-DCD
+    # frissülése után (a chip dinamikusan kalibrálódik mozgás közben).
+    yaw_scale_factor: 1.0
 
 # ── robot_localization EKF ─────────────────────────────────────────────────────
 # STÁTUSZ: AKTÍV — wheel odom (odom0) + BNO085 IMU (imu0: yaw+vyaw)
@@ -326,6 +337,10 @@ ekf_filter_node:
     # ax/ay szándékosan kikapcsolva — kerekek pörögnek de robot nem mozdul fizikailag
     # Állapotvektor sorok: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
     imu0: /sensors/imu/data
+    # 2026-05-12 (revízió): visszaállítva yaw + vyaw módra. A 3 mérés átlagos
+    # bias ±1% szórással dinamikus, nem konstans → fixed scaling nem stabil.
+    # A chip-fusion yaw (orientation.z quaternion) magnetic+gyro+accel alapján
+    # stabilabb mint a vyaw-only integráció (utóbbi időben gyro-drift halmoz).
     imu0_config:
       [false, false, false,
        false, false, true,

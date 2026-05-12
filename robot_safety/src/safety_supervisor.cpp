@@ -84,6 +84,7 @@
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/header.hpp"
+#include "std_msgs/msg/int32.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "visualization_msgs/msg/marker.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
@@ -254,10 +255,20 @@ public:
         }
       });
 
-    mode_sub_ = create_subscription<std_msgs::msg::String>(
+    // /robot/mode publisher = Pico E-Stop board 3-állású rotary switch (std_msgs/Int32).
+    // Enum: 0 = LEARN (passzív, csak SLAM), 1 = FOLLOW, 2 = AUTO/NAVIGATION.
+    mode_sub_ = create_subscription<std_msgs::msg::Int32>(
       "/robot/mode", rclcpp::QoS(10),
-      [this](std_msgs::msg::String::SharedPtr msg) {
-        commanded_mode_ = msg->data;
+      [this](std_msgs::msg::Int32::SharedPtr msg) {
+        switch (msg->data) {
+          case 0:  commanded_mode_ = "";           break;
+          case 1:  commanded_mode_ = "FOLLOW";     break;
+          case 2:  commanded_mode_ = "NAVIGATION"; break;
+          default:
+            RCLCPP_WARN(get_logger(), "Ismeretlen /robot/mode érték: %d", msg->data);
+            commanded_mode_ = "";
+            break;
+        }
         last_mode_time_ = now();
       });
 
@@ -1437,7 +1448,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr          armed_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr          estop_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr       rc_mode_sub_;
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr        mode_sub_;
+  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr         mode_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr          imu_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr          roboclaw_connected_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr   realsense_sub_;
