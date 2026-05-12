@@ -63,6 +63,32 @@ a hardware-clip-re, hogy a felső 30-50% ne clip-elődjön. A tényleges max vá
 `ros2 param set /rc_teleop_node joystick_expo 2.5`. Érintett: `robot_teleop/src/rc_teleop_node.cpp`,
 `config/robot_params.yaml`.
 
+**Kanyarodás-irány fix (2026-05-12, ugyanaznap) ✅ VALIDÁLVA:**
+RC + Foxglove teleop egyaránt fordítva forgott (TX bal-húzás → robot jobbra). Az
+asztali fázisban nem volt tesztelt — a földi tesztnél derült ki. Diagnosztikai teszt:
+direkt `angular.z = +0.3 rad/s` (REP-103 BALRA) `cmd_vel_foxglove`-ra → ODOM yaw
+**csökkent** (-3.39°), és a robot fizikailag **jobbra** forgott. ODOM és fizikai mozgás
+**konzisztens egymással** (mindkettő jobbra), de **mindkettő fordított a parancshoz
+képest** → szimmetrikus invertálás a Basicmicro motor+encoder szintjén (Motion Studio
+"Motor Direction Reverse" + "Encoder Direction Reverse" PÁRBAN beállítva mindkét
+csatornán). A driver `invert_left_motor: true` + `invert_right_motor: true` ezt
+csak DUPLIKÁLTA → két inverzió = nincs eredeti irány.
+
+**Fix:** `config/robot_params.yaml` `roboclaw_hardware.invert_left_motor: true → false`,
+`invert_right_motor: true → false`. YAML-only, NO rebuild — `docker compose restart robot`.
+
+**Post-deploy validáció:**
+- BALRA parancs (angular.z = +0.3 rad/s × 600ms): ODOM +4.95° ✓ + fizikai BALRA ✓ (user-megerősítve)
+- JOBBRA parancs (-0.3 rad/s × 600ms): ODOM -5.21° ✓
+
+**Tanulság (memóriába: `feedback_roboclaw_invert.md`):** A Basicmicro Motion Studio motor+encoder
+reverse PÁROS beállítást a driver oldalon NEM kell külön invertálni — `invert_*_motor: false`.
+Ha csak a fizikai kábel-polaritás cserélt (Motion Studio nincs reverse), AKKOR kell a driver
+szintű `invert_*_motor: true`. A két szint NE invertáljon egyszerre — duplikálódik.
+
+**Mellékhatás:** Az autonómia (Nav2/SLAM) most konzisztens. Az asztali fázisban épített
+térképek odom-fordított állapotban készültek — új térkép-felvétel javasolt a földi tesztnél.
+
 **Tilt debounce filter DEPLOY-olva ugyanaznap:** (`tilt_debounce_s: 0.3`, default).
 `safety_supervisor.cpp` `imu_cb()`: új `over_limit` változó, `tilt_pending_` flag és
 `tilt_over_start_` időbélyeg. A `tilt_latch_` csak akkor áll be, ha a limit-túllépés

@@ -813,6 +813,35 @@ A curve a `rc_teleop_node`-ban van, nem a bridge firmware-ben. Indoklás:
 - **Több bridge megosztott kódbázis:** Az RC bridge, input bridge, tilt bridge, e-stop bridge ugyanazt a ROS2-Bridge platformot használja. Egy bridge módosítás összekapcsolódó projekteket érint.
 - **Bridge fail-safe érzéketlen:** a TX off → ch5=RC mode + motors=0 fail-safe a nyers Float32 értékre vonatkozik; a curve nem hat rá (`|0|^expo = 0`).
 
+#### Motor irány-inverzió — Basicmicro és driver szint NE duplikálódjon
+
+A `roboclaw_hardware` driver `invert_left_motor` és `invert_right_motor` paraméterekkel rendelkezik, amelyek a parancsot ÉS az encoder olvasását is megfordítják (`motor_sign_[i] = ±1` szorzás mind a write, mind a read oldalon — closed-loop konzisztens marad).
+
+**Kritikus szabály:** A motor irány-inverziót **VAGY** a Basicmicro Motion Studio-ban (Motor Direction Reverse + Encoder Direction Reverse PÁRBAN), **VAGY** a driver `invert_*_motor` paraméterén keresztül kell állítani — **soha nem egyszerre**. Két szintű inverzió kioltja egymást, és a robot a paranccsal ellentétes irányba mozog.
+
+**Tényleges konfiguráció (2026-05-12 földi RC-teszt validáció):**
+
+| Szint | Beállítás | Megjegyzés |
+|---|---|---|
+| Basicmicro (Motion Studio) | Motor Direction Reverse + Encoder Direction Reverse **PÁROS**, mindkét csatorna (M1, M2) | Felhasználói előzetes konfig — fizikai bekötés megőrzéséhez |
+| Driver (`robot_params.yaml`) | `invert_left_motor: false` + `invert_right_motor: false` | Egyetlen szint van invertálva (Basicmicro) — driver nem duplikál |
+
+**Diagnosztikai recept** (forgási irány validálása):
+
+```bash
+# 1. autonóm módba (RC TX ch5 LOW), és /safety/state state != "RC"
+# 2. publish 600ms balra-forgás parancs:
+docker exec robot ros2 topic pub --rate 50 --times 30 /cmd_vel_foxglove \
+  geometry_msgs/Twist '{angular: {z: 0.3}}'
+# 3. olvasd vissza a /odometry/filtered yaw-deltáját + figyeld a fizikai irányt
+```
+
+| ODOM Δyaw | Fizikai irány | Diagnózis |
+|---|---|---|
+| **+** (CCW) | balra | ✅ REP-103 konzisztens, minden rendben |
+| **−** (CW) | jobbra | ⚠️ ODOM ↔ fizikai konzisztens, de szimmetrikus invertálás valamelyik szinten — `invert_*_motor` átkapcsolás |
+| **+** (CCW) | jobbra | 🔴 ODOM ↔ fizikai INKONZISZTENS — encoder/motor szétválasztva (HW gond) |
+
 #### Sebesség-rampolás (acc-limit)
 
 Jelenleg a `diff_drive_controller`-ben `has_acceleration_limits: false` — a controller a beérkező `cmd_vel`-t azonnal továbbítja. Az effektív sebesség-rampozást **csak a Basicmicro vezérlő** `default_acceleration` paramétere (`SetM1/M2SpeedAccel` parancsban küldve) biztosítja, ~1.27 m/s² értékben (75000 QPPS/s).
