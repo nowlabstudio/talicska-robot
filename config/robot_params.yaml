@@ -430,9 +430,9 @@ safety_supervisor:
     # Latch perzisztencia — node crash + ROS2 restart után is megmarad a FAULT állapot
     latch_state_path:     "/run/robot/safety_latch_state"
     # TILT: BNO085 dedikált IMU aktív — éles limitek bekapcsolva.
-    # TODO: rpy orientáció URDF-ben (imu_joint) véglegesítése után validálni!
-    tilt_roll_limit_deg:  25.0
-    tilt_pitch_limit_deg: 20.0
+    # 2026-05-12: roll és pitch limit 40° (mindkét tengelyen szimmetrikus, földi teszt).
+    tilt_roll_limit_deg:  40.0
+    tilt_pitch_limit_deg: 40.0
     # Debounce: a tilt_latch_ csak akkor áll be, ha a limit-túllépés folyamatosan
     # ≥ tilt_debounce_s másodpercig fennáll. IMU spike (acc rángás, I2C anomália)
     # így nem ragasztja be hamis pozitívan a fault-ot. 100Hz IMU → 0.3s = 30 minta.
@@ -513,8 +513,9 @@ startup_supervisor:
     check_motion_enabled:  true
     check_tilt_enabled:    true
     check_estop_enabled:   true
-    tilt_roll_limit_deg:   25.0
-    tilt_pitch_limit_deg:  20.0
+    # 2026-05-12: roll és pitch limit 40° (szimmetrikus, földi teszt)
+    tilt_roll_limit_deg:   40.0
+    tilt_pitch_limit_deg:  40.0
     motion_stable_s:       2.0
     motion_timeout_s:      30.0
     # TILT_TIMEOUT: 30s — RealSense lassan indul (20-30s)
