@@ -55,15 +55,22 @@ public:
     this->declare_parameter("rc_mode_invert",    false);  // true: low=RC, high=auto
     this->declare_parameter("publish_rate_hz",  50.0);
     this->declare_parameter("deadzone",        0.05);   // |motor| < deadzone → 0
+    // Nemlineáris joystick-curve: v = sign(in) * |in|^expo * max_vel.
+    // expo=1.0 lineáris. expo>1: alsó tartomány finom, felső gyors-erős, sima átmenet.
+    // Pl. expo=2.0: 10% joy = 1% vel, 50% joy = 25% vel, 100% joy = 100% vel.
+    this->declare_parameter("joystick_expo",     2.0);
 
     max_linear_vel_    = this->get_parameter("max_linear_vel").as_double();
     wheel_separation_  = this->get_parameter("wheel_separation").as_double();
     rc_mode_threshold_ = this->get_parameter("rc_mode_threshold").as_double();
     deadzone_          = this->get_parameter("deadzone").as_double();
+    joystick_expo_     = this->get_parameter("joystick_expo").as_double();
     double rate_hz     = this->get_parameter("publish_rate_hz").as_double();
 
     // Runtime parameter update — no recompile needed:
     //   ros2 param set /rc_teleop_node rc_mode_invert true
+    //   ros2 param set /rc_teleop_node joystick_expo 2.5
+    //   ros2 param set /rc_teleop_node max_linear_vel 3.89
     param_cb_handle_ = add_on_set_parameters_callback(
       [this](const std::vector<rclcpp::Parameter> & params)
       -> rcl_interfaces::msg::SetParametersResult {
@@ -72,6 +79,15 @@ public:
             rc_mode_invert_ = p.as_bool();
             RCLCPP_INFO(get_logger(), "rc_mode_invert set to %s",
               rc_mode_invert_ ? "true (low=RC mode)" : "false (high=RC mode)");
+          } else if (p.get_name() == "joystick_expo") {
+            joystick_expo_ = p.as_double();
+            RCLCPP_INFO(get_logger(), "joystick_expo set to %.2f", joystick_expo_);
+          } else if (p.get_name() == "max_linear_vel") {
+            max_linear_vel_ = p.as_double();
+            RCLCPP_INFO(get_logger(), "max_linear_vel set to %.2f m/s", max_linear_vel_);
+          } else if (p.get_name() == "deadzone") {
+            deadzone_ = p.as_double();
+            RCLCPP_INFO(get_logger(), "deadzone set to %.3f", deadzone_);
           }
         }
         rcl_interfaces::msg::SetParametersResult res;
@@ -110,10 +126,10 @@ public:
     rc_mode_invert_ = this->get_parameter("rc_mode_invert").as_bool();
 
     RCLCPP_INFO(get_logger(),
-      "RC teleop ready. max_vel=%.2f m/s, wheel_sep=%.2f m, "
+      "RC teleop ready. max_vel=%.2f m/s, expo=%.2f, deadzone=%.3f, wheel_sep=%.2f m, "
       "mode_threshold=%.1f, rc_mode_invert=%s. "
       "RC receiver failsafe must be set to: ch5=%s (RC mode), motors=0.",
-      max_linear_vel_, wheel_separation_, rc_mode_threshold_,
+      max_linear_vel_, joystick_expo_, deadzone_, wheel_separation_, rc_mode_threshold_,
       rc_mode_invert_ ? "true" : "false",
       rc_mode_invert_ ? "LOW" : "HIGH");
   }
@@ -132,8 +148,15 @@ private:
       // Deadzone: ignore small joystick noise that would drift open-loop odom
       const double left_in  = (std::abs(motor_left_)  < deadzone_) ? 0.0 : motor_left_;
       const double right_in = (std::abs(motor_right_) < deadzone_) ? 0.0 : motor_right_;
-      const double v_left  = left_in  * max_linear_vel_;
-      const double v_right = right_in * max_linear_vel_;
+      // Expo curve: v = sign(in) * |in|^expo * max_vel.
+      // Alsó tartomány finom, felső gyors-erős, sima átmenettel.
+      // Runtime hangolható: ros2 param set /rc_teleop_node joystick_expo <érték>
+      const double left_curved  =
+        std::copysign(std::pow(std::abs(left_in),  joystick_expo_), left_in);
+      const double right_curved =
+        std::copysign(std::pow(std::abs(right_in), joystick_expo_), right_in);
+      const double v_left  = left_curved  * max_linear_vel_;
+      const double v_right = right_curved * max_linear_vel_;
       twist.linear.x  = (v_left + v_right) / 2.0;
       twist.angular.z = (v_right - v_left) / wheel_separation_;
     }
@@ -149,6 +172,7 @@ private:
   double wheel_separation_;
   double rc_mode_threshold_;
   double deadzone_;
+  double joystick_expo_ = 1.0;
   bool   rc_mode_invert_ = false;
 
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;

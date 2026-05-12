@@ -37,7 +37,33 @@ A korábbi "asztali / felemelt deszkamodell" fázis lezárult — a robot innent
 **Tilt latch jelenleg aktív** — feloldása E-Stop press+release (vagy stack restart, mert
 `latch_state_path=/run/robot/safety_latch_state` perzisztens; `/run` tmpfs → restart törli).
 
-**Fix DEPLOY-olva ugyanaznap:** tilt debounce filter (`tilt_debounce_s: 0.3`, default).
+**RC finom mozgás — expo joystick-curve (2026-05-12, ugyanaznap):**
+A földi teszt második megfigyelése: "hirtelen indul és hirtelen áll meg". Eredeti
+hipotézis (`Basicmicro EEPROM acceleration 2000→10`) **valószínűleg nem hat** — a driver
+`motion_strategy: "speed_accel"` minden ciklusban `SetM1SpeedAccel(addr, accel=75000, speed)`
+parancsot küld, ami felülírja az EEPROM acc-t. A YAML `default_acceleration: 75000` QPPS/s
+≈ 1.27 m/s² a tényleges Basicmicro acc.
+
+A jelenlegi pipeline: `RC adó → rc_teleop_node (max_linear_vel=8.70, LINEÁRIS skála)
+→ /cmd_vel_rc → twist_mux → /cmd_vel → diff_drive_controller (has_acceleration_limits: FALSE!)
+→ roboclaw_hardware (default_acc=75000 QPPS/s)`. Két gyengéje:
+(1) lineáris skála 8.70 m/s-tel → kis joystick mozgás már 0.87 m/s parancs (10%);
+(2) `8.70 m/s` paraméter > `controllers.yaml` 3.89 hardware-clip → joystick felső 30-50%
+ugyanazt a sebességet adja (NEM sima karakterisztika).
+
+**Felhasználói preferencia (rögzítve memóriába `feedback_rc_curve.md`):** maradjon a max
+sebesség, NE a max csökkentésével oldjuk meg. A joystick alsó tartományában finom mozgás,
+felül gyors-erős, sima átmenettel.
+
+**Fix:** nemlineáris joystick-curve a `rc_teleop_node`-ban (NEM a bridge-en — runtime
+hangolhatóság miatt). `v = sign(in) * |in|^expo * max_vel`, új `joystick_expo` paraméter
+default `2.0` (klasszikus squared curve). `max_linear_vel: 8.70 → 3.89` m/s — illesztve
+a hardware-clip-re, hogy a felső 30-50% ne clip-elődjön. A tényleges max változatlanul
+3.89 m/s. Param runtime hangolható (no rebuild):
+`ros2 param set /rc_teleop_node joystick_expo 2.5`. Érintett: `robot_teleop/src/rc_teleop_node.cpp`,
+`config/robot_params.yaml`.
+
+**Tilt debounce filter DEPLOY-olva ugyanaznap:** (`tilt_debounce_s: 0.3`, default).
 `safety_supervisor.cpp` `imu_cb()`: új `over_limit` változó, `tilt_pending_` flag és
 `tilt_over_start_` időbélyeg. A `tilt_latch_` csak akkor áll be, ha a limit-túllépés
 folyamatosan ≥ `tilt_debounce_s` másodpercig fennáll; ha közben recoveryl,

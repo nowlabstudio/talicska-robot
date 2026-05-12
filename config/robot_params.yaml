@@ -381,8 +381,11 @@ velocity_smoother:
 # Hibás értéknél: az RC kimeneti sebességek és az odometria eltér → ghost drift Nav2-ben.
 rc_teleop_node:
   ros__parameters:
-    # max_linear_vel: Nav2 8 km/h = 2.22 m/s limitjével megegyező (RC módban is védelem)
-    max_linear_vel:    8.70
+    # max_linear_vel: a diff_drive_controller hardware-clip-jével megegyező (3.89 m/s ≈ 14 km/h).
+    # Régen 8.70 volt → joystick felső 30-50%-a clip-elődött a 3.89-en → nem sima.
+    # A 3.89 érték megőrzi a tényleges max sebességet (hardware limit), és a teljes
+    # joystick range a [0, 3.89] sávban dolgozik clip nélkül — sima karakterisztika.
+    max_linear_vel:    3.89
     # JAVÍTVA: 0.8 → 0.7 (controllers.yaml diff_drive_controller wheel_separation-nal egyezik)
     wheel_separation:  0.7
     rc_mode_threshold: 0.5    # RC mode kanal értéke felett RC módba vált
@@ -391,6 +394,11 @@ rc_teleop_node:
     deadzone:          0.05
     # rc_mode_invert: false = normál (előre = pozitív); true = megfordított RC csatorna
     rc_mode_invert:    false
+    # Nemlineáris joystick-curve: v = sign(in) * |in|^expo * max_vel.
+    # expo=1.0 lineáris, >1 alsó tartomány finom, felső gyors-erős, sima átmenet.
+    # 2.0 (squared) klasszikus RC repülő curve; 3.0 még finomabb alsó zóna.
+    # Runtime hangolható: ros2 param set /rc_teleop_node joystick_expo <érték>
+    joystick_expo:     2.0
 
 # ── Winch Node ────────────────────────────────────────────────────────────────
 winch_node:
