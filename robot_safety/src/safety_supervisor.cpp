@@ -137,7 +137,15 @@ public:
     this->declare_parameter("proximity_active_modes",               std::string("robot"));
     this->declare_parameter("watchdog_rate_hz",     20.0);
     this->declare_parameter("imu_process_rate_hz",  20.0);
-    this->declare_parameter("rc_mode_threshold",     0.5);
+    // RC mode hysteresis — kettős küszöb a Pico raw PWM glitch-ek elnyomására.
+    // A `rc_mode_` Float32 EMA-szűrt értéke periodikus tüskéket (rövid kitérés majd
+    // visszaesés) produkálhat akár 1-2 mp-enként (HW/EMI/földi pozíció eredetű,
+    // 2026-05-12 földi RC-teszt megfigyelés). Single-threshold (>0.5) ezeket
+    // mode-villogásként jelezte (RC↔ROBOT 10×/spike). Hysteresis: RC-be belépés
+    // szigorúbb (>0.85), kilépés szintén szigorú (<-0.85), köztes zóna (-0.85..+0.85)
+    // megőrzi az előző állapotot.
+    this->declare_parameter("rc_enter_threshold",   0.85);
+    this->declare_parameter("rc_exit_threshold",   -0.85);
     this->declare_parameter("mode_topic_timeout_s",  2.0);
     this->declare_parameter("heartbeat_rate_hz",    10.0);
     // Sensor watchdog params
@@ -187,7 +195,8 @@ public:
       exclusion_starts_.size(), proximity_min_points_,
       proximity_enabled_ ? "ENABLED" : "DISABLED",
       proximity_active_modes_.c_str());
-    rc_mode_threshold_    = this->get_parameter("rc_mode_threshold").as_double();
+    rc_enter_threshold_   = this->get_parameter("rc_enter_threshold").as_double();
+    rc_exit_threshold_    = this->get_parameter("rc_exit_threshold").as_double();
     mode_topic_timeout_s_ = this->get_parameter("mode_topic_timeout_s").as_double();
     double rate_hz        = this->get_parameter("watchdog_rate_hz").as_double();
     double imu_hz         = this->get_parameter("imu_process_rate_hz").as_double();
@@ -226,6 +235,23 @@ public:
         rc_received_    = true;
         rc_watchdog_ok_ = true;
         rc_mode_        = msg->data;
+
+        // Hysteresis frissítés — minden Pico-üzenetnél fut (~17 Hz).
+        // Csak akkor billenti az állapotot, ha a kapcsoló biztosan az új véghelyzetben van.
+        const double v = static_cast<double>(rc_mode_);
+        if (rc_active_) {
+          if (v < rc_exit_threshold_) {
+            rc_active_ = false;
+            RCLCPP_INFO(get_logger(),
+              "RC OFF — rc_mode=%.3f < exit_thresh=%.2f", v, rc_exit_threshold_);
+          }
+        } else {
+          if (v > rc_enter_threshold_) {
+            rc_active_ = true;
+            RCLCPP_INFO(get_logger(),
+              "RC ON — rc_mode=%.3f > enter_thresh=%.2f", v, rc_enter_threshold_);
+          }
+        }
       });
 
     mode_sub_ = create_subscription<std_msgs::msg::String>(
@@ -335,13 +361,13 @@ public:
     RCLCPP_INFO(get_logger(),
       "SafetySupervisor ready. Holding until startup/armed + E-Stop bridge online. "
       "Limits: roll±%.0f° pitch±%.0f°, stop zone: cx=%.3fm hl=%.3fm side=%.3fm. "
-      "IMU throttle: %.0f Hz. RC threshold: %.2f (timeout: %.1fs). Heartbeat: %.0f Hz. "
+      "IMU throttle: %.0f Hz. RC hysteresis: enter>%.2f exit<%.2f (timeout: %.1fs). Heartbeat: %.0f Hz. "
       "Scan watchdog: %s. IMU watchdog: %s. RealSense watchdog: %s (%.1fs). "
       "RoboClaw dropout: /hardware/roboclaw/connected topic (silence timeout: %.2fs). Latch state: %s",
       this->get_parameter("tilt_roll_limit_deg").as_double(),
       this->get_parameter("tilt_pitch_limit_deg").as_double(),
       stop_zone_cx_, stop_zone_half_len_, stop_zone_side_,
-      imu_hz, rc_mode_threshold_, rc_timeout_s_, hb_hz,
+      imu_hz, rc_enter_threshold_, rc_exit_threshold_, rc_timeout_s_, hb_hz,
       scan_watchdog_active_ ? "ON" : "OFF",
       imu_watchdog_active_  ? "ON" : "OFF",
       enable_realsense_watchdog_ ? "ON" : "OFF", realsense_timeout_s_,
@@ -936,7 +962,8 @@ private:
     // Priority 4b: RC mode — minden más sensor latch felett
     // RC módban az operátor teljes felelősséget vállal; sensor latch-ek felfüggesztve.
     // RC→robot váltáskor a watchdog_tick() törli a sensor latch-eket és újraindítja az ellenőrzést.
-    if (static_cast<double>(rc_mode_) > rc_mode_threshold_) {
+    // Hysteresis-szűrt belépés (rc_mode_sub_ callback frissíti rc_active_-t a kettős küszöbbel).
+    if (rc_active_) {
       last_active_mode_ = "RC";
       state = "RC";
       mode  = "RC";
@@ -1275,7 +1302,10 @@ private:
   std::string proximity_active_modes_;  // "all" | "robot" (nem RC) | "rc" (csak RC)
   std::vector<double> exclusion_starts_;  // rad
   std::vector<double> exclusion_ends_;    // rad
-  double      rc_mode_threshold_;
+  // RC mode hysteresis (kettős küszöb + állapot-latch a Pico raw PWM tüskék ellen)
+  double      rc_enter_threshold_;  // > ez → RC-be lép (csak ha még nem volt RC)
+  double      rc_exit_threshold_;   // < ez → RC-ből kilép (csak ha RC-ben volt)
+  bool        rc_active_ = false;   // hysteresis-szűrt RC kapcsoló-állapot
   double      mode_topic_timeout_s_;
   std::string latch_state_path_;
   std::string persisted_latch_content_;

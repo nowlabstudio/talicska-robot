@@ -506,7 +506,15 @@ safety_supervisor:
     # Forrás default (safety_supervisor.cpp): 20.0 — megőrzött
     imu_process_rate_hz:  20.0
     # Állapotgép paraméterek
-    rc_mode_threshold:    0.5    # rc_mode > threshold → RC state
+    # RC mode hysteresis (kettős küszöb a Pico raw PWM tüskék elnyomására):
+    #   rc_enter_threshold > rc_mode_ → RC-be lép (csak ha még NEM RC volt)
+    #   rc_exit_threshold  > rc_mode_ → RC-ből kilép (csak ha RC volt)
+    # A köztes zóna (-0.85 .. +0.85) megőrzi az előző állapotot. Stabil kapcsoló-
+    # véghelyzetben (±1.0 körül) a két küszöb gond nélkül átléphető. 2026-05-12
+    # földi RC-teszt megfigyelés: HW/EMI tüskék max ±0.7-ig terjednek → 0.85 küszöb
+    # bőven biztos.
+    rc_enter_threshold:   0.85   # rc_mode > 0.85 → RC ON (belépés)
+    rc_exit_threshold:   -0.85   # rc_mode < -0.85 → RC OFF (kilépés)
     mode_topic_timeout_s: 2.0   # ha /robot/mode ennyi ideje nem jön → IDLE
     heartbeat_rate_hz:    10.0  # /robot/heartbeat publish rate (Safety Watchdog MCU előkészítés)
 

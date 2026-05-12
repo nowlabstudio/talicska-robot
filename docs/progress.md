@@ -6,6 +6,52 @@
 
 ---
 
+## 2026-05-12 — Safety supervisor RC mode hysteresis filter | ✅ ÉLŐ
+
+**Tünet:** Földi RC-teszt fázis közben a robot **magától** váltogatott RC↔ROBOT mód
+között, anélkül hogy az operátor a CH5 kapcsolót mozgatta volna. Foxglove plot a
+`/robot/rc_mode`-on lépés-szerű tüskéket mutat: `+1.0 → +0.4 → −0.5 → +1.0` mintázat
+~10 minta alatt (~500 ms), ~1–2 mp-enként periodikusan ismétlődve. A megfigyelés
+mozdulatlan kapcsolóval is reprodukálódott.
+
+**Diagnózis:** Háttérben rögzített `ros2 topic echo --csv` log (12 ezer mintán át,
+~15 Hz Pico publish-rate) bizonyította:
+- `/robot/rc_mode` publisher count = 1 (csak a Pico microros), nincs Jetson-oldali
+  proxy/másik forrás
+- microros_agent log: 0 reconnect, 0 packet drop, 0 session error
+- A tüskék fizikai DDS-payloadban érkeznek (a Pico publikálja az `0.4`, `-0.5` stb.
+  Float32 értékeket) — visszaszámolva az EMA filter (`alpha=0.30`) képletéből a raw
+  PWM pulse_us pillanatra ~1000 µs-re esik (failsafe-érték), majd visszatér
+
+A `safety_supervisor.cpp:939` **single-sample threshold** (`rc_mode_ > 0.5`) miatt
+egyetlen tüske ~10 állapotváltást generált (a 0.5 küszöb többszöri kereszteződése).
+Pre-feltétel: a Pico EMA-szűrt érték a tüske közben oszcillál a küszöb körül.
+
+**Fix (commit ?):** RC mode kettős hysteresis küszöb a `safety_supervisor`-on:
+- `rc_enter_threshold:  0.85` — csak `>0.85` érték esetén lép RC-be (előzőleg robot)
+- `rc_exit_threshold:  -0.85` — csak `<-0.85` érték esetén lép ki RC-ből (előzőleg RC)
+- A köztes zóna (-0.85 .. +0.85) megőrzi az előző állapotot
+
+Új tagváltozó `rc_active_` (bool), állapot frissítés az `rc_mode_sub_` callback-ben
+minden Pico-üzenetnél (~17 Hz). A `determine_state()` Priority 4b a `rc_active_`-t
+használja `rc_mode_ > rc_mode_threshold_` helyett. Régi `rc_mode_threshold`
+paraméter eltávolítva (csak a safety_supervisor blokkból — `rc_teleop_node` saját
+threshold-ja megmarad, ott single-sample megengedhető a zero-Twist guard miatt).
+
+**Validáció (in-container build + restart, 6 perc megfigyelés):**
+- 4 spike a logban detektálva (2 RC pozícióban a +1.0 körül, 2 robot pozícióban a -1.0 körül)
+- A spike-ok max amplitúdója `0.4 / −0.4` — a 0.85 küszöböt sose érték el
+- Az `rc_active_` változó **EGYSZER SEM billent** a tüskékre
+- `RC ON / RC OFF` log esemény csak valódi fizikai kapcsoló-állításokra jelent meg (2 eset a megfigyelés alatt)
+- Foxglove `mode` mező stabil (operátor: "ez ok")
+
+**Maradék (külön ülés):** A Pico tüskék HW gyökér-oka még nyitva — gyanús az új
+Basicmicro motor kábel-pólus csere (mai EMI változás), a robot földi pozíciójából
+adódó új antennaorient, vagy a BL-018 GP8 lights relé cross-talk. SW-szinten
+tankönyvi védelem helyén van.
+
+---
+
 ## 2026-05-12 — URDF mesh feloldás interfész-függetlenné téve | ✅ ÉLŐ
 
 **Tünet:** WiFi-ről csatlakozva (Foxglove a 192.168.68.124 IP-n érte el a Jetsont) a
