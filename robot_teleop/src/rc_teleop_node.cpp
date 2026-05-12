@@ -57,15 +57,22 @@ public:
     this->declare_parameter("deadzone",        0.05);   // |motor| < deadzone → 0
     // Nemlineáris joystick-curve: v = sign(in) * |in|^expo * max_vel.
     // expo=1.0 lineáris. expo>1: alsó tartomány finom, felső gyors-erős, sima átmenet.
-    // Pl. expo=2.0: 10% joy = 1% vel, 50% joy = 25% vel, 100% joy = 100% vel.
-    this->declare_parameter("joystick_expo",     2.0);
+    // A TX mixinget végez (tank-drive: motor_left/right), a node nem keverget újra,
+    // csak curve-t alkalmaz:
+    //   - joystick_expo: kerékszintű (motor_left, motor_right) curve → linear+angular alap
+    //   - joystick_expo_angular: EXTRA curve csak az angular.z-re a Twist után,
+    //     a kanyarodási érzékenység finomítására az alsó tartományban (mindkét irány).
+    //     1.0 = nincs extra, 1.5–2.0 = jelentős finomítás.
+    this->declare_parameter("joystick_expo",         2.0);
+    this->declare_parameter("joystick_expo_angular", 1.5);
 
-    max_linear_vel_    = this->get_parameter("max_linear_vel").as_double();
-    wheel_separation_  = this->get_parameter("wheel_separation").as_double();
-    rc_mode_threshold_ = this->get_parameter("rc_mode_threshold").as_double();
-    deadzone_          = this->get_parameter("deadzone").as_double();
-    joystick_expo_     = this->get_parameter("joystick_expo").as_double();
-    double rate_hz     = this->get_parameter("publish_rate_hz").as_double();
+    max_linear_vel_        = this->get_parameter("max_linear_vel").as_double();
+    wheel_separation_      = this->get_parameter("wheel_separation").as_double();
+    rc_mode_threshold_     = this->get_parameter("rc_mode_threshold").as_double();
+    deadzone_              = this->get_parameter("deadzone").as_double();
+    joystick_expo_         = this->get_parameter("joystick_expo").as_double();
+    joystick_expo_angular_ = this->get_parameter("joystick_expo_angular").as_double();
+    double rate_hz         = this->get_parameter("publish_rate_hz").as_double();
 
     // Runtime parameter update — no recompile needed:
     //   ros2 param set /rc_teleop_node rc_mode_invert true
@@ -81,7 +88,10 @@ public:
               rc_mode_invert_ ? "true (low=RC mode)" : "false (high=RC mode)");
           } else if (p.get_name() == "joystick_expo") {
             joystick_expo_ = p.as_double();
-            RCLCPP_INFO(get_logger(), "joystick_expo set to %.2f", joystick_expo_);
+            RCLCPP_INFO(get_logger(), "joystick_expo (wheel) set to %.2f", joystick_expo_);
+          } else if (p.get_name() == "joystick_expo_angular") {
+            joystick_expo_angular_ = p.as_double();
+            RCLCPP_INFO(get_logger(), "joystick_expo_angular (post-mix) set to %.2f", joystick_expo_angular_);
           } else if (p.get_name() == "max_linear_vel") {
             max_linear_vel_ = p.as_double();
             RCLCPP_INFO(get_logger(), "max_linear_vel set to %.2f m/s", max_linear_vel_);
@@ -126,12 +136,11 @@ public:
     rc_mode_invert_ = this->get_parameter("rc_mode_invert").as_bool();
 
     RCLCPP_INFO(get_logger(),
-      "RC teleop ready. max_vel=%.2f m/s, expo=%.2f, deadzone=%.3f, wheel_sep=%.2f m, "
-      "mode_threshold=%.1f, rc_mode_invert=%s. "
-      "RC receiver failsafe must be set to: ch5=%s (RC mode), motors=0.",
-      max_linear_vel_, joystick_expo_, deadzone_, wheel_separation_, rc_mode_threshold_,
-      rc_mode_invert_ ? "true" : "false",
-      rc_mode_invert_ ? "LOW" : "HIGH");
+      "RC teleop ready. max_vel=%.2f m/s, expo=%.2f (wheel) / %.2f (angular), "
+      "deadzone=%.3f, wheel_sep=%.2f m, mode_threshold=%.1f, rc_mode_invert=%s.",
+      max_linear_vel_, joystick_expo_, joystick_expo_angular_,
+      deadzone_, wheel_separation_, rc_mode_threshold_,
+      rc_mode_invert_ ? "true" : "false");
   }
 
 private:
@@ -144,21 +153,29 @@ private:
       : (rc_mode_ >  rc_mode_threshold_);  // normal:   high = RC mode
 
     if (in_rc_mode) {
-      // RC mode: kinematic inversion of motor values (-1..+1) → Twist
-      // Deadzone: ignore small joystick noise that would drift open-loop odom
+      // RC mode: a TX tank-drive mixinget végez (motor_left/right kerékparancsok).
+      // 1) Deadzone (joystick zaj-szűrés)
+      // 2) Kerékszintű expo curve mindkét bemenetre (joystick_expo) →
+      //    finom alsó tartomány az indulásra, mindkét irány (előre/hátra) szimmetrikus
+      // 3) Kinematikai inverzió → Twist (linear.x + angular.z)
+      // 4) EXTRA curve csak az angular.z-re (joystick_expo_angular) — a kanyarodási
+      //    érzékenység finomítása az alsó tartományban, mindkét irány szimmetrikus
       const double left_in  = (std::abs(motor_left_)  < deadzone_) ? 0.0 : motor_left_;
       const double right_in = (std::abs(motor_right_) < deadzone_) ? 0.0 : motor_right_;
-      // Expo curve: v = sign(in) * |in|^expo * max_vel.
-      // Alsó tartomány finom, felső gyors-erős, sima átmenettel.
-      // Runtime hangolható: ros2 param set /rc_teleop_node joystick_expo <érték>
       const double left_curved  =
         std::copysign(std::pow(std::abs(left_in),  joystick_expo_), left_in);
       const double right_curved =
         std::copysign(std::pow(std::abs(right_in), joystick_expo_), right_in);
       const double v_left  = left_curved  * max_linear_vel_;
       const double v_right = right_curved * max_linear_vel_;
-      twist.linear.x  = (v_left + v_right) / 2.0;
-      twist.angular.z = (v_right - v_left) / wheel_separation_;
+      twist.linear.x = (v_left + v_right) / 2.0;
+      const double angular_raw = (v_right - v_left) / wheel_separation_;
+      // Post-mix angular curve: normalizálás max-ra, expo, vissza max-skálára.
+      // expo_angular=1.0 → változatlan; >1 → finomabb alsó kanyarodás.
+      const double max_ang = 2.0 * max_linear_vel_ / wheel_separation_;
+      const double ang_norm = (max_ang > 0.0) ? (angular_raw / max_ang) : 0.0;
+      twist.angular.z = std::copysign(
+        std::pow(std::abs(ang_norm), joystick_expo_angular_) * max_ang, angular_raw);
     }
     // else: autonomous mode — publish zero Twist.
     // This keeps /cmd_vel_rc alive at twist_mux prio 20 so Nav2 can drive,
@@ -173,6 +190,7 @@ private:
   double rc_mode_threshold_;
   double deadzone_;
   double joystick_expo_ = 1.0;
+  double joystick_expo_angular_ = 1.0;
   bool   rc_mode_invert_ = false;
 
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;

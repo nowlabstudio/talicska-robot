@@ -204,19 +204,33 @@ diff_drive_controller:
     # Velocity limits — nested format required in Jazzy diff_drive_controller 4.x.
     # max_velocity matches ~14 km/h = 3.89 m/s (physical max in RC mode).
     # Nav2 is separately limited to 0.5 m/s in _profiles_/NAVIGATION.
+    # acc/dec mértékegység: m/s² (linear) / rad/s² (angular). Hibrid stratégia:
+    # Basicmicro Motion Studio EEPROM Acc+Dec=200000 a felső HW limit (nem korlátoz),
+    # a tényleges acc/dec a yaml-ből m/s²-ben szabályozható (aszimmetrikus megengedett).
+    # max_acceleration magasan tartva → Basicmicro default_acceleration=75000 QPPS/s
+    # (~1.27 m/s²) adja a current "feszes" indulást.
+    # max_deceleration kalibrálási kezdő érték — 100000 QPPS/s ekvivalens.
     linear:
       x:
         has_velocity_limits:    true
-        has_acceleration_limits: false
-        max_velocity:  3.89
-        min_velocity: -3.89
+        has_acceleration_limits: true
+        max_velocity:      3.89
+        min_velocity:     -3.89
+        max_acceleration:          1.3   # m/s² — előre felgyorsulás (current "feszes" indulás)
+        max_deceleration:         -3.0   # m/s² — előre lassulás (gyors stop)
+        max_acceleration_reverse: -1.3   # m/s² — hátrameneti felgyorsulás (szimmetrikus, negatív irány)
+        max_deceleration_reverse:  3.0   # m/s² — hátrameneti lassulás (gyors stop, pozitív irány felé)
     angular:
       z:
         has_velocity_limits:    true
-        has_acceleration_limits: false
+        has_acceleration_limits: true
         # max = 2 * max_wheel_speed / wheel_separation = 2 * 3.89 / 0.7 = 11.11
-        max_velocity:  11.11
-        min_velocity: -11.11
+        max_velocity:      11.11
+        min_velocity:     -11.11
+        max_acceleration:          3.6   # rad/s² — analóg a linear 1.3 m/s²-rel (2×1.3/0.7)
+        max_deceleration:         -8.0   # rad/s² — aszimmetrikusan gyorsabb forgás-stop
+        max_acceleration_reverse: -3.6   # rad/s² — szimmetrikus a forgás másik irányára
+        max_deceleration_reverse:  8.0   # rad/s²
 
     publish_rate: 50.0
 
@@ -395,10 +409,14 @@ rc_teleop_node:
     # rc_mode_invert: false = normál (előre = pozitív); true = megfordított RC csatorna
     rc_mode_invert:    false
     # Nemlineáris joystick-curve: v = sign(in) * |in|^expo * max_vel.
-    # expo=1.0 lineáris, >1 alsó tartomány finom, felső gyors-erős, sima átmenet.
-    # 2.0 (squared) klasszikus RC repülő curve; 3.0 még finomabb alsó zóna.
-    # Runtime hangolható: ros2 param set /rc_teleop_node joystick_expo <érték>
-    joystick_expo:     2.0
+    # joystick_expo: kerékszintű (motor_left/right) curve — előre/hátra finomság.
+    #   1.0 lineáris; 2.0 (squared) klasszikus RC; 3.0 még finomabb alsó zóna.
+    # joystick_expo_angular: EXTRA curve csak az angular.z-re a Twist után —
+    #   a kanyarodási érzékenység finomítása az alsó tartományban (mindkét irány).
+    #   1.0 = nincs extra; 1.5 = mérsékelt; 2.0 = erős finomítás.
+    # Runtime hangolható: ros2 param set /rc_teleop_node joystick_expo[_angular] <érték>
+    joystick_expo:         2.0
+    joystick_expo_angular: 1.5
 
 # ── Winch Node ────────────────────────────────────────────────────────────────
 winch_node:
@@ -539,7 +557,11 @@ roboclaw_hardware:
   encoder_counts_per_rev:  70300
   gear_ratio:              1.0            # TODO: kalibrálás szükséges
   motion_strategy:         "speed_accel"
-  default_acceleration:    75000
+  # default_acceleration: a Basicmicro SpeedAccel parancsban küldött acc paraméter.
+  # A Basicmicro mind az acc-ra, mind a dec-re alkalmazza (min(parancs_accel, EEPROM)).
+  # 200000 QPPS/s ≈ 3.4 m/s² — egyezik az EEPROM Acc+Dec=200000-rel, nincs bottleneck.
+  # Az effektív acc/dec a diff_drive_controller yaml-ben szabályozható aszimmetrikusan.
+  default_acceleration:    200000
   duty_accel_rate:         50000
   duty_decel_rate:         50000
   duty_max_rad_s:          20.5

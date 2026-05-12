@@ -24,19 +24,32 @@ diff_drive_controller:
     # Velocity limits — nested format required in Jazzy diff_drive_controller 4.x.
     # max_velocity matches ~14 km/h = 3.89 m/s (physical max in RC mode).
     # Nav2 is separately limited to 2.22 m/s (8 km/h) in nav2_params.yaml.
+    # acc/dec mértékegység: m/s² (linear) / rad/s² (angular).
+    # max_acceleration magasan tartva (Basicmicro default_acceleration=75000 QPPS/s
+    # ≈ 1.27 m/s² adja a tényleges acc-t — "feszes" indulás megmarad).
+    # max_deceleration a yaml-ből szabályozható aszimmetrikus dec-t ad
+    # (Basicmicro Motion Studio EEPROM Acc+Dec=200000 a felső limit, nem korlátoz).
     linear:
       x:
         has_velocity_limits: true
-        has_acceleration_limits: false
-        max_velocity:  3.89
-        min_velocity: -3.89
+        has_acceleration_limits: true
+        max_velocity:      3.89
+        min_velocity:     -3.89
+        max_acceleration:          1.3   # m/s² — előre felgyorsulás (current "feszes" indulás)
+        max_deceleration:         -3.0   # m/s² — előre lassulás (gyors stop)
+        max_acceleration_reverse: -1.3   # m/s² — hátrameneti felgyorsulás (negatív irány)
+        max_deceleration_reverse:  3.0   # m/s² — hátrameneti lassulás (pozitív felé)
     angular:
       z:
         has_velocity_limits: true
-        has_acceleration_limits: false
+        has_acceleration_limits: true
         # max = 2 * max_wheel_speed / wheel_separation = 2 * 3.89 / 0.7 = 11.11
-        max_velocity:  11.11
-        min_velocity: -11.11
+        max_velocity:      11.11
+        min_velocity:     -11.11
+        max_acceleration:          3.6   # rad/s² — analóg a linear 1.3 m/s²-rel (2×1.3/0.7)
+        max_deceleration:         -8.0   # rad/s² — aszimmetrikusan gyorsabb forgás-stop
+        max_acceleration_reverse: -3.6   # rad/s² — szimmetrikus a forgás másik irányára
+        max_deceleration_reverse:  8.0   # rad/s²
 
     publish_rate: 50.0
 
