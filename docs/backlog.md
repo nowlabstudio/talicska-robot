@@ -12,6 +12,117 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ## Aktív feladatok (2026-04-06 CET)
 
+### 🟢 Trajectory Replay — Tanított útvonal-lejátszás (2026-05-13 indul)
+
+**Cél:** A felhasználó az **OK GO** gomb és a Pico 3-állású rotary (LEARN/FOLLOW/AUTO) segítségével
+taníthat egy útvonalat (LEARN), majd AUTO módban a robot autonóm lejátssza azt **maximum
+2 km/h (0.555 m/s)** sebességgel. RC override (CH5) bármikor megszakítja és pausolja a
+folyamatot; RC-ből visszakapcsolva folytatódik onnan, ahol abbahagyta. **B-variáns:**
+trajektória-replay (felvett pose-szekvencia), NEM goal-pose alapú Nav2 navigáció.
+
+**Új komponensek:**
+| Csomag/Node | Nyelv | Felelősség |
+|---|---|---|
+| `robot_missions/ok_go_supervisor` (új) | C++ | `/robot/okgo_btn` Bool → SHORT/LONG dekódolás; állapotgép; `/ok_go/cmd` UInt8 publikálás; `/robot/okgo_led` minta-időzítés |
+| `robot_missions/trajectory_node` (új) | C++ | LEARN-ben TF `map→base_link` mintavétel 10 Hz; YAML mentés; AUTO-ban `/follow_path` action goal |
+| `robot_missions/launch/replay.launch.py` (új) | py | 2 új node indítása |
+| `robot_missions/config/replay.yaml` (új) | yaml | Timing, fájl path, sebességcap |
+| `_profiles_/NAVIGATION_REPLAY` (új) | yaml | `robot_params.yaml`: 0.555 m/s cap a controller_server-en és velocity_smoother-en |
+
+**`safety_supervisor` NEM módosul** — csak emit-eli a kombinált mode-ot `/safety/state`
+JSON-on, az `ok_go_supervisor` figyeli.
+
+**OK GO gomb dekódolás** (HW: `/robot/okgo_btn` `std_msgs/Bool`, 10 Hz polling + IRQ):
+- press (rising edge): `press_start_time = now`
+- release before `short_max_s` (1.0 s) → **SHORT trigger** (release-kor)
+- `short_max_s` ≤ held < `long_min_s` (5.0 s) → **CANCEL** (semmi nem történik)
+- held ≥ `long_min_s` (5.0 s) → **LONG trigger** azonnal (release nem kell)
+
+**Állapotgép — LEARN ág** (rotary=0=LEARN):
+```
+LEARN_IDLE   ──(rotary=0 + CH5=RC)──▶  RECORDING        (TF mintavétel 10 Hz)
+RECORDING    ──(SHORT)─────────────▶  SAVE (2 s LED steady, fájl flush, →RECORDING)
+RECORDING    ──(LONG)──────────────▶  WIPE (4× 2s/2s villog, traj+map törlés, friss SLAM session)
+RECORDING    ──(CH5=ROBOT)─────────▶  PAUSED (felvétel áll, LED ~4 Hz villog)
+PAUSED       ──(CH5=RC)────────────▶  RECORDING
+```
+
+**Állapotgép — AUTO ág** (rotary=2=AUTO):
+```
+AUTO_LOADED  ──(SHORT, CH5=ROBOT)──▶  PLAYING (Nav2 FollowPath goal, LED ~2 Hz villog)
+PLAYING      ──(BT SUCCESS)────────▶  DONE (LED steady ON)
+PLAYING      ──(CH5=RC)────────────▶  PAUSED (cancel goal, index megőrződik, LED ~4 Hz)
+PAUSED       ──(CH5=ROBOT)─────────▶  PLAYING (új FollowPath goal a `poses[index:]`-szel)
+DONE         ──(SHORT)─────────────▶  PLAYING (újrafutás elejéről)
+DONE         ──(CH5=RC)────────────▶  DONE (változatlan, csak OK GO indítja újra)
+nincs traj   ──(SHORT)─────────────▶  ignored, LED OFF marad (nem hibajelzés)
+```
+
+**LED-minta tábla** (10 Hz tick, `/robot/okgo_led` Bool):
+| Állapot | Minta |
+|---|---|
+| IDLE / no trajectory | OFF |
+| LEARN RECORDING | OFF |
+| SAVE pillanat | steady ON 2 s, majd OFF |
+| WIPE | 4× (ON 2 s + OFF 2 s) = 16 s |
+| AUTO PLAYING | villog ~2 Hz (0.25 s on / 0.25 s off) |
+| AUTO DONE | steady ON |
+| PAUSED (bármilyen RC override) | villog ~4 Hz (0.125 s on / 0.125 s off) |
+| Üres SAVE (0 pose) | 2 s villog ~5 Hz hibajelzés, mentés ignorálva |
+
+**Adattárolás** (`/data/maps/current/`, egyetlen készlet, mindig felülíródik):
+```
+map.pgm + map.yaml        (SLAM-toolbox save_map)
+map.posegraph + .data     (slam_toolbox serialize_map)
+trajectory.yaml           (új — pose+timestamp lista)
+```
+`trajectory.yaml` séma:
+```yaml
+frame_id: map
+recorded_at: "2026-05-13T10:00:00"
+sampling_hz: 10
+poses:
+  - { t: 0.000, x: 0.000, y: 0.000, yaw: 0.000 }
+  - { t: 0.100, x: 0.055, y: 0.000, yaw: 0.012 }
+```
+
+**Pose-forrás:** TF `map → base_link` (NEM `/odometry/filtered`) — a SLAM loop-closure
+a felvett pose-okat is korrigálja a `map` frame-ben, így AUTO-replay konzisztens marad.
+
+**Lejátszás:** `nav2_msgs/action/FollowPath` action (`/follow_path` action server, Nav2
+`controller_server`-en belül). A trajectory_node a felvett pose-okból `nav_msgs/Path`-et
+épít, és átküldi. **NEM** írunk saját PID-et / pure pursuit-ot.
+
+**Sebességcap (csak AUTO-ban):**
+- `controller_server.FollowPath.desired_linear_vel: 0.555`
+- `velocity_smoother.max_velocity: [0.555, 0.0, 1.5]`
+- Új profil: `NAVIGATION_REPLAY` (NAVIGATION 0.5 m/s default érintetlen marad)
+
+**Sebességcap LEARN-ben:** **NINCS** — a user szabadon vezethet RC-vel, gyorsabban is. Csak
+AUTO replay érvényesíti a 0.555 m/s-ot.
+
+**RC override viselkedés (összefoglaló):**
+- AUTO PLAYING + CH5=RC → action cancel, PAUSED, index megőrződik
+- AUTO PAUSED + CH5=ROBOT → új goal `poses[index:]`-szel
+- AUTO DONE + CH5=RC → nincs változás, csak OK GO indítja újra
+- LEARN RECORDING + CH5=RC → felvétel pause, SLAM él
+- LEARN PAUSED + CH5=ROBOT → vár, amíg user visszakapcsol RC-re
+
+**Implementációs lépések (2026-05-13):**
+1. `robot_missions/CMakeLists.txt` + `package.xml` (rclcpp, nav2_msgs, std_msgs, tf2_ros, yaml-cpp)
+2. `ok_go_supervisor.cpp` — gomb dekóder + LED időzítő + állapotgép
+3. `trajectory_node.cpp` — TF timer 10 Hz, YAML I/O, FollowPath action client
+4. `replay.launch.py` + `replay.yaml`
+5. `_profiles_/NAVIGATION_REPLAY` profil + `robot_params.yaml` bővítés
+6. Docker rebuild (~20 perc)
+7. Bench teszt (felemelt kerekek): LED minták, állapotátmenetek
+8. Élesteszt: mapping kör + replay
+
+**Előfeltétel (2026-05-12 esti teszt):** Nav2 `FollowPath` action élesben validálva — lásd
+lentebb a 🟢 "Magas prioritás" alatt.
+
+---
+
 ### ⏸ ZED 2i visszaállítás szerviz után (2026-05-05)
 
 **Státusz:** ZED 2i szervizen van — a kamera ki van vezetve a rendszerből.

@@ -6,6 +6,89 @@
 
 ---
 
+## 2026-05-12 — Trajectory Replay tervezés + Nav2 FollowPath bench validáció | 🟢 ELŐKÉSZÍTÉS
+
+**Cél:** A holnapi (2026-05-13) implementáció előtt: (1) teljes specifikáció rögzítése
+a `docs/backlog.md`-ben, (2) Nav2 `/follow_path` action stabil API ellenőrzése bench-en,
+hogy a `trajectory_node` cpp már stabil hívási mintára építhessen.
+
+**Feature spec — Trajectory Replay (LEARN/AUTO + OK GO gomb):**
+
+Felhasználói folyamat (B-variáns, trajektória-replay):
+- LEARN módban (rotary=0) RC-vel vezetjük a robotot, közben SLAM épít és a `trajectory_node`
+  10 Hz-en mintavételezi a `map → base_link` TF-et.
+- OK GO **SHORT** (< 1.0 s): aktuális térkép + trajektória mentése → `/data/maps/current/`,
+  LED 2 s steady ON.
+- OK GO **LONG** (≥ 5.0 s): térkép + trajektória törlése, friss SLAM session indul,
+  LED 4× villog (2 s ON / 2 s OFF).
+- OK GO 1.0–5.0 s tartomány: **CANCEL** (semmi nem történik).
+- AUTO módban (rotary=2): a mentett trajektóriát Nav2 `FollowPath` action-ön át játssza
+  le, **max 2 km/h (0.555 m/s)** sebességgel, LED ~2 Hz villog. Befejezve LED steady.
+- RC override (CH5=RC) bármikor megszakítja és **pausolja** a folyamatot, visszakapcsolva
+  folytatódik. DONE állapotban RC nem változtat semmin.
+- LEARN-ben **nincs** sebességcap (user szabadon RC-vel); csak AUTO replay érvényesíti
+  a 0.555 m/s limitet.
+
+Új komponensek (holnap implementálva, C++):
+- `robot_missions/ok_go_supervisor.cpp` — gombdekódolás, állapotgép, LED időzítés
+- `robot_missions/trajectory_node.cpp` — TF mintavétel 10 Hz, YAML I/O, Nav2 FollowPath action client
+- `robot_missions/launch/replay.launch.py`, `config/replay.yaml`
+- Új `_profiles_/NAVIGATION_REPLAY` profil a `robot_params.yaml`-ban (0.555 m/s cap)
+
+A `safety_supervisor` **NEM módosul**.
+
+Pose-forrás: TF `map → base_link` (NEM `/odometry/filtered`), hogy SLAM loop-closure
+a felvett pose-okat is korrigálja és AUTO-replay konzisztens maradjon.
+
+Teljes részletes spec a `docs/backlog.md` "🟢 Trajectory Replay" szekciójában.
+
+**Nav2 FollowPath bench teszt — 2026-05-12 este:**
+
+Cél: a stack stabil-e a holnapi action client hívásokra.
+
+Teszt setup:
+- Mode: IDLE, safety blokkol → robot biztonságosan **nem mozog**, controller_server
+  pedig számol és publikál `/cmd_vel_nav`-ra
+- `/tmp/fp_client.py` (host-on írva, `docker cp` → robot container) — egyenes 0.3 m
+  útvonal a map origótól (7 pose, 5 cm sűrűség, frame_id=`map`)
+- Párhuzamos `ros2 topic echo /cmd_vel_nav` 20 mp-ig
+
+Eredmények:
+| Megfigyelés | Érték | Értelmezés |
+|---|---|---|
+| `/follow_path` action server | `/controller_server` | ✅ elérhető |
+| Goal ACCEPTED | igen | ✅ Nav2 elfogadja az üres `controller_id` + üres ID-ket (default plugin) |
+| `/cmd_vel_nav` üzenetek 10 mp alatt | **202 db** (~20 Hz) | ✅ controller_server publikál |
+| `cmd_vel.linear.x` | **0.24 m/s** konstans | ⚠️ nem `desired_linear_vel: 0.8` — anomália (lásd lent) |
+| feedback `dist_to_goal` | 0.300 m változatlan | ✅ várt — robot nem mozdult (mode IDLE) |
+| feedback `speed` | 0.240 m/s | ✅ konzisztens a cmd_vel-lel |
+| Result STATUS | 6 (ABORTED) | ✅ várt — `FAILED_TO_MAKE_PROGRESS` |
+| error_code | 105 | ✅ Nav2 progress checker watchdog aktív |
+
+Konklúzió:
+- `nav2_msgs::action::FollowPath` API stabilan használható: `goal.path.header.frame_id =
+  "map"`, `goal.path.poses[]` `PoseStamped`-okkal, üres `controller_id` / `goal_checker_id`
+  / `progress_checker_id` = default
+- `controller_server` valóban publikál `/cmd_vel_nav`-ra, ~20 Hz
+- `velocity_smoother` és a `cmd_vel_nav → cmd_vel_nav2` lánc érintetlen
+- Goal accept/result/feedback callback kontraktus teljesül
+- A holnapi `trajectory_node` ezekre építhet közvetlenül
+
+**Holnapra megnézendő anomália — `desired_linear_vel` profil:**
+
+`ROBOT_MODE=NAVIGATION` env beállítva, de `ros2 param get /controller_server
+FollowPath.desired_linear_vel` → `0.8` (ami a SHUTTLE profil értéke a `robot_params.yaml`-ban,
+NAVIGATION = 0.5 lenne). A `navigation.launch.py` `get_merged()` profil-merge logika
+nem alkalmazza helyesen az env-et. Mivel az új `NAVIGATION_REPLAY` profil bevezetése
+úgyis kötelező (0.555 m/s cap), holnap egy menetben fixáljuk a profil-merge-et és
+adjuk hozzá az új profilt.
+
+**Tárgyak:**
+- `/tmp/fp_client.py` — fp_test_client referencia script, **NEM része a repónak**, csak
+  bench validációhoz használtuk
+
+---
+
 ## 2026-05-12 — /robot/mode Int32 sub + wheel_separation fizikai mérés | ✅ ÉLŐ
 
 **Tünet:** A `/robot/mode` topicon a Pico E-Stop board 3-állású rotary kapcsoló
