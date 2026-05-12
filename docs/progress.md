@@ -6,6 +6,61 @@
 
 ---
 
+## 2026-05-13 — Trajectory Replay prototípus élesteszt | ⏸ MEGÁLLT, HOLNAP TISZTA IMPL.
+
+**Cél:** A holnapi cpp implementáció előtt élesben validálni a Nav2 FollowPath replay-t egy
+Python prototípussal (`/tmp/trajectory_replay_proto.py`, NEM része a repónak), 2 m előre-hátra
+szakaszon. A teszt során **3 stack-szintű blokkert** azonosítottunk — a végleges fix a holnapi
+implementáció része.
+
+**Eredmények — a Nav2 controller stack működik:**
+- ✓ `nav2_msgs/action/FollowPath` API stabil, goal accept + feedback + result callback OK
+- ✓ `controller_server` (Regulated Pure Pursuit, `allow_reversing=true` esetén) a 0.555 m/s
+  cmd-t a `cmd_vel_nav`-ra publikálja 20 Hz-en
+- ✓ A `general_goal_checker.xy_goal_tolerance: 0.05` (5 cm) megakadályozza az instant
+  SUCCESS-t, ha a robot a path utolsó pose-án áll
+- ✓ A path-megfordítás (`reversed(trajectory)`) elkerüli a "robot ott áll, ahol vége a felvétel"
+  csapdát — a goal mindig távol van
+- ✓ A `/recorded_path` `nav_msgs/Path` topic publikálás Foxglove-on vizualizálja a felvételt
+
+**A 3 azonosított blokker (holnap mindhárom fixálandó):**
+
+1. **`safety_supervisor` régi bináris a Docker image-ben** — a `safety_supervisor.cpp` `/robot/mode`
+   String→Int32 fix (commit `150b82a`) **a forrásban benne**, de a futó Docker image bináris a
+   régi String-subscribert tartalmazta. Tünet: `/robot/mode` topic kettős típusú (Int32 publisher +
+   String subscriber), discovery hash-mismatch, `commanded_mode_` üres, `state="IDLE"` állandóan.
+   **2026-05-13 in-container fix:** colcon build `/tmp/inst_safety/` alt install-base-szel
+   (a `safety.launch.py` host-ról read-only mountolva volt, az alapértelmezett install
+   bukott; alt base + manuális binary cp megoldotta), majd `docker restart robot`. Eredmény:
+   `state="NAVIGATION"` ✓. **Tartós fix: a holnapi Docker rebuild automatikusan beleépíti.**
+
+2. **`twist_mux` RC prioritás blokkolja a Nav2-t AUTO módban** (lásd `docs/backlog.md` 🟢
+   Trajectory Replay alszekció). Az `rc_teleop_node` AUTO módban is publikál `cmd_vel_rc`-re
+   (0-kat), és a `twist_mux` config szerint `rc.priority: 20 > navigation.priority: 10`.
+   Eredmény: `cmd_vel_nav2 → cmd_vel_raw` átengedés sosem történik autonom módban.
+   Runtime `ros2 param set /twist_mux topics.rc.priority 5` **NEM elég** — a twist_mux
+   nem alkalmazza dinamikusan. **Holnap tiszta megoldás:** `rc_teleop_node` új `disable_in_navigation`
+   paraméterrel feliratkozik `/safety/state`-re, és `mode=="NAVIGATION"` alatt nem publikál.
+
+3. **A `FollowPath` "visszatérő kör" topológiai csapdája** — ha a felvétel utolsó pose-a (Nav2
+   goal) a robot tartózkodási helyén van (tipikus, mert a user RC-vel **megáll** a felvétel
+   végén), a goal_checker tolerancián belül van → instant SUCCESS. Workaround a prototípuson:
+   path-megfordítás (B→A irány). Holnapi végleges megoldás: a `trajectory_node` ne a
+   FollowPath default goal_checker-ét használja, hanem **waypoint-szerű** logikát (`NavigateThroughPoses`
+   vagy custom path-progress tracking) — vagy egy szintetikus extrapolált pose-zal hosszítsa a path-et.
+
+**Eltérő útkép:** a holnapi `ok_go_supervisor` + `trajectory_node` cpp implementáció során
+**MIND a három** blokkert kezelni kell, vagy a feature használhatatlan lesz autonomy mode-ban.
+A `_profiles_/NAVIGATION_REPLAY` mellett kell: (a) safety_supervisor friss bináris (rebuild =
+automatikus), (b) `rc_teleop_node` `disable_in_navigation` paraméter, (c) trajectory replay
+goal-strategy megválasztása.
+
+**Tárgyak (NEM része a repónak, csak referenciaként):**
+- `/tmp/trajectory_replay_proto.py` — Python action client + állapotgép prototípus
+- `/tmp/fp_client.py` — fp_test_client minimal goal-küldő
+
+---
+
 ## 2026-05-12 — Trajectory Replay tervezés + Nav2 FollowPath bench validáció | 🟢 ELŐKÉSZÍTÉS
 
 **Cél:** A holnapi (2026-05-13) implementáció előtt: (1) teljes specifikáció rögzítése

@@ -108,15 +108,60 @@ AUTO replay érvényesíti a 0.555 m/s-ot.
 - LEARN RECORDING + CH5=RC → felvétel pause, SLAM él
 - LEARN PAUSED + CH5=ROBOT → vár, amíg user visszakapcsol RC-re
 
+**⚠️ Stack-szintű blokker — `twist_mux` RC prioritás (2026-05-13 élesteszten felfedezve):**
+
+A jelenlegi `robot_teleop/config/twist_mux.yaml` az RC csatornát mindig magasabb prioritáson tartja
+mint a Nav2-t:
+```yaml
+rc:          priority: 20  (timeout: 1.0)   ← TX-failsafe miatt szándékos
+navigation:  priority: 10  (timeout: 0.5)
+```
+A komment maga is jelzi: *"RC receiver failsafe → prio 20 always blocks Nav2 when TX is off."*
+
+Az `rc_teleop_node` **AUTO módban is publikál** `/cmd_vel_rc`-re (0.0-kat, ~4 Hz), így a twist_mux
+mindig az RC-t választja, és a `/cmd_vel_nav2` → `/cmd_vel_raw` átengedés **soha nem történik
+meg autonom módban**. Tünet: a Nav2 controller `cmd_vel_nav` kimenete megvan (0.555 m/s, 20 Hz),
+de a `/cmd_vel_raw` és a `/diff_drive_controller/cmd_vel` 0.0 — a robot nem mozog, hiába van
+`state="NAVIGATION"`. Megerősítve a `trajectory_replay_proto` élestesztben (2026-05-13).
+
+**Ez NEM csak a trajectory-replay-t érinti** — bármilyen autonóm Nav2 művelet (goal-pose,
+FollowPath, NavigateThroughPoses) ebbe a falba ütközik a jelenlegi setup-pal.
+
+Megoldási opciók a holnapi implementációhoz (priorítás szerint):
+
+1. **`rc_teleop_node` feltételes publikálás** (legtisztább) — figyel a `/safety/state` JSON-ra,
+   és ha `mode == "NAVIGATION"`, **nem publikál** `/cmd_vel_rc`-re. A twist_mux 1.0 s timeout
+   után átengedi a Nav2-t. Az RC failsafe érintetlen marad RC módban.
+
+2. **`_profiles_/NAVIGATION_REPLAY` profil-override a twist_mux.yaml-ra** — ha a twist_mux
+   priority-ket OpaqueFunction-ből merge-eljük (mint a controller_server/velocity_smoother
+   jelenleg), a NAVIGATION_REPLAY profilban `rc.priority: 5`, `navigation.priority: 10` lehet.
+   **Vizsgálandó:** a twist_mux node életciklusban tudja-e átvenni új priority-t (param-server
+   dinamikus reload), vagy launch-szintű override kell.
+
+3. **`trajectory_node` runtime priority-swap** — a replay indulásakor `set_parameters`-szel
+   `/twist_mux topics.rc.priority`-t levesszük 5-re, a replay végén visszaállítjuk 20-ra.
+   **2026-05-13 prototípus megfigyelés: NEM elég!** A `ros2 param set` sikeres
+   ("Set parameter successful"), de a `twist_mux` futó node **nem alkalmazza** dinamikusan
+   az új priority-t — láthatóan csak indulási konfigot használ a belső állapotban (a `cmd_vel_raw`
+   még mindig 0.0 maradt replay alatt a swap után). Tehát ez az opció **node restart nélkül
+   NEM működik** — ha mégis ez az út, akkor a `trajectory_node`-nak respawn-jellegű
+   twist_mux-restartot kéne kezelnie, ami fragilis. **Töröljük az opciót.**
+
+**Javasolt:** **1. opció** — `rc_teleop_node`-ban egy új paraméter `disable_in_navigation: true`,
+és a node subscribe-ol a `/safety/state`-re. Tiszta, lokalizált, RC failsafe megmarad.
+**A 2026-05-13 esti élesteszt megerősítette: ez a tiszta végleges megoldás, holnap implementáljuk.**
+
 **Implementációs lépések (2026-05-13):**
 1. `robot_missions/CMakeLists.txt` + `package.xml` (rclcpp, nav2_msgs, std_msgs, tf2_ros, yaml-cpp)
 2. `ok_go_supervisor.cpp` — gomb dekóder + LED időzítő + állapotgép
 3. `trajectory_node.cpp` — TF timer 10 Hz, YAML I/O, FollowPath action client
 4. `replay.launch.py` + `replay.yaml`
 5. `_profiles_/NAVIGATION_REPLAY` profil + `robot_params.yaml` bővítés
-6. Docker rebuild (~20 perc)
-7. Bench teszt (felemelt kerekek): LED minták, állapotátmenetek
-8. Élesteszt: mapping kör + replay
+6. **`rc_teleop_node` bővítés** (vagy `twist_mux` profil-override) — lásd a blokker fenti pontját
+7. Docker rebuild (~20 perc)
+8. Bench teszt (felemelt kerekek): LED minták, állapotátmenetek
+9. Élesteszt: mapping kör + replay
 
 **Előfeltétel (2026-05-12 esti teszt):** Nav2 `FollowPath` action élesben validálva — lásd
 lentebb a 🟢 "Magas prioritás" alatt.
