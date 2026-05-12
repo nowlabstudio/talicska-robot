@@ -716,6 +716,111 @@ CHECK_ESTOP_ENABLED=true    # false = kihagyja az E-Stop checkot (pl. bridge nin
 
 A `safety_supervisor` (runtime motor gate) párhuzamosan fut — az ARMED állapot független tőle. A FEGYELMEZETT indítási szekvencia biztosítja, hogy a robot ne induljon el billenő helyzetből, mozgás közben, vagy aktív E-Stop mellett.
 
+### 6.9 RC Teleop Pipeline és Joystick Curve
+
+A kézi RC vezérlés (FULL stack + RC Fallback mód) közös pipeline-on keresztül halad át. A pipeline minden tagja külön felelősséggel bír — ez az SRP (Single Responsibility) alkalmazása a vezérlési láncon.
+
+#### Pipeline (RC mód)
+
+```
+RC adó (TX)
+   │ SBUS/SBUS2
+   ▼
+RC bridge (RP2040, 10.0.10.22)               ← JEL TRANSZPORT
+   │ MicroROS UDP → /robot/motor_left, /robot/motor_right, /robot/rc_mode  (Float32, -1..+1)
+   ▼
+rc_teleop_node (50 Hz)                       ← JEL ÉRTELMEZÉS (kinematika, deadzone, curve)
+   │ /cmd_vel_rc  (Twist)
+   ▼
+twist_mux (prio 20 RC > prio 10 Nav2)         ← FORRÁS MULTIPLEXÁLÁS
+   │ /cmd_vel_raw  (Twist)
+   ▼
+safety_supervisor cmd_vel gate                ← BIZTONSÁG (state-alapú kapuzás)
+   │ /cmd_vel  (TwistStamped)
+   ▼
+diff_drive_controller (50 Hz, has_acceleration_limits: false)
+   │ joint sebességparancsok
+   ▼
+roboclaw_hardware (motion_strategy: speed_accel)
+   │ TCP → USR-K6 → RS232
+   ▼
+Basicmicro motor vezérlő (SetM1/M2SpeedAccel, accel=default_acceleration QPPS/s)
+```
+
+#### A felelősségek tiszta elválasztása
+
+| Réteg | Felelősség | NEM csinál |
+|---|---|---|
+| Bridge (RP2040) | SBUS dekódolás → Float32 topic. Failsafe: TX off → ch5=RC mód + motors=0. | Kinematika, curve, deadzone. |
+| `rc_teleop_node` | Deadzone, expo curve, **tank-drive → Twist kinematika** (`v = (vL+vR)/2`, `ω = (vR−vL)/wheel_sep`). | Sebesség-limit (azt diff_drive csinálja). |
+| `twist_mux` | RC (prio 20) vs Nav2 (prio 10) vs Foxglove forrás-választás idő-alapú timeout-tal. | Tartalom-transzformáció. |
+| `safety_supervisor` | `/cmd_vel_raw` → `/cmd_vel` továbbítás csak `is_safe()=true` esetén; egyébként zero TwistStamped. | Sebesség-skálázás. |
+| `diff_drive_controller` | Twist → kerék-szögsebesség; sebesség-limit clip; odometria számítás enkóderekből. | Curve. Acc-limit jelenleg explicit kikapcsolva. |
+| `roboclaw_hardware` | ros2_control HardwareInterface; `SetM1/M2SpeedAccel` parancsküldés 50 Hz. | Kinematika. |
+
+#### Joystick curve — nemlineáris (expo) leképezés
+
+**Probléma (lineáris skála).** A klasszikus tank-drive `v = motor_in × max_vel` (lineáris) skála ellentmondó követelményeket nem tud egyszerre kielégíteni:
+- a **finom pozicionálás** kis sebességet kíván → kis `max_vel` kell, viszont
+- az **érdemi haladás** nagy sebességet kíván → nagy `max_vel` kell.
+
+A joystick fizikai felbontása (mechanikus deadzone, kéz remegés) miatt 5-10%-nál finomabb beadás nem garantálható. Lineáris skálán 10% joystick = 10% sebesség → 100 kg-os roveren ez túl gyors apró pozicionáláshoz.
+
+**Megoldás (nemlineáris curve).** A `rc_teleop_node` az input-jel abszolút értékét egy `expo` hatványkitevővel hatványozza a deadzone után, megőrizve a jel előjelét:
+
+```cpp
+v = sign(in) × |in|^expo × max_vel
+```
+
+- `expo = 1.0` — lineáris (régi viselkedés)
+- `expo > 1.0` — **alsó tartomány finomabb, felső gyors-erős, folytonos és deriválható átmenet**
+
+A `motor_left` és `motor_right` jelek egymástól függetlenül átmennek a curve-n, majd a kinematikai inverzióval Twist-té alakulnak. Ez **megőrzi a tank-drive intuíciót** — fél-elhúzás bal joysticken pontosan a fél-curve-elt sebességet adja a bal keréknek.
+
+#### Karakterisztika `expo=2.0` (squared) + `max_linear_vel=3.89 m/s`
+
+| Joystick | Sebesség | Megjegyzés |
+|---|---|---|
+| 5% (deadzone küszöb) | 0.010 m/s | ~1 cm/s — alig mozdul, finom adagolás kezdete |
+| 10% | 0.039 m/s | ~4 cm/s — apró pozicionálás |
+| 20% | 0.156 m/s | 16 cm/s |
+| 30% | 0.35 m/s | 1.3 km/h, lassú séta |
+| 50% | 0.97 m/s | gyors gyaloglás |
+| 70% | 1.91 m/s | ~7 km/h |
+| 100% | 3.89 m/s | ~14 km/h, hardware max |
+
+A `max_linear_vel` paraméter értéke (`3.89 m/s`) **megegyezik a `controllers.yaml` diff_drive `max_velocity` clip-jével** — ez azt biztosítja, hogy a joystick teljes range a `[0, 3.89]` sávban dolgozzon clip nélkül. Ha a `max_linear_vel` magasabb lenne (pl. régi 8.70), a joystick felső 30-50%-a ugyanazt a clip-elt sebességet adná → diszkontinuitás a karakterisztikán.
+
+#### Runtime kalibráció (no rebuild)
+
+Az `expo`, `max_linear_vel` és `deadzone` paraméter runtime hangolható, paraméter-callback van bekötve:
+
+```bash
+docker exec robot ros2 param set /rc_teleop_node joystick_expo 2.5
+docker exec robot ros2 param set /rc_teleop_node joystick_expo 3.0   # még finomabb alsó zóna
+docker exec robot ros2 param set /rc_teleop_node max_linear_vel 2.0  # ideiglenes teszt
+```
+
+A változás azonnal érvénybe lép; konténer restart nem szükséges.
+
+#### Miért NEM a bridge-en (RP2040 firmware)
+
+A curve a `rc_teleop_node`-ban van, nem a bridge firmware-ben. Indoklás:
+
+- **Kalibráció iterációja:** `ros2 param set` másodpercek alatt; firmware build + flash + reset 5-10 perc kísérletenként.
+- **SRP:** Bridge = **jel transzport**; node = **jel értelmezés**. Ha a curve a bridge-be kerülne, a bridge-be be kellene építeni a kinematikát és a deadzone-t is — összevegyíti a felelősségeket.
+- **Reusability:** Foxglove teleop panel vagy más TwistPublisher ugyanezt a curve-t kapja (egységes RC érzet minden forrásnál).
+- **Több bridge megosztott kódbázis:** Az RC bridge, input bridge, tilt bridge, e-stop bridge ugyanazt a ROS2-Bridge platformot használja. Egy bridge módosítás összekapcsolódó projekteket érint.
+- **Bridge fail-safe érzéketlen:** a TX off → ch5=RC mode + motors=0 fail-safe a nyers Float32 értékre vonatkozik; a curve nem hat rá (`|0|^expo = 0`).
+
+#### Sebesség-rampolás (acc-limit)
+
+Jelenleg a `diff_drive_controller`-ben `has_acceleration_limits: false` — a controller a beérkező `cmd_vel`-t azonnal továbbítja. Az effektív sebesség-rampozást **csak a Basicmicro vezérlő** `default_acceleration` paramétere (`SetM1/M2SpeedAccel` parancsban küldve) biztosítja, ~1.27 m/s² értékben (75000 QPPS/s).
+
+**Megjegyzés:** A Basicmicro EEPROM `acceleration` paraméter (Motion Studio-ból állítható) **nem hat**, amikor a driver `motion_strategy: "speed_accel"`-t használ — a parancsban küldött `default_acceleration` felülírja az EEPROM-ot.
+
+Ha a jövőben szükség lesz explicit acc-limit-re m/s² egységben (pl. terepen kifejezetten lassú felfutáshoz), a `controllers.yaml`-ben `has_acceleration_limits: true` + `max_acceleration` / `max_deceleration` aktiválható — ez backlog tétel marad, mert a jelenlegi expo curve + Basicmicro acc kombinált viselkedése a földi teszten kielégítő ("vajpuha" érzet a 100 kg-os roveren).
+
 ---
 
 ## 7. Szenzor Framework

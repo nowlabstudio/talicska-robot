@@ -37,7 +37,7 @@ A korábbi "asztali / felemelt deszkamodell" fázis lezárult — a robot innent
 **Tilt latch jelenleg aktív** — feloldása E-Stop press+release (vagy stack restart, mert
 `latch_state_path=/run/robot/safety_latch_state` perzisztens; `/run` tmpfs → restart törli).
 
-**RC finom mozgás — expo joystick-curve (2026-05-12, ugyanaznap):**
+**RC finom mozgás — expo joystick-curve (2026-05-12, ugyanaznap) ✅ VALIDÁLVA "vajpuha":**
 A földi teszt második megfigyelése: "hirtelen indul és hirtelen áll meg". Eredeti
 hipotézis (`Basicmicro EEPROM acceleration 2000→10`) **valószínűleg nem hat** — a driver
 `motion_strategy: "speed_accel"` minden ciklusban `SetM1SpeedAccel(addr, accel=75000, speed)`

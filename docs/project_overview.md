@@ -35,10 +35,10 @@ Architektúra doksi: `/home/eduard/Dropbox/Development/RobotEcosystem/robot_arch
 | Forgás | Tank mód (helyben + ívben) |
 
 **Sebességek:**
-| Mód | Max sebesség |
-|---|---|
-| RC mód | 14 km/h (3.89 m/s) |
-| ROS mód | 8 km/h (2.22 m/s) |
+| Mód | Max sebesség | Joystick-karakterisztika |
+|---|---|---|
+| RC mód | 14 km/h (3.89 m/s) | Nemlineáris expo curve (default `joystick_expo=2.0`) — finom alsó tartomány, gyors-erős felül, sima átmenet. Részletek: `docs/robot_architecture.md` 6.9. |
+| ROS mód | 8 km/h (2.22 m/s) | — |
 
 **Nav2 footprint** (base_link a forgásközpontnál, 2026-05-08: +100mm x eltolás alkalmazva hátra):
 ```yaml
