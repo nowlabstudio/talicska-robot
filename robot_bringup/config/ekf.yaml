@@ -38,8 +38,12 @@ ekf_filter_node:
     # az odom-integrált yaw és az IMU yaw között oszcillál → 45-50 fokos
     # periodikus map-elfordulás.
     odom0: /diff_drive_controller/odom
+    # Velocity-only mód: NE olvasd a wheel-odom abszolút pozícióját — az EKF
+    # saját 0,0,0 origóból integrál vx velocity-ből + IMU yaw-ból. Ezzel az
+    # `odom → base_link` TF tiszta 0-tól indul minden stack-restartkor,
+    # függetlenül a Basicmicro encoder kumulatív count-jától.
     odom0_config:
-      [true,  true,  false,
+      [false, false, false,
        false, false, false,
        true,  false, false,
        false, false, false,

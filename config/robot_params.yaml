@@ -305,8 +305,15 @@ ekf_filter_node:
     # periodikus map-elfordulás. Valós roboton (nem deszkamodell) sem javasolt
     # yaw-t adni odom0-ból ha IMU aktív — az IMU pontosabb yaw-referencia.
     odom0: /diff_drive_controller/odom
+    # Velocity-only mód: NE olvasd a wheel-odom abszolút pozícióját — az EKF
+    # saját 0,0,0 origóból integrál vx velocity-ből + IMU yaw-ból. Ezzel az
+    # `odom → base_link` TF tiszta 0-tól indul minden stack-restartkor,
+    # függetlenül attól, hogy a Basicmicro encoder kumulatív count-ja hol áll.
+    # Korábbi config [true,true,false,...] + differential:false hibája:
+    # az EKF a wheel-odom belső integrált pozícióját abszolútként olvasta be,
+    # így a Basicmicro encoder perzisztens kumulatív count-ja "ugratta" az EKF-et.
     odom0_config:
-      [true,  true,  false,
+      [false, false, false,
        false, false, false,
        true,  false, false,
        false, false, false,
@@ -568,8 +575,14 @@ roboclaw_hardware:
   tcp_port:                8234
   socket_timeout:          0.05
   address:                 "0x80"         # decimal: 128
-  encoder_counts_per_rev:  70300
-  gear_ratio:              1.0            # TODO: kalibrálás szükséges
+  # Kalibrált 2026-05-12 földi mérés: 3.00 m vezetés / 6.168 m EKF-mért → 2.056×
+  # mismatch. Tipikus Basicmicro `ReadEncoders` single-edge vs quadrature counts
+  # eltérés. Régi érték 70300 (2026-03-19 kalibrálás) feltehetően az 1-edge
+  # mode-ban volt érvényes; a quadrature 2× több count-ot ad → effektív érték
+  # ennyi. A `unit_converter.cpp:30` képlete: radians_per_count = 2π / (counts × gear)
+  # — counts dupla → radians fele → méter fele → távolság helyes.
+  encoder_counts_per_rev:  144525
+  gear_ratio:              1.0            # OK — encoder_counts_per_rev tartalmazza
   motion_strategy:         "speed_accel"
   # default_acceleration: a Basicmicro SpeedAccel parancsban küldött acc paraméter.
   # A Basicmicro mind az acc-ra, mind a dec-re alkalmazza (min(parancs_accel, EEPROM)).

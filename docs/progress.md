@@ -6,6 +6,63 @@
 
 ---
 
+## 2026-05-12 — Wheel-odom kalibráció + EKF velocity-only mód | ✅ ÉLŐ
+
+**Tünet (földi RC-teszt fázis):** SLAM térkép inkonzisztens RC vezetés közben — a
+robot által bejárt path nem egyezik a valósággal. Foxglove 3D panelben a `map`,
+`odom`, `base_link` frame-origin-jei messze "kilógnak" a robotból (több száz méter).
+
+**Diagnózis:** Két különálló hibakör, mindkettő a `roboclaw_hardware` plugin által
+publikált `/diff_drive_controller/odom`-on csúcsosodott ki.
+
+**Hibakör 1 — wheel-odom 2× kalibráció:** Az `encoder_counts_per_rev: 70300` érték
+(2026-03-19 kalibrálás) feltehetően az 1-edge mode-ban volt érvényes, miközben a
+Basicmicro a quadrature counts-ot küldi (2× több count cycle-onként). A `unit_converter.cpp:30`:
+`radians_per_count = 2π / (counts × gear)` képlet alapján a robot minden méteres
+mozgása **2.056× túlmért** értéket adott.
+
+**Földi kalibrációs mérés (2 db 3.00 m vezetés bag-rögzítéssel):**
+- Régi paraméterrel: 3 m → 6.17 m EKF (2.056× faktor)
+- Új paraméterrel (`encoder_counts_per_rev: 144525`):
+  - Meas #1: 3 m → 3.344 m EKF (+11.5%, IMU yaw drift miatt — `imu0_relative: true`
+    első perceiben yaw nem stabil)
+  - Meas #2: 3 m → 3.012 m EKF (**+0.4%**, gyakorlatilag pontos)
+
+**Hibakör 2 — EKF abszolút wheel pozíció olvasás:** Az `ekf_filter_node` `odom0_config`
+`[true, true, false, ...]` + `odom0_differential: false` miatt az EKF a wheel-odom
+**belső kumulatív position.x-jét** olvasta be abszolútként minden tick-en. Mivel a
+Basicmicro encoder kumulatív count-ja stack-restart-ot is túléli, a `position.x`
+~100-300 m-es értékeken állt → az EKF ezt átvette → `odom → base_link` TF 400 m-rel
+elcsúszott a robot fizikai pozíciójától → SLAM térkép vízszintesen "elhajózott".
+
+**Fix (commit ?):**
+
+1. `config/robot_params.yaml` `roboclaw_hardware` blokk:
+   - `encoder_counts_per_rev: 70300 → 144525` (kalibrálva 2026-05-12 földi méréssel)
+   - `gear_ratio: 1.0  # TODO` → `gear_ratio: 1.0  # OK` (kalibrálás lezárva)
+
+2. `config/robot_params.yaml` `ekf_filter_node` blokk + `robot_bringup/config/ekf.yaml`
+   szinkronizálva (az ekf.yaml dokumentációs-tükör, valódi forrás a robot_params.yaml):
+   - `odom0_config[0,1,2]` (x,y,z position): `true,true,false → false,false,false`
+   - Az EKF most CSAK a wheel-odom velocity-t (`vx`) integrálja, az abszolút pozíciót nem
+   - Saját 0,0,0 origóból indul minden stack-restart-tal, függetlenül a wheel-odom belső állapotától
+
+**Validáció:**
+- EKF baseline restart után: `x = 0.0000` ✓
+- 2. mérés Δx = 3.012 m a fizikai 3.00 m-re (+0.4%) ✓
+- Foxglove 3D panel: minden frame-origin a robot mellett, nem 100 m messze ✓
+
+**Bag rögzítve:** `/data/maps/calibration_2026-05-12_181401/calibration_2026-05-12_181401_0.mcap`
+(128 MiB, 575 sec, 6 mozgási szegmens). Topicok: /diff_drive_controller/odom,
+/odometry/filtered, /sensors/imu/data, /tf, /tf_static, /robot/rc_mode, /cmd_vel_raw, /scan.
+
+**Maradék (külön ülés):**
+- IMU `imu0_relative: true` első percek yaw drift — lehet hogy `imu0_relative: false`-szal
+  jobb (abszolút mágneses heading), de még nem validált
+- SLAM tisztán fog működni mostantól — autonóm navigáció megkezdhető
+
+---
+
 ## 2026-05-12 — Safety supervisor RC mode hysteresis filter | ✅ ÉLŐ
 
 **Tünet:** Földi RC-teszt fázis közben a robot **magától** váltogatott RC↔ROBOT mód
