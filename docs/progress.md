@@ -6,6 +6,28 @@
 
 ---
 
+## 2026-05-12 — URDF mesh feloldás interfész-függetlenné téve | ✅ ÉLŐ
+
+**Tünet:** WiFi-ről csatlakozva (Foxglove a 192.168.68.124 IP-n érte el a Jetsont) a
+3D modell nem rajzolódott ki, miközben a `/robot_description` topic és a TF tree
+helyesen működött.
+
+**Gyökér ok:** `robot.urdf.xacro` `mesh_base` default `http://192.168.68.122:8081/robot_description`
+volt — a Jetson **Ethernet** IP-jét hardcode-olta. WiFi-ről (IP 192.168.68.124) a kliens
+sem `192.168.68.122`-t, sem `8081`-en a mesh_server-t nem érte el → mesh-fetch 404 →
+geometria nélkül a Foxglove nem rajzol modellt.
+
+**Fix (commit ?):** `mesh_base` default → `package://robot_description`. A foxglove_bridge
+`asset_uri_allowlist: ^package://.*` engedélylista + `./robot_description/:/opt/ros/jazzy/share/robot_description/:ro`
+volume mount biztosítja, hogy a Foxglove kliens `fetchAsset` WebSocket request-jét a bridge
+közvetlenül fájlrendszerből szolgálja ki, interfész- és IP-függetlenül.
+
+**Mellékhatás:** RViz (nem-browser kliens) `package://` URL-eket natívan tud feloldani
+(`ament_index` alapján), tehát ott sem regresszió. HTTP fallback továbbra is elérhető
+launch-time override-dal (komment a 64-72 sorokon dokumentálva).
+
+---
+
 ## 2026-05-12 — Üzemi státusz: földi RC-teszt fázis | 🟡 AKTÍV
 
 **Új üzemi státusz:** A robot **a földre került**, korlátozott földi RC-tesztet folytatunk.

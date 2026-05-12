@@ -61,14 +61,19 @@
 
   <!-- ============================================================
        MESH BASE URL
-       Foxglove needs HTTP access to meshes (package:// doesn't work in browser).
-       Override at launch: xacro robot.urdf.xacro mesh_base:=package://robot_description
-       Alternatives:
-         LAN:       http://192.168.68.122:8081/robot_description
-         Tailscale: http://100.71.242.128:8081/robot_description
-         Robot net: http://10.0.10.1:8081/robot_description
+       Default: package://robot_description (interfész-független, foxglove_bridge
+       fetchAsset szolgáltatáson keresztül oldódik fel a browser kliensben;
+       asset_uri_allowlist: ^package://.* engedélyezi, volume mount biztosítja a
+       fájl-elérést a foxglove_bridge konténerben).
+       Override HTTP fallback-re (RViz / nem-foxglove kliensekhez), pl.:
+         xacro robot.urdf.xacro mesh_base:=http://192.168.68.122:8081/robot_description
+       Cím-alternatívák:
+         LAN-eth:    http://192.168.68.122:8081/robot_description
+         LAN-wifi:   http://192.168.68.124:8081/robot_description
+         Tailscale:  http://100.71.242.128:8081/robot_description
+         Robot net:  http://10.0.10.1:8081/robot_description
        ============================================================ -->
-  <xacro:arg name="mesh_base" default="http://192.168.68.122:8081/robot_description"/>
+  <xacro:arg name="mesh_base" default="package://robot_description"/>
   <xacro:property name="mesh_base" value="$(arg mesh_base)"/>
 
   <!-- ============================================================
