@@ -122,6 +122,27 @@ force-recreate-elve. Post-deploy ellenőrzés: `/safety/state` `tilt:false`, `er
 startup_supervisor "Tilt OK — roll=1.4° pitch=-0.4°". Élő RC-teszt validáció megerősítve
 mozgatás közben rángásnál szükséges.
 
+**RC kanyarodás-érzékenység dekompozíciós fix (2026-05-12, ugyanaznap) ✅ VALIDÁLVA "tökéletes":**
+A `joystick_expo` kerékszintű alkalmazása mellékhatást okozott: `angular ∝ 4 · throttle · turn`
+(squared expo szorzatként) → magas haladási sebességnél a kis turn input is durva kanyart
+adott. Felhasználói megfigyelés: "ha gyorsabban megyek, sokkal érzékenyebb a kanyarodás".
+
+**Fix:** `rc_teleop_node.cpp` teljes átírás kerékszintű curve-ról **throttle/turn
+dekompozícióra**: a node visszafejti a TX-mixed `motor_left/motor_right` jelekből a
+`throttle = (L+R)/2` és `turn = (R-L)/2` komponenseket, mindkettőre **külön** expo curve-t
+alkalmaz, majd Twist-et direkt publikál — kerékszintű kinematika nélkül (azt a
+`diff_drive_controller` végzi). Új paraméterek:
+- `joystick_expo_linear` (régi `joystick_expo` átnevezése), default 2.0
+- `joystick_expo_angular` default 1.5 → 2.0 (post-mix curve eltávolítva)
+- **Új:** `max_angular_vel` (rad/s), default 4.44 ≈ 255°/s (földi RC-teszt validálta — 100 kg roveren finom kontroll, túlfutás kanyar-stopnál konzisztens; fizikai max 11.11 a 40%-a)
+- **Eltávolítva:** `wheel_separation` paraméter (a kinematika átkerült diff_drive-ba)
+
+A két szabadságfok **független**: a kanyarodás-érzékenység **NEM** függ a haladási sebességtől
+(RC-helikopter/drón szabványoknak megfelelő viselkedés). Érintett fájlok:
+`robot_teleop/src/rc_teleop_node.cpp`, `config/robot_params.yaml` (kommentekkel), valamint
+docs: `robot_architecture.md` 6.9 szekció teljes átdolgozás, `project_overview.md` rövid
+hivatkozás frissítve. Runtime hangolható minden paraméter (no rebuild).
+
 ---
 
 ## 2026-05-10 — Foxglove 5-6s lag gyökoki fix: aszimmetrikus routing | ✅ TESZTELVE

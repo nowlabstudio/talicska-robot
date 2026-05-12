@@ -47,9 +47,9 @@ diff_drive_controller:
         max_velocity:      11.11
         min_velocity:     -11.11
         max_acceleration:          3.6   # rad/s² — analóg a linear 1.3 m/s²-rel (2×1.3/0.7)
-        max_deceleration:         -8.0   # rad/s² — aszimmetrikusan gyorsabb forgás-stop
+        max_deceleration:         -30.0  # rad/s² — felső limit (Basicmicro EEPROM Dec a tényleges)
         max_acceleration_reverse: -3.6   # rad/s² — szimmetrikus a forgás másik irányára
-        max_deceleration_reverse:  8.0   # rad/s²
+        max_deceleration_reverse:  30.0  # rad/s² — szimmetrikus a másik forgásirányra
 
     publish_rate: 50.0
 

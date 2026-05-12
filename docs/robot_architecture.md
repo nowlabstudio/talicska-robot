@@ -752,34 +752,55 @@ Basicmicro motor vezérlő (SetM1/M2SpeedAccel, accel=default_acceleration QPPS/
 | Réteg | Felelősség | NEM csinál |
 |---|---|---|
 | Bridge (RP2040) | SBUS dekódolás → Float32 topic. Failsafe: TX off → ch5=RC mód + motors=0. | Kinematika, curve, deadzone. |
-| `rc_teleop_node` | Deadzone, expo curve, **tank-drive → Twist kinematika** (`v = (vL+vR)/2`, `ω = (vR−vL)/wheel_sep`). | Sebesség-limit (azt diff_drive csinálja). |
+| `rc_teleop_node` | Throttle/turn dekompozíció, deadzone, külön expo curve a két szabadságfokra, Twist publikálás. | Kerékszintű kinematika (azt diff_drive csinálja). Sebesség-limit (azt diff_drive csinálja). |
 | `twist_mux` | RC (prio 20) vs Nav2 (prio 10) vs Foxglove forrás-választás idő-alapú timeout-tal. | Tartalom-transzformáció. |
 | `safety_supervisor` | `/cmd_vel_raw` → `/cmd_vel` továbbítás csak `is_safe()=true` esetén; egyébként zero TwistStamped. | Sebesség-skálázás. |
 | `diff_drive_controller` | Twist → kerék-szögsebesség; sebesség-limit clip; odometria számítás enkóderekből. | Curve. Acc-limit jelenleg explicit kikapcsolva. |
 | `roboclaw_hardware` | ros2_control HardwareInterface; `SetM1/M2SpeedAccel` parancsküldés 50 Hz. | Kinematika. |
 
-#### Joystick curve — nemlineáris (expo) leképezés
+#### Joystick curve — throttle/turn dekompozíció + külön expo leképezés
 
-**Probléma (lineáris skála).** A klasszikus tank-drive `v = motor_in × max_vel` (lineáris) skála ellentmondó követelményeket nem tud egyszerre kielégíteni:
+**Probléma 1 (lineáris skála).** A klasszikus tank-drive `v = motor_in × max_vel` (lineáris) skála ellentmondó követelményeket nem tud egyszerre kielégíteni:
 - a **finom pozicionálás** kis sebességet kíván → kis `max_vel` kell, viszont
 - az **érdemi haladás** nagy sebességet kíván → nagy `max_vel` kell.
 
 A joystick fizikai felbontása (mechanikus deadzone, kéz remegés) miatt 5-10%-nál finomabb beadás nem garantálható. Lineáris skálán 10% joystick = 10% sebesség → 100 kg-os roveren ez túl gyors apró pozicionáláshoz.
 
-**Megoldás (nemlineáris curve).** A `rc_teleop_node` az input-jel abszolút értékét egy `expo` hatványkitevővel hatványozza a deadzone után, megőrizve a jel előjelét:
+**Probléma 2 (kerékszintű curve sebességfüggő kanyarodás-érzékenysége).** A korábbi megoldás a curve-t kerékszinten (`motor_left`, `motor_right`) alkalmazta, majd kinematikai inverzióval Twist-té alakította:
 
-```cpp
-v = sign(in) × |in|^expo × max_vel
+```
+v_left  = sign(L) × |L|^expo × max_vel
+v_right = sign(R) × |R|^expo × max_vel
+linear.x  = (v_left + v_right) / 2
+angular.z = (v_right - v_left) / wheel_sep
 ```
 
-- `expo = 1.0` — lineáris (régi viselkedés)
-- `expo > 1.0` — **alsó tartomány finomabb, felső gyors-erős, folytonos és deriválható átmenet**
+Algebrával belátható, hogy ekkor (azonos előjelű L,R esetén, kis turn input mellett):
 
-A `motor_left` és `motor_right` jelek egymástól függetlenül átmennek a curve-n, majd a kinematikai inverzióval Twist-té alakulnak. Ez **megőrzi a tank-drive intuíciót** — fél-elhúzás bal joysticken pontosan a fél-curve-elt sebességet adja a bal keréknek.
+```
+angular ∝ (v_right² - v_left²) = (v_right - v_left) · (v_right + v_left) = (4 · throttle · turn) · max_vel / wheel_sep
+```
 
-#### Karakterisztika `expo=2.0` (squared) + `max_linear_vel=3.89 m/s`
+A `angular` tehát **arányos a throttle × turn szorzattal** — magas sebességnél (nagy throttle) a kis turn input is hatalmas angular-t ad. Földi tesztelés: a felhasználó "ha gyorsabban megyek, sokkal érzékenyebb a kanyarodás" megfigyelést tett — pontosan ez a hatás.
 
-| Joystick | Sebesség | Megjegyzés |
+**Megoldás (throttle/turn dekompozíció + külön curve).** A `rc_teleop_node` a TX-mixed motor jelekből visszafejti a két szabadságfokot, mindkettőre külön expo curve-t alkalmaz, majd Twist-et direkt publikál — kerékszintű kinematika nélkül:
+
+```cpp
+throttle = (motor_left + motor_right) / 2     // [-1..+1]   előre/hátra
+turn     = (motor_right - motor_left) / 2     // [-1..+1]   bal/jobb (REP-103)
+linear.x  = sign(throttle) × |throttle|^expo_linear  × max_linear_vel
+angular.z = sign(turn)     × |turn|^expo_angular     × max_angular_vel
+```
+
+- A két curve **független**: a kanyarodás-érzékenység **nem függ a haladási sebességtől**, ahogy az RC-helikopter/drón szabványokban szokás.
+- A kerékszintű kinematika (Twist → kerék-szögsebesség) a `diff_drive_controller`-ben történik — az SRP szerinti megfelelő réteg.
+- A `wheel_separation` paraméter már nem szerepel a `rc_teleop_node` config-jában (a `diff_drive_controller` saját értéket használ).
+
+#### Karakterisztika `expo_linear=2.0, expo_angular=2.0` + `max_linear_vel=3.89 m/s, max_angular_vel=4.44 rad/s`
+
+Tiszta throttle (turn=0) — előre/hátra:
+
+| Joystick (throttle) | linear.x | Megjegyzés |
 |---|---|---|
 | 5% (deadzone küszöb) | 0.010 m/s | ~1 cm/s — alig mozdul, finom adagolás kezdete |
 | 10% | 0.039 m/s | ~4 cm/s — apró pozicionálás |
@@ -789,19 +810,60 @@ A `motor_left` és `motor_right` jelek egymástól függetlenül átmennek a cur
 | 70% | 1.91 m/s | ~7 km/h |
 | 100% | 3.89 m/s | ~14 km/h, hardware max |
 
-A `max_linear_vel` paraméter értéke (`3.89 m/s`) **megegyezik a `controllers.yaml` diff_drive `max_velocity` clip-jével** — ez azt biztosítja, hogy a joystick teljes range a `[0, 3.89]` sávban dolgozzon clip nélkül. Ha a `max_linear_vel` magasabb lenne (pl. régi 8.70), a joystick felső 30-50%-a ugyanazt a clip-elt sebességet adná → diszkontinuitás a karakterisztikán.
+Tiszta turn (throttle=0) — helyben forgás:
+
+| Joystick (turn) | angular.z | Fokba | Megjegyzés |
+|---|---|---|---|
+| 5% (deadzone küszöb) | 0.011 rad/s | 0.6°/s | gyakorlatilag holttér |
+| 10% | 0.044 rad/s | 2.5°/s | apró igazítás |
+| 20% | 0.178 rad/s | 10.2°/s | lassú fordulás |
+| 30% | 0.400 rad/s | 22.9°/s | komfort fordulás |
+| 50% | 1.110 rad/s | 63.6°/s | gyors fordulás |
+| 70% | 2.176 rad/s | 124.7°/s | sport |
+| 100% | 4.44 rad/s | 254°/s | max spin-in-place (validált 2026-05-12) |
+
+**Kombinált haladás+kanyarodás:** sebességtől függetlenül a turn input ugyanazt az angular.z-t adja. Pl. 70% throttle + 30% turn → 1.91 m/s előre + 0.4 rad/s — a kanyarodás-érzékenység konstans (NEM nő a sebességgel, mint a kerékszintű modellnél).
+
+#### RC paraméter referencia (`rc_teleop_node` `ros__parameters`)
+
+A `config/robot_params.yaml` `rc_teleop_node` szekcióban beállított minden paraméter. Mind **runtime hangolható** kivéve `wheel_separation` (törölve) és `publish_rate_hz` (csak init).
+
+| Paraméter | Default | Egység | Feladat | Hatás növelésére | Hatás csökkentésére | Ajánlott tartomány |
+|---|---|---|---|---|---|---|
+| `max_linear_vel` | 3.89 | m/s | Felső sebesség-határ a 100% throttle bemenetnél. A joystick teljes throttle range a `[0, max_linear_vel]` sávban dolgozik. | Gyorsabb max haladás. **Ha > 3.89** → diff_drive `max_velocity` clip-eli → a joystick felső 30-50%-a azonos sebességet ad (NEM sima). | Lassabb max → biztonságosabb pl. szűk helyen. A teljes karakterisztika lefelé skálázódik (5% bemenetnél is arányosan lassabb). | **3.89** (hardware max), tesztre 1.0–3.89 |
+| `max_angular_vel` | **4.44** | rad/s | Felső kanyar-szögsebesség a 100% turn bemenetnél. Független a throttle-tól. | Gyorsabb spin-in-place. Max 11.11 (fizikai = 2·max_linear/wheel_sep, kerék-saturáció). **Magasabb max → arányosan nagyobb túlfutás** kanyar-stopnál (overshoot ∝ v²). | Kontrolláltabb kanyar, kisebb túlfutás. Túl alacsony → robot lassan fordul. | **3.5–5.0** (validált 4.44, 2026-05-12) |
+| `joystick_expo_linear` | 2.0 | — | A throttle (előre/hátra) curve görbülete: `v = sign·\|in\|^expo · max_vel`. **1.0 = lineáris.** | Finomabb alsó tartomány (apró pozicionálás), gyorsabb felső felfutás. 3.0 → 10% input csak 0.001 × max sebességet ad. | Lineárisabbá teszi: 1.0 → minden tartományban arányos válasz, alsó zóna durvább. | **1.5–3.0** (2.0 klasszikus squared RC) |
+| `joystick_expo_angular` | 2.0 | — | A turn (kanyarodás) curve görbülete. Független a `joystick_expo_linear`-tól. | Finomabb kanyarodás alsó zóna (egyenes vonalon kis korrekció). | Lineárisabb kanyar válasz; veszélyesebb durva mozgásokra. | **1.5–3.0** (2.0 ajánlott) |
+| `deadzone` | 0.05 | — | A `\|throttle\|` és `\|turn\|` küszöb, amely alatt 0-ra kerekíti (külön mindkét komponensre). Mechanikus joystick drift szűrés. | Nagyobb holttér: jobban szűr (kéz-remegés is), de elveszik a finom adagolás kezdete. | Kisebb holttér: érzékenyebb apró bemenetekre, de drift-érzékeny. | **0.03–0.08** |
+| `rc_mode_threshold` | 0.5 | — | A `/robot/rc_mode` (ch5) küszöb, amely felett RC módba vált. | Magasabb küszöb → RC mode kapcsoló kevésbé érzékeny. | Alacsonyabb küszöb → könnyebben RC módba lép (zaj-kockázat). | **0.4–0.6** |
+| `rc_mode_invert` | false | bool | RC csatorna polaritás. `false`: ch5 HIGH = RC mód. `true`: ch5 LOW = RC mód. | TX konfiguráció szerint. | TX konfiguráció szerint. | TX-csatorna polaritástól függ |
+| `publish_rate_hz` | 50.0 | Hz | `/cmd_vel_rc` publikálási frekvenciája. **Init-only, runtime NEM állítható.** | Magasabb → kisebb késleltetés, több CPU. | Alacsonyabb → laggosabb RC válasz; ≥ 20 Hz ajánlott. | **50** (illesztve diff_drive 50 Hz update rate-hez) |
+
+**Fontos összefüggés (max_angular_vel ↔ túlfutás):** A kanyar-stop túlfutás a kezdeti szögsebesség négyzetével arányos, fix fékezési ráta mellett:
+$$\text{overshoot} = \frac{0.5 \cdot \omega_{\max}^2}{|\dot\omega_{\text{dec}}|}$$
+
+Példa: ha a Basicmicro EEPROM Dec=200000 → **9.7 rad/s²** tényleges fékezés (jelenleg ez a bottleneck), akkor max-tól 0-ig stop:
+- `max_angular_vel = 5.55` → overshoot = 0.5·5.55²/9.7 = **1.59 rad ≈ 91°**
+- `max_angular_vel = 4.44` (80%) → overshoot = 0.5·4.44²/9.7 = **1.02 rad ≈ 58°** (–36% a négyzetes hatás miatt)
+- `max_angular_vel = 3.50` (63%) → overshoot = 0.5·3.50²/9.7 = **0.63 rad ≈ 36°**
+
+Ha kisebb túlfutás kell **adott `max_angular_vel` mellett**, a fékezési rátát kell emelni — két szint:
+1. `controllers.yaml` `linear.angular.z.max_deceleration` (jelenleg -30.0 rad/s², **felső limit** — Basicmicro EEPROM a tényleges bottleneck)
+2. Basicmicro EEPROM `Deceleration` Motion Studio-ban (M1, M2): `200000 → 600000` (3×) ad ~27 rad/s² tényleges fékezést
 
 #### Runtime kalibráció (no rebuild)
 
-Az `expo`, `max_linear_vel` és `deadzone` paraméter runtime hangolható, paraméter-callback van bekötve:
+A `joystick_expo_linear`, `joystick_expo_angular`, `max_linear_vel`, `max_angular_vel`, `deadzone`, `rc_mode_invert` paraméterek runtime hangolhatók (paraméter-callback bekötve):
 
 ```bash
-docker exec robot ros2 param set /rc_teleop_node joystick_expo 2.5
-docker exec robot ros2 param set /rc_teleop_node joystick_expo 3.0   # még finomabb alsó zóna
-docker exec robot ros2 param set /rc_teleop_node max_linear_vel 2.0  # ideiglenes teszt
+docker exec robot ros2 param set /rc_teleop_node joystick_expo_linear  2.5   # finomabb előre/hátra alsó zóna
+docker exec robot ros2 param set /rc_teleop_node joystick_expo_angular 2.5   # finomabb kanyarodás alsó zóna
+docker exec robot ros2 param set /rc_teleop_node max_linear_vel        3.0   # ideiglenes max sebesség
+docker exec robot ros2 param set /rc_teleop_node max_angular_vel       3.5   # konzervatív kanyar limit
+docker exec robot ros2 param set /rc_teleop_node deadzone              0.07  # nagyobb holttér
 ```
 
-A változás azonnal érvénybe lép; konténer restart nem szükséges.
+A változás azonnal érvénybe lép; konténer restart nem szükséges. **Perzisztáláshoz** írd be a kívánt értéket a `config/robot_params.yaml` `rc_teleop_node:` szekcióba — a YAML mount-olva van, csak `docker compose restart robot` kell.
 
 #### Miért NEM a bridge-en (RP2040 firmware)
 

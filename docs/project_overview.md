@@ -37,7 +37,7 @@ Architektúra doksi: `/home/eduard/Dropbox/Development/RobotEcosystem/robot_arch
 **Sebességek:**
 | Mód | Max sebesség | Joystick-karakterisztika |
 |---|---|---|
-| RC mód | 14 km/h (3.89 m/s) | Nemlineáris expo curve (default `joystick_expo=2.0`) — finom alsó tartomány, gyors-erős felül, sima átmenet. Részletek: `docs/robot_architecture.md` 6.9. |
+| RC mód | 14 km/h (3.89 m/s) + 4.44 rad/s (~255°/s) kanyar | Throttle/turn dekompozíció + külön expo curve (`joystick_expo_linear=2.0`, `joystick_expo_angular=2.0`, `max_angular_vel=4.44 rad/s`) — finom alsó tartomány, kanyarodás-érzékenység **FÜGGETLEN** a haladási sebességtől. Validált földi RC-teszten (2026-05-12). Részletek: `docs/robot_architecture.md` 6.9. |
 | ROS mód | 8 km/h (2.22 m/s) | — |
 
 **Nav2 footprint** (base_link a forgásközpontnál, 2026-05-08: +100mm x eltolás alkalmazva hátra):
