@@ -116,6 +116,10 @@ public:
     this->declare_parameter("latch_state_path",         std::string("/tmp/safety_latch_state"));
     this->declare_parameter("tilt_roll_limit_deg",  25.0);
     this->declare_parameter("tilt_pitch_limit_deg", 20.0);
+    // Debounce: a tilt csak akkor latch-el, ha a limit-túllépés folyamatosan
+    // ≥ tilt_debounce_s másodpercig fennáll. Single-sample IMU spike (acc rángás,
+    // I2C anomália) így nem ragasztja be hamis pozitívan a tilt_latch_-et.
+    this->declare_parameter("tilt_debounce_s", 0.3);
     this->declare_parameter("stop_zone_center_offset_x_m",  -0.100);
     this->declare_parameter("stop_zone_front_back_m",        0.65);
     this->declare_parameter("stop_zone_side_m",              0.40);
@@ -156,6 +160,7 @@ public:
     latch_state_path_          = this->get_parameter("latch_state_path").as_string();
     tilt_roll_limit_      = deg2rad(this->get_parameter("tilt_roll_limit_deg").as_double());
     tilt_pitch_limit_     = deg2rad(this->get_parameter("tilt_pitch_limit_deg").as_double());
+    tilt_debounce_s_      = this->get_parameter("tilt_debounce_s").as_double();
     const double safety_margin    = this->get_parameter("proximity_safety_margin_m").as_double();
     stop_zone_cx_         = this->get_parameter("stop_zone_center_offset_x_m").as_double();
     stop_zone_half_len_   = this->get_parameter("stop_zone_front_back_m").as_double() + safety_margin;
@@ -367,6 +372,7 @@ private:
     if (prev && !estop_active_ && estop_was_pressed_for_reset_) {
       estop_was_pressed_for_reset_ = false;
       tilt_latch_              = false;
+      tilt_pending_            = false;
       proximity_latch_         = false;
       scan_dropout_latch_      = false;
       imu_dropout_latch_       = false;
@@ -440,22 +446,43 @@ private:
     last_roll_  = std::atan2(ay, az);
     last_pitch_ = std::atan2(-ax, std::sqrt(ay * ay + az * az));
 
-    const bool fault =
+    const bool over_limit =
       std::abs(last_roll_)  > tilt_roll_limit_ ||
       std::abs(last_pitch_) > tilt_pitch_limit_;
 
-    if (fault && !tilt_latch_) {
-      tilt_latch_ = true;
-      RCLCPP_WARN(get_logger(),
-        "Tilt FAULT latchelve — roll=%.1f° pitch=%.1f°",
-        rad2deg(last_roll_), rad2deg(last_pitch_));
+    // Debounce: a tilt_latch_ csak akkor áll be, ha a limit-túllépés folyamatosan
+    // ≥ tilt_debounce_s másodpercig fennáll. IMU spike (acc rángás, I2C anomália)
+    // így nem ragasztja be hamis pozitívan a fault-ot.
+    if (over_limit) {
+      if (!tilt_pending_) {
+        tilt_pending_    = true;
+        tilt_over_start_ = now();
+      }
+      if (!tilt_latch_) {
+        const double elapsed_s = (now() - tilt_over_start_).seconds();
+        if (elapsed_s >= tilt_debounce_s_) {
+          tilt_latch_ = true;
+          RCLCPP_WARN(get_logger(),
+            "Tilt FAULT latchelve %.0fms folyamatos limit-túllépés után — roll=%.1f° pitch=%.1f°",
+            elapsed_s * 1000.0, rad2deg(last_roll_), rad2deg(last_pitch_));
+        }
+      }
+    } else {
+      if (tilt_pending_ && !tilt_latch_) {
+        const double elapsed_s = (now() - tilt_over_start_).seconds();
+        RCLCPP_INFO(get_logger(),
+          "Tilt spike eldobva (debounce alatt visszaesett, %.0fms < %.0fms küszöb) — roll=%.1f° pitch=%.1f°",
+          elapsed_s * 1000.0, tilt_debounce_s_ * 1000.0,
+          rad2deg(last_roll_), rad2deg(last_pitch_));
+      }
+      tilt_pending_ = false;
     }
 
-    if (fault != tilt_fault_) {
-      tilt_fault_ = fault;
+    if (over_limit != tilt_fault_) {
+      tilt_fault_ = over_limit;
       RCLCPP_WARN(get_logger(),
         "Tilt %s — roll=%.1f° pitch=%.1f°",
-        fault ? "FAULT" : "cleared",
+        over_limit ? "over_limit" : "cleared",
         rad2deg(last_roll_), rad2deg(last_pitch_));
     }
   }
@@ -1297,6 +1324,11 @@ private:
   bool   tilt_fault_   = false;
   double last_roll_    = 0.0;
   double last_pitch_   = 0.0;
+  // Debounce: a tilt_latch_ csak akkor áll be, ha a limit-túllépés folyamatosan
+  // ≥ tilt_debounce_s_ ideig fennáll (IMU spike szűrés).
+  double       tilt_debounce_s_  = 0.3;
+  bool         tilt_pending_     = false;
+  rclcpp::Time tilt_over_start_;
 
   // Proximity
   bool   proximity_fault_       = false;

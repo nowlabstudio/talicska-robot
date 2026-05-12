@@ -425,6 +425,10 @@ safety_supervisor:
     # TODO: rpy orientáció URDF-ben (imu_joint) véglegesítése után validálni!
     tilt_roll_limit_deg:  25.0
     tilt_pitch_limit_deg: 20.0
+    # Debounce: a tilt_latch_ csak akkor áll be, ha a limit-túllépés folyamatosan
+    # ≥ tilt_debounce_s másodpercig fennáll. IMU spike (acc rángás, I2C anomália)
+    # így nem ragasztja be hamis pozitívan a fault-ot. 100Hz IMU → 0.3s = 30 minta.
+    tilt_debounce_s:      0.3
     # PROXIMITY ZONE — stadiongörbe (kapszula) alakú stop zóna
     # Középpont a lidar_link-hez képest: stop_zone_center_offset_x_m (negatív = robot hátulja felé)
     # Effektív méret: (front_back_m + margin) félhossz, (side_m + margin) oldalsugár

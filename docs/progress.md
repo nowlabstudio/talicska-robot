@@ -6,6 +6,50 @@
 
 ---
 
+## 2026-05-12 — Üzemi státusz: földi RC-teszt fázis | 🟡 AKTÍV
+
+**Új üzemi státusz:** A robot **a földre került**, korlátozott földi RC-tesztet folytatunk.
+A korábbi "asztali / felemelt deszkamodell" fázis lezárult — a robot innentől
+**nem mozoghat tetszőlegesen**, csak felügyelt RC-tesztek keretében.
+
+**Első RC mozgatások (2026-05-12) — három megfigyelés:**
+
+1. **Tilt fault hamis trigger RC módban, vízszintes helyzetben.**
+   `/safety/state`: `state=ERROR, mode=RC, error_reason="Tilt fault: roll=1.37° pitch=-0.20°"`.
+   A jelenlegi roll/pitch jól limit alatt van (25°/20°), de a `tilt_latch_`
+   aktív — egyetlen IMU spike beragasztotta az indulás/mozgatás közben.
+   `safety_supervisor.cpp` `imu_cb()` 443-452: single-sample threshold,
+   `if (fault && !tilt_latch_) { tilt_latch_ = true; ... }` → **filter nincs**.
+   ➜ Backlog: tilt debounce filter (időablak vagy N-konzisztens minta).
+
+2. **Proximity fault RC módban egyidejűleg.**
+   `proximity_active_modes: "robot"` szerint RC módban a proximity check inaktív
+   (`safety_supervisor.cpp:480`). A tünet oka: a tilt_latch_ a state-et
+   `RC` helyett `ERROR`-ra emeli (Priority 4a, 900-907), így a feltétel
+   `current_state_ != "RC"` igaz → proximity check újra aktiválódik.
+   ➜ A (1) javítása ezt automatikusan megoldja.
+
+3. **EKF működik.** `/odometry/filtered` 50.0 Hz, BNO085 IMU `/sensors/imu/data`
+   100.1 Hz (max gap 21ms), wheel odom 50.0 Hz, /tf ~85 Hz. Position/twist konzisztens
+   (álló helyzetben `twist ~ 1e-16`, near-zero). `publish_tf: true` az EKF-ből,
+   `diff_drive` `enable_odom_tf: false`.
+
+**Tilt latch jelenleg aktív** — feloldása E-Stop press+release (vagy stack restart, mert
+`latch_state_path=/run/robot/safety_latch_state` perzisztens; `/run` tmpfs → restart törli).
+
+**Fix DEPLOY-olva ugyanaznap:** tilt debounce filter (`tilt_debounce_s: 0.3`, default).
+`safety_supervisor.cpp` `imu_cb()`: új `over_limit` változó, `tilt_pending_` flag és
+`tilt_over_start_` időbélyeg. A `tilt_latch_` csak akkor áll be, ha a limit-túllépés
+folyamatosan ≥ `tilt_debounce_s` másodpercig fennáll; ha közben recoveryl,
+"Tilt spike eldobva" INFO log + `tilt_pending_` reset. E-Stop release a debounce
+állapotot is törli (`tilt_pending_ = false`). `tilt_fault_` továbbra is "most over_limit"
+jelzés (debounce alatt is true, de latch nem áll be). Rebuild kész, `robot-robot:latest`
+force-recreate-elve. Post-deploy ellenőrzés: `/safety/state` `tilt:false`, `error_reason:""`,
+startup_supervisor "Tilt OK — roll=1.4° pitch=-0.4°". Élő RC-teszt validáció megerősítve
+mozgatás közben rángásnál szükséges.
+
+---
+
 ## 2026-05-10 — Foxglove 5-6s lag gyökoki fix: aszimmetrikus routing | ✅ TESZTELVE
 
 **Tünet:** Foxglove minden topicon (kamera, LiDAR, RC reakció) konstans **5-6s lag**.

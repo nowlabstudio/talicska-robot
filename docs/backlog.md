@@ -74,6 +74,8 @@ Ideiglenesen: RealSense D435i = elülső kamera, hátsó kamera nincs.
 
 ### 🔴 Magas prioritás (Biztonsági / Kritikus)
 
+- **~~Tilt fault debounce filter — single-sample spike beragasztja a tilt_latch_-et~~** — ✅ **KÉSZ (2026-05-12):** Implementálva és deploy-olva. `safety_supervisor.cpp` `imu_cb()` átírva: `over_limit` változó + `tilt_pending_` flag + `tilt_over_start_` időbélyeg. A `tilt_latch_` csak akkor áll be, ha a limit-túllépés folyamatosan ≥ `tilt_debounce_s` másodpercig fennáll (default 0.3s @ 100Hz IMU = 30 minta). Spike-recovery esetén "Tilt spike eldobva" INFO log. E-Stop release a `tilt_pending_`-et is törli. `tilt_fault_` továbbra is "most over_limit" jelzés (debounce alatti állapotot is jelzi a JSON-ban). Új YAML paraméter: `safety_supervisor.tilt_debounce_s: 0.3`. Mellékhatásként a hamis proximity fault RC módban is megszűnt (a tilt_latch_ már nem emeli ERROR-ra a state-et single spike-ra). Érintett: `robot_safety/src/safety_supervisor.cpp` (imu_cb, member változók, E-Stop reset), `config/robot_params.yaml`.
+
 - **SLAM lifecycle versió buildelése forrásból** — Bond timeout workaround (0.0) veszélyes
 
 ### 🟡 Közepes prioritás (Funkcionalitás)
