@@ -567,10 +567,12 @@ roboclaw_hardware:
   # Motion Studio mért QPPS (2026-05-03, új Basicmicro vezérlő): M1=193710, M2=192390
   qpps:                    193050   # átlag; hardware.launch.py → xacro arg → URDF <param>
   # Motor irány-inverzió: a driver megfordítja a parancsot ÉS az encoder olvasását.
-  # 2026-05-12 földi RC-teszt: jelenleg `true`+`true` mellett a robot fordítva fordul
-  # (parancs angular.z=+0.3 = REP-103 balra → fizikai+ODOM mindkettő jobbra forog).
-  # Hipotézis: Basicmicro Motion Studio-ban motor + encoder reverse PÁROSAN van állítva
-  # → a driver szintű extra invertálás csak duplikálta. Próba: false+false.
+  # 2026-05-12 földi RC-teszt: az eredeti fizikai bekötés ASZIMMETRIKUS volt
+  # (csak az egyik motor cserélt polaritású), és a `true,true` SW invertálás
+  # részleges kompenzációt adott (előre OK, kanyarodás fordított). Felhasználói
+  # HW módosítás: a "rossz" motor pólus-csere — a HW most már szimmetrikus,
+  # nem aszimmetrikus. SW oldalon `false,false` a tiszta állapot: nincs duplikált
+  # invertálás. Validálva: kanyarodás OK + előre/hátra OK (REP-103 konzisztens).
   invert_left_motor:       false
   invert_right_motor:      false
   auto_home_on_startup:    false

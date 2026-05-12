@@ -329,21 +329,18 @@ private:
           }
           break;
         }
+        // E-Stop bridge online — proceed regardless of active state.
+        // Active E-Stop indulásnál NEM startup FAULT — ez a felhasználó normál
+        // döntése. A runtime safety_supervisor automatikusan ESTOP state-be teszi
+        // a robotot (Priority 1 a determine_state()-ben), és felengedéskor IDLE/RC
+        // állapotba megy. Stack restart aktív E-Stop mellett így nem ragad FAULT-ba.
         if (estop_active_) {
-          if (elapsed > estop_timeout_) {
-            fault("E-Stop still active after timeout — release E-Stop to start");
-          }
-          if (static_cast<int>(elapsed) % 5 == 0 &&
-              static_cast<int>(elapsed) != last_estop_wait_log_)
-          {
-            RCLCPP_WARN(get_logger(),
-              "E-Stop ACTIVE — release to continue (%.0f / %.0f s)",
-              elapsed, estop_timeout_);
-            last_estop_wait_log_ = static_cast<int>(elapsed);
-          }
-          break;
+          RCLCPP_INFO(get_logger(),
+            "E-Stop AKTÍV indulásnál — startup átadja a vezérlést a runtime "
+            "safety_supervisor-nak (ESTOP state). Felengedéskor automatikusan IDLE-be megy.");
+        } else {
+          RCLCPP_INFO(get_logger(), "E-Stop OK — bridge online, not active.");
         }
-        RCLCPP_INFO(get_logger(), "E-Stop OK — bridge online, not active.");
         RCLCPP_INFO(get_logger(), "Billencs check: SKIPPED (Sabertooth not yet connected).");
         transition_to(StartupState::PASSED);
         break;

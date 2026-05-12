@@ -63,31 +63,53 @@ a hardware-clip-re, hogy a felső 30-50% ne clip-elődjön. A tényleges max vá
 `ros2 param set /rc_teleop_node joystick_expo 2.5`. Érintett: `robot_teleop/src/rc_teleop_node.cpp`,
 `config/robot_params.yaml`.
 
-**Kanyarodás-irány fix (2026-05-12, ugyanaznap) ✅ VALIDÁLVA:**
-RC + Foxglove teleop egyaránt fordítva forgott (TX bal-húzás → robot jobbra). Az
-asztali fázisban nem volt tesztelt — a földi tesztnél derült ki. Diagnosztikai teszt:
-direkt `angular.z = +0.3 rad/s` (REP-103 BALRA) `cmd_vel_foxglove`-ra → ODOM yaw
-**csökkent** (-3.39°), és a robot fizikailag **jobbra** forgott. ODOM és fizikai mozgás
-**konzisztens egymással** (mindkettő jobbra), de **mindkettő fordított a parancshoz
-képest** → szimmetrikus invertálás a Basicmicro motor+encoder szintjén (Motion Studio
-"Motor Direction Reverse" + "Encoder Direction Reverse" PÁRBAN beállítva mindkét
-csatornán). A driver `invert_left_motor: true` + `invert_right_motor: true` ezt
-csak DUPLIKÁLTA → két inverzió = nincs eredeti irány.
+**Kanyarodás-irány fix (2026-05-12, ugyanaznap) ✅ VALIDÁLVA, többlépcsős diagnózis:**
 
-**Fix:** `config/robot_params.yaml` `roboclaw_hardware.invert_left_motor: true → false`,
-`invert_right_motor: true → false`. YAML-only, NO rebuild — `docker compose restart robot`.
+A földi RC-teszten kiderült: a kanyarodás fordított volt (RC + Foxglove teleop egyaránt).
+Az asztali fázisban nem volt tesztelt. A diagnózis HÁROM iteráción ment át:
 
-**Post-deploy validáció:**
-- BALRA parancs (angular.z = +0.3 rad/s × 600ms): ODOM +4.95° ✓ + fizikai BALRA ✓ (user-megerősítve)
-- JOBBRA parancs (-0.3 rad/s × 600ms): ODOM -5.21° ✓
+**Iteráció 1 — `invert_*_motor: false` (commit `995b4fc`):** YAML-only fix próba a
+duplikált SW invertálás hipotézisre. Eredmény: kanyarodás OK, DE az előre/hátra
+megfordult. Magyarázat: a `motor_sign_` SW invertálás SZIMMETRIKUSAN hat mindkét
+csatornán, és a tank-drive matematika miatt MIND a linear.x ÉS angular.z egyszerre
+megfordul — sehogy nem tud egyidejűleg a két tengelyen REP-103-helyes lenni
+**ha a fizikai bekötés aszimmetrikus**.
 
-**Tanulság (memóriába: `feedback_roboclaw_invert.md`):** A Basicmicro Motion Studio motor+encoder
-reverse PÁROS beállítást a driver oldalon NEM kell külön invertálni — `invert_*_motor: false`.
-Ha csak a fizikai kábel-polaritás cserélt (Motion Studio nincs reverse), AKKOR kell a driver
-szintű `invert_*_motor: true`. A két szint NE invertáljon egyszerre — duplikálódik.
+**Iteráció 2 — HW motor pólus-csere (felhasználói):** A "rossz oldali" motor
+fizikai kábel-polaritás cseréje (a built-in encoder a motor-tengelyen ül → a
+polaritás-csere az encodert is automatikusan invertálja → Basicmicro closed-loop
+konzisztens, nincs PID-divergencia). A HW most már szimmetrikus.
 
-**Mellékhatás:** Az autonómia (Nav2/SLAM) most konzisztens. Az asztali fázisban épített
-térképek odom-fordított állapotban készültek — új térkép-felvétel javasolt a földi tesztnél.
+**Iteráció 3 — URDF joint sorrend csere:** Iteráció 2 után még mindig fordított volt
+a kanyarodás. Gyökér ok: a Basicmicro M1/M2 csatornakábel a robot fizikai jobb/bal
+motorához van bekötve (NEM a robot bal/jobb tengelyén). A `roboclaw_hardware` plugin
+az URDF `<ros2_control>` `<joint>` sorrend szerint rendel M1/M2 csatornát.
+`robot_description/urdf/robot.urdf.xacro` `<ros2_control>` szekcióban a
+`rear_right_wheel_joint` az első (M1), `rear_left_wheel_joint` a második (M2).
+Az URDF wheel-link y koordináták és a `controllers.yaml` `left_wheel_names`
+**MEGMARADTAK** — TF, RViz, costmap REP-103 konzisztens.
+
+**Végleges konfiguráció (post-iteráció 3):**
+- HW: motor pólus-csere kész (szimmetrikus fizikai bekötés)
+- URDF `<ros2_control>` joint sorrend: `rear_right_wheel_joint` (M1), `rear_left_wheel_joint` (M2)
+- `roboclaw_hardware.invert_left_motor: false` + `invert_right_motor: false`
+- Csere transzparens az RC ÉS autonómia (Nav2/SLAM) felé — mindkettő a `diff_drive_controller`-en át megy
+
+**Nav2 kalibrációs mérés (10° kontrollált forgatási teszt):**
+| Metrika | Érték | Megjegyzés |
+|---|---|---|
+| BALRA Δyaw (cmd +0.3 × 600ms) | +7.55° | (elméleti +10.31°) |
+| JOBBRA Δyaw (cmd -0.3 × 600ms) | -7.53° | (elméleti -10.31°) |
+| **Szimmetria BAL/JOBB** | **1.003** | 🎯 tökéletes |
+| **Visszatérési hiba** | **+0.02°** | 🎯 zero ODOM drift 15° forgatás után |
+| Effektív arány | 73% | Basicmicro acc-rampolás (kb. 150ms acc-up + 150ms acc-down a 600ms parancsablakból) |
+
+A 73% arány nem probléma a Nav2 számára — a controller loop zárt hurokban a célszögig küld parancsot.
+
+**E-Stop startup fix (commit ugyanitt):** A `startup_supervisor.cpp` `CHECK_ESTOP` fázis
+korábban 30s után FAULT-olt, ha az E-Stop AKTÍV volt indulásnál (stack restart aktív E-Stop
+mellett beragadt). Új viselkedés: bridge ONLINE elég, az AKTÍV state-et a runtime
+`safety_supervisor` kezeli (ESTOP state, Priority 1). Felengedéskor automatikusan IDLE/RC-ba megy.
 
 **Tilt debounce filter DEPLOY-olva ugyanaznap:** (`tilt_debounce_s: 0.3`, default).
 `safety_supervisor.cpp` `imu_cb()`: új `over_limit` változó, `tilt_pending_` flag és

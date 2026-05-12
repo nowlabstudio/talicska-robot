@@ -406,7 +406,15 @@
       <param name="invert_right_motor">$(arg invert_right_motor)</param>
     </hardware>
 
-    <joint name="rear_left_wheel_joint">
+    <!-- Joint sorrend = Basicmicro motor csatornaallokáció:
+         joint[0] → M1, joint[1] → M2 (roboclaw_hardware plugin info_.joints[i] sorrend).
+         A fizikai kábelek: M1 csatlakozó → robot JOBB motor, M2 csatlakozó → robot BAL motor
+         (2026-05-12 földi RC-teszt diagnózis). Ezért a `rear_right_wheel_joint` az első
+         (M1), a `rear_left_wheel_joint` a második (M2). Az URDF link y koordináták és a
+         controllers.yaml `left_wheel_names: [rear_left_wheel_joint]` MEGMARADNAK — TF,
+         RViz, costmap helyesen REP-103 konzisztens. A csere transzparens az RC és
+         autonómia (Nav2/SLAM) felé. -->
+    <joint name="rear_right_wheel_joint">
       <command_interface name="velocity">
         <param name="min">-50</param>
         <param name="max">50</param>
@@ -415,7 +423,7 @@
       <state_interface name="velocity"/>
     </joint>
 
-    <joint name="rear_right_wheel_joint">
+    <joint name="rear_left_wheel_joint">
       <command_interface name="velocity">
         <param name="min">-50</param>
         <param name="max">50</param>
