@@ -1151,6 +1151,87 @@ Az új session indulásakor a Claude a következő prompttal folytatja a G1-et:
 
 ---
 
+## 11.5 Rollback Pontok — "ha valami nagyon törik"
+
+Két git tag védi a projekt szakaszt vészhelyzeti visszaállásra:
+
+| Tag | Commit | Mit jelent |
+|---|---|---|
+| `pre-replay-v1-stable` | `858c7eb` | A Trajectory Replay v1 előtti utolsó **ismerten-működő** kódbázis. EKF, tilt debounce, expo joystick curve, RC dekompozíció, /robot/mode Int32 sub, Basicmicro inverzió szabályozva — mind validálva 2026-05-12 földi RC-teszten |
+| `replay-v1-docs-baseline` | `b8277d0` | A phase-szakasz docs-szintű alapja. Kódbázis = `pre-replay-v1-stable`, csak `docs/phase_trajectory_replay.md` változás. Ha a phase-szakasz dokumentumait akarjuk megtartani, de a kód-szintű kísérleteket vissza akarjuk vonni |
+
+### Rollback procedure
+
+**Teljes visszaállás (a phase-szakasz dokumentumai is eltűnnek):**
+
+```bash
+cd /home/eduard/talicska-robot-ws/src/robot/talicska-robot
+git fetch --tags
+git reset --hard pre-replay-v1-stable
+docker restart robot
+# 30-60 s múlva a stack a stable állapotból fut
+```
+
+**Csak a kód-változások visszavonása, docs maradjon:**
+
+```bash
+git checkout pre-replay-v1-stable -- '*.cpp' '*.yaml' '*.py' '*.launch.py' \
+  --exclude='docs/*'
+# vagy specifikusabban:
+git checkout pre-replay-v1-stable -- robot_bringup/config/nav2_params.yaml \
+  config/robot_params.yaml \
+  robot_safety/src/safety_supervisor.cpp \
+  robot_teleop/src/rc_teleop_node.cpp
+docker restart robot
+```
+
+**Docker image rollback (csak ha rebuild után törik valami):**
+
+A `robot-robot:latest` az aktuális build. Az **előző stable image** nincs külön mentve —
+a `pre-replay-v1-stable` git tag-ből egy `make build` újraépíti (~20 perc). A "snapshot"
+megoldás javasolt nagyobb képépítések előtt:
+
+```bash
+# Snapshot a jelenlegi image-rol
+docker tag robot-robot:latest robot-robot:pre-replay-v1
+# (Ha kell vissza:)
+docker tag robot-robot:pre-replay-v1 robot-robot:latest
+docker compose up -d --force-recreate robot
+```
+
+### Volume-mountolt állapot — NEM része a tag-eknek
+
+| Hely | Mi van benne | Backup módja |
+|---|---|---|
+| `/data/maps/current/` | SLAM térkép (map.pgm/yaml/posegraph) + `trajectory.yaml` | Manuális: `cp -r /data/maps/current /data/maps/backup_<dátum>` SAVE után |
+| `/run/robot/safety_latch_state` | safety_supervisor latch tmpfs | Reboot törli, nem perzisztens |
+| Pico firmware (E-Stop board, RC bridge) | mode rotary + OK GO + CH5 | Külön git repo (`ROS2-Bridge`), nem rollback ezen tag-ekből |
+
+### Mikor használjuk
+
+| Esemény | Tag |
+|---|---|
+| Docker rebuild után a robot **nem indul** (lifecycle FAIL, hardware comm error) | `pre-replay-v1-stable` |
+| Egy gate FAIL csak rontja a helyzetet, és a fix-ek halmozódnak | `replay-v1-docs-baseline` (csak kód-vissza, docs marad) |
+| Élesteszt során váratlan viselkedés (pl. RC nem reagál) | `pre-replay-v1-stable` (manualis vizsgálatra) |
+| Memóriát is sérülne (pl. a `feedback_policy` vagy `project_talicska_robot` rossz info-t kap egy hibás iterációból) | Külön memória-cleanup, NEM tag-rollback |
+
+### Új rollback tag-ek a phase-szakaszban
+
+Amikor egy gate ✅ DONE, és **kódot is érintett** (G2 safety_supervisor, G3 launch+yaml, G4 rc_teleop, G5 új cpp), az orchestrator új tag-et hoz létre:
+
+| Tag (terv) | Mikor | Tartalom |
+|---|---|---|
+| `replay-v1-g2-safety-done` | G2 ✅ után | safety_supervisor Priority 4b szemantika új, regressziós teszten PASS |
+| `replay-v1-g3-profile-done` | G3 ✅ után | NAVIGATION_REPLAY profil + get_merged() flat-key bugfix |
+| `replay-v1-g4-twistmux-done` | G4 ✅ után | rc_teleop_node disable_in_navigation, twist_mux pipeline OK |
+| `replay-v1-g5-modules-done` | G5 ✅ után | ok_go_supervisor + trajectory_node bench-validált |
+| `replay-v1-v1-final` | G6 ✅ után | Teljes Trajectory Replay v1 lezárva, főtérrész |
+
+Ezek **inkrementális stable point-ok** — ha pl. G5-ben valami törik, vissza lehet menni G4 PASS állapotba.
+
+---
+
 ## 12. Záráskor
 
 A projekt szakasz akkor zárul, ha:
