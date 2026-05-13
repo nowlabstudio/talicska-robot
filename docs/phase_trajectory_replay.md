@@ -545,7 +545,7 @@ rebuild **után** futtat egy gyors smoke tesztet a kritikus gate-ekből — még
 |---|---|---|---|---|---|
 | G1 | Stack-validation (NavigateThroughPoses bench) | ✅ DONE | 2026-05-13 | 2026-05-13 | 3 ciklus után PASS — footprint-fix bench-scriptben, ld. 11.1 Eredmény |
 | G2 | Safety state-szemantika (Priority 4b) | ✅ DONE | 2026-05-13 | 2026-05-13 | 4 core PASS + R7 log-PASS; R4/R5/R8 → G6. Tag: replay-v1-g2-safety-done |
-| G3 | Profil-merge + sebességcap | ⬜ TODO | — | — | G2 után |
+| G3 | Profil-merge + sebességcap | 🟡 IN PROGRESS | 2026-05-13 | — | Részletes plan ld. 11. G3 alatt |
 | G4 | twist_mux pipeline (rc_teleop disable) | ⬜ TODO | — | — | G2 + G3 után |
 | G5 | Modulszintű integráció (ok_go + trajectory) | ⬜ TODO | — | — | G4 után |
 | G7 | Post-rebuild revalidation | ⬜ TODO | — | — | G5 + Docker rebuild után |
@@ -1513,7 +1513,181 @@ egy **bónusz fix** a tegnap megbeszélt scope-ban (ERROR alatti mode konziszten
 
 ### G3 — Profil-merge + sebességcap
 
-**Állapot:** ⬜ TODO (kibővítendő a kanban-haladás során)
+**Állapot:** 🟡 IN PROGRESS — 2026-05-13
+
+#### Cél
+
+Bevezetni a `NAVIGATION_REPLAY` profilt a `robot_params.yaml`-ba (**0.555 m/s = 2 km/h** sebességcap
+a `controller_server.FollowPath.desired_linear_vel` és `velocity_smoother.max_velocity` rétegeken),
+javítani a `navigation.launch.py` `get_merged()` flat-key bugot (ami a tegnapi `desired_linear_vel=0.8`
+anomáliát okozta NAVIGATION env-vel), és **commit-olni** a `nav2_params.yaml` `inflation_radius=0.25`
+patch-et (G1 óta uncommitted).
+
+A G5 alatti `trajectory_node` v1 implementáció `ROBOT_MODE=NAVIGATION_REPLAY` env-vel indul, és a
+Nav2 controller_server a 0.555 m/s cap-ot alkalmazza az AUTO replay során.
+
+#### Függőség (input)
+
+- G2 ✅ DONE (safety_supervisor patch committed)
+- `robot_bringup/launch/navigation.launch.py` forrás — `get_merged()` flat-key bug a 41-48. soron
+- `config/robot_params.yaml` — `_profiles_` szekció már 4 profilt tartalmaz (NAVIGATION, REAR_NAV,
+  FOLLOW, SHUTTLE)
+- `robot_bringup/config/nav2_params.yaml` — `inflation_radius=0.25` patch a working tree-ben
+  (uncommitted), G1 óta
+- Container restart-tal vagy `--force-recreate`-tel állítható a `ROBOT_MODE` env
+
+#### Előkészítés
+
+##### 1. `navigation.launch.py` `get_merged()` flat-key bugfix
+
+A jelenlegi:
+```python
+def get_merged(node_name):
+    base     = rp.get(node_name, {}).get("ros__parameters", {})
+    override = rp.get("_profiles_", {}).get(robot_mode, {}).get(node_name, {})
+    return {**base, **override}
+```
+
+**Bug:** a `{**base, **override}` shallow merge nested dict-eket (`{"FollowPath":
+{"desired_linear_vel": ...}}`) **teljesen lecseréli**, nem mélyebbre megy. A ROS2 a Node
+`parameters=[file, dict]` listájában a nested dict-et nem automatikusan flat-eli `a.b.c` kulcsú
+paraméter-felülírásokra, ezért a `FollowPath.desired_linear_vel` override **nem érvényesül**.
+
+**Javítás:**
+```python
+def flatten_for_ros2(d, prefix=""):
+    """Nested dict → flat 'a.b.c' kulcsok, hogy a ROS2 Node parameters helyesen
+    alkalmazza profil-szintű overridként az nav2_params.yaml base értékeire."""
+    flat = {}
+    for k, v in d.items():
+        key = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
+        if isinstance(v, dict):
+            flat.update(flatten_for_ros2(v, key))
+        else:
+            flat[key] = v
+    return flat
+
+def get_merged(node_name):
+    """A _profiles_/MODE/node_name nested dict-et flat 'a.b.c' kulcsokra alakítja.
+    A base értékek a nav2_params.yaml-ban vannak (params_file), ezt a Node parameters
+    listájának első eleme adja; a get_merged() output (második elem) felülírja."""
+    override = rp.get("_profiles_", {}).get(robot_mode, {}).get(node_name, {})
+    return flatten_for_ros2(override)
+```
+
+##### 2. `robot_params.yaml` — `NAVIGATION_REPLAY` profil hozzáadása
+
+A `_profiles_` szekcióba, a meglévő 4 profil mellé (a `SHUTTLE` után, a `# =====` separator előtt):
+
+```yaml
+  # ── NAVIGATION_REPLAY — Trajectory Replay v1 lejátszás ────────────────────────
+  # Felvett pose-szekvencia (trajectory.yaml) Nav2 NavigateThroughPoses action-ön át.
+  # Max 2 km/h (0.555 m/s) sebességcap a tanult útvonal pontos követéséhez.
+  # A controller (RPP) és velocity_smoother kettős védelem (defense in depth).
+  NAVIGATION_REPLAY:
+    rplidar_node:
+      scan_mode:      ""
+      scan_frequency: 10.0
+
+    controller_server:
+      FollowPath:
+        desired_linear_vel:           0.555
+        min_approach_linear_velocity: 0.1
+
+    velocity_smoother:
+      max_velocity: [0.555, 0.0, 1.5]
+      min_velocity: [-0.2, 0.0, -1.5]
+```
+
+##### 3. `nav2_params.yaml` `inflation_radius=0.25` patch commit-olás
+
+A patch már a working tree-ben (G1 javító agent munkája). A G3 commit-jában szerepel. A két
+sor pozíciója: `nav2_params.yaml:195` (global_costmap) és `nav2_params.yaml:235` (local_costmap).
+
+##### 4. Container restart új env-vel
+
+```bash
+# A docker-compose.yml-ban a ROBOT_MODE env változó alapból "NAVIGATION".
+# Az új profil-tesztelés ROBOT_MODE=NAVIGATION_REPLAY env-vel indítja a containert.
+
+# 4.1 Pillanatfelvétel előtt: a NAVIGATION default mellett a paraméterek
+ROBOT_MODE=NAVIGATION docker compose up -d --force-recreate robot
+sleep 20  # nav2 lifecycle ACTIVATED
+docker exec robot bash -lc 'source /opt/ros/jazzy/setup.bash && \
+  ros2 param get /controller_server FollowPath.desired_linear_vel && \
+  ros2 param get /velocity_smoother max_velocity' > /tmp/g3_navigation.log
+
+# 4.2 ROBOT_MODE=NAVIGATION_REPLAY env-vel
+ROBOT_MODE=NAVIGATION_REPLAY docker compose up -d --force-recreate robot
+sleep 20
+docker exec robot bash -lc 'source /opt/ros/jazzy/setup.bash && \
+  ros2 param get /controller_server FollowPath.desired_linear_vel && \
+  ros2 param get /velocity_smoother max_velocity' > /tmp/g3_navigation_replay.log
+```
+
+A `docker-compose.yml`-t **NEM** módosítjuk perm-re — a `ROBOT_MODE` env-et per-indítás
+adjuk. A `.env` fájlban majd a G5 cpp-implementáció bevezetésekor véglegesítjük a
+NAVIGATION_REPLAY-t.
+
+#### PASS kritériumok
+
+| # | Profil | `FollowPath.desired_linear_vel` | `velocity_smoother.max_velocity[0]` | Verdict |
+|---|---|---|---|---|
+| P1 | NAVIGATION (default, control) | 0.5 | 0.5 | a regresszió-védelem |
+| P2 | **NAVIGATION_REPLAY (új)** | **0.555** | **0.555** | a kritikus új profil |
+
+Plusz a regressziós teszt a többi profilra (NEM kötelező, de érdemes):
+
+| # | Profil | Várt érték | Notes |
+|---|---|---|---|
+| P3 | REAR_NAV | 0.1 | dokkolási profil |
+| P4 | FOLLOW | 0.5 | személykövetés |
+| P5 | SHUTTLE | 0.8 | szállítási profil |
+
+A teszt egyetlen futáson belül **legalább a P1 és P2** elvégzendő, hogy a regressziós veszély
+(`navigation.launch.py` flat-key változás) is fedett legyen.
+
+#### FAIL diagnosztika
+
+| Tünet | Gyökér-ok |
+|---|---|
+| P2 `desired_linear_vel=0.8` (vagy 0.5) NAVIGATION_REPLAY env mellett | `flatten_for_ros2` nem érvényesül, vagy a `NAVIGATION_REPLAY` profil-név elírás a yaml-ben |
+| P1 `desired_linear_vel=0.555` NAVIGATION env mellett (a default-ot felülírva) | `get_merged()` rossz profilt választ — az `os.environ.get("ROBOT_MODE", "NAVIGATION")` default elírás |
+| `controller_server` nem indul | YAML séma hiba a NAVIGATION_REPLAY szekcióban (indent, kulcs) |
+| Container nem indul | `robot_params.yaml` parsing error — `python3 -c 'import yaml; yaml.safe_load(open("config/robot_params.yaml"))'` futtatható ellenőrzéshez |
+| `navigation.launch.py` syntax error | Python edit hiba a `flatten_for_ros2`-ben — `python3 -m py_compile navigation.launch.py` |
+
+#### Visszalépési pont
+
+- **YAML hiba:** `git checkout pre-replay-v1-stable -- config/robot_params.yaml robot_bringup/config/nav2_params.yaml`
+- **Python hiba:** `git checkout pre-replay-v1-stable -- robot_bringup/launch/navigation.launch.py`
+- **Súlyos regresszió (stack nem indul):** `git reset --hard replay-v1-g2-safety-done` + `docker compose up -d --force-recreate robot`
+
+#### Regressziós veszély
+
+A `navigation.launch.py` `get_merged()` változás **érinti az összes profilt** (NAVIGATION, REAR_NAV,
+FOLLOW, SHUTTLE, NAVIGATION_REPLAY). Ha a flatten logika hibás, ezek mind nem-várt értékekkel
+indulnak. A P1 (NAVIGATION default) regressziós teszt **kötelező**.
+
+Plusz: az `inflation_radius=0.25` patch a `local_costmap` és `global_costmap` mindkettőjén
+aktív. Élesteszten (G6) észlelhető, ha túl szigorú lesz a fal-mellett-haladásra; akkor a
+**globális** értéket lehet visszahozni 0.5 vagy 0.55-re, és a **profil-szintű** 0.25 csak a
+NAVIGATION_REPLAY-en alkalmazva. Ez backlog opció.
+
+#### DONE feltétel
+
+- [ ] `navigation.launch.py` `get_merged()` flat-key fix alkalmazva
+- [ ] `robot_params.yaml` `NAVIGATION_REPLAY` profil bevezetve
+- [ ] `nav2_params.yaml` `inflation_radius=0.25` patch commit-olva (G1 óta uncommitted)
+- [ ] P1 PASS: NAVIGATION env mellett `desired_linear_vel=0.5`, `max_velocity=[0.5, ...]`
+- [ ] P2 PASS: NAVIGATION_REPLAY env mellett `desired_linear_vel=0.555`, `max_velocity=[0.555, ...]`
+- [ ] G3 Eredmény szekció kitöltve + Kanban G3 → ✅ DONE
+- [ ] `safety_supervisor.cpp` változás már committed (G2), a teljes G3 csomag commit-olva
+- [ ] Git tag `replay-v1-g3-profile-done` létrehozva
+
+#### Eredmény
+
+(üres — a teszt után töltődik)
 
 ### G4 — twist_mux pipeline (rc_teleop disable_in_navigation)
 
