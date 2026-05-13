@@ -38,14 +38,17 @@
  * the full system is validated on the bench.
  */
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <string>
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float32.hpp"
+#include "std_msgs/msg/string.hpp"
 
 namespace robot_teleop
 {
@@ -72,6 +75,11 @@ public:
     // A két curve FÜGGETLEN — a kanyarodás-érzékenység nem függ a haladási sebességtől.
     this->declare_parameter("joystick_expo_linear",  2.0);
     this->declare_parameter("joystick_expo_angular", 2.0);
+    // disable_in_navigation: ha true és a /safety/state state=="NAVIGATION",
+    // a node NEM publikál /cmd_vel_rc-re (twist_mux 1.0s timeout után Nav2 átveszi).
+    // A failsafe lánc érintetlen: in_rc_mode ág ELŐSZÖR értékelődik ki.
+    this->declare_parameter("disable_in_navigation", true);
+    disable_in_navigation_ = this->get_parameter("disable_in_navigation").as_bool();
 
     max_linear_vel_        = this->get_parameter("max_linear_vel").as_double();
     max_angular_vel_       = this->get_parameter("max_angular_vel").as_double();
@@ -136,6 +144,12 @@ public:
         rc_mode_ = msg->data;
       });
 
+    safety_state_sub_ = create_subscription<std_msgs::msg::String>(
+      "/safety/state", rclcpp::QoS(10),
+      [this](const std_msgs::msg::String::SharedPtr msg) {
+        parse_safety_state(msg->data);
+      });
+
     // --- publisher ---
     cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>(
       "/cmd_vel_rc", rclcpp::QoS(10));
@@ -157,6 +171,15 @@ public:
   }
 
 private:
+  void parse_safety_state(const std::string & json_str)
+  {
+    // Egyszerű string-keresés a "state":"NAVIGATION" mintára.
+    // A safety_supervisor a JSON-t fix sorrendben építi: "state":"<value>".
+    // NEM full JSON parser — elkerüljük az új dependenciát (nlohmann/json).
+    const auto pos = json_str.find("\"state\":\"NAVIGATION\"");
+    in_navigation_state_.store(pos != std::string::npos);
+  }
+
   void publish_tick()
   {
     geometry_msgs::msg::Twist twist;
@@ -166,6 +189,10 @@ private:
       : (rc_mode_ >  rc_mode_threshold_);  // normal:   high = RC mode
 
     if (in_rc_mode) {
+      // RC override — MINDIG publikál (felülírja a disable_in_navigation-t).
+      // Failsafe lánc: TX-off → vevő CH5=RC + motors=0 → 0-Twist publish →
+      // twist_mux prio 20 nyer → /cmd_vel_raw=0 → robot megáll.
+      //
       // Throttle/turn dekompozíció a TX-mixed jelekből (NEM kerékszintű curve):
       //   throttle = (L + R) / 2  ∈ [-1..+1]   → linear.x (előre/hátra)
       //   turn     = (R - L) / 2  ∈ [-1..+1]   → angular.z (bal/jobb, REP-103)
@@ -180,12 +207,19 @@ private:
         std::pow(std::abs(turn_in),     joystick_expo_angular_), turn_in);
       twist.linear.x  = throttle_curved * max_linear_vel_;
       twist.angular.z = turn_curved     * max_angular_vel_;
+      cmd_vel_pub_->publish(twist);
+      return;
     }
-    // else: autonomous mode — publish zero Twist.
-    // This keeps /cmd_vel_rc alive at twist_mux prio 20 so Nav2 can drive,
-    // but if TX goes off and receiver enters failsafe (ch5=RC mode),
-    // rc_mode_ flips above threshold and zero velocity is enforced.
 
+    if (disable_in_navigation_ && in_navigation_state_.load()) {
+      // AUTO mód (safety_supervisor state == "NAVIGATION") + RC ki:
+      // NEM publikál — twist_mux 1.0s timeout után a Nav2 prio 10 forrást enged át.
+      // Ezzel megoldja a tegnapi Blokker 2-t (rc.priority=20 elnyomja Nav2-t).
+      return;
+    }
+
+    // Egyéb (IDLE, FOLLOW, SHUTTLE, vagy disable_in_navigation=false):
+    // 0-Twist publish a régi viselkedés szerint, hogy /cmd_vel_rc életben maradjon.
     cmd_vel_pub_->publish(twist);
   }
 
@@ -196,6 +230,8 @@ private:
   double joystick_expo_linear_  = 1.0;
   double joystick_expo_angular_ = 1.0;
   bool   rc_mode_invert_ = false;
+  bool   disable_in_navigation_ = true;
+  std::atomic<bool> in_navigation_state_{false};
 
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 
@@ -206,6 +242,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr left_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr right_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr mode_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr  safety_state_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   rclcpp::TimerBase::SharedPtr                            timer_;
 };

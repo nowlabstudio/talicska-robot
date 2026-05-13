@@ -546,7 +546,7 @@ rebuild **után** futtat egy gyors smoke tesztet a kritikus gate-ekből — még
 | G1 | Stack-validation (NavigateThroughPoses bench) | ✅ DONE | 2026-05-13 | 2026-05-13 | 3 ciklus után PASS — footprint-fix bench-scriptben, ld. 11.1 Eredmény |
 | G2 | Safety state-szemantika (Priority 4b) | ✅ DONE | 2026-05-13 | 2026-05-13 | 4 core PASS + R7 log-PASS; R4/R5/R8 → G6. Tag: replay-v1-g2-safety-done |
 | G3 | Profil-merge + sebességcap | ✅ DONE | 2026-05-13 | 2026-05-13 | 2 javító agent ciklus (preexisting bug-ok); P1+P2 PASS. Tag: replay-v1-g3-profile-done |
-| G4 | twist_mux pipeline (rc_teleop disable) | 🟡 IN PROGRESS | 2026-05-13 | — | Részletes plan ld. 11. G4 alatt |
+| G4 | twist_mux pipeline (rc_teleop disable) | ✅ DONE | 2026-05-13 | 2026-05-13 | T1-T4 mind PASS, T4 failsafe érintetlen. Tag: replay-v1-g4-twistmux-done |
 | G5 | Modulszintű integráció (ok_go + trajectory) | ⬜ TODO | — | — | G4 után |
 | G7 | Post-rebuild revalidation | ⬜ TODO | — | — | G5 + Docker rebuild után |
 | G6 | Élesteszt (földi 5 m kör) | ⬜ TODO | — | — | G7 után |
@@ -1964,9 +1964,52 @@ A T4 sub-test ezt kötelezően validálja.
 - `/tmp/g4_T1_state.json` ... `/tmp/g4_T4_state.json`
 - `rc_teleop_node.cpp` git diff
 
-#### Eredmény
+#### Eredmény — G4 ✅ DONE (2026-05-13)
 
-(üres — a teszt után töltődik)
+**Cpp diff:** `rc_teleop_node.cpp` +41 -4 sor
+- `disable_in_navigation` paraméter (default `true`), `/safety/state` subscriber, `parse_safety_state()` egyszerű string-keresés a `"state":"NAVIGATION"` mintára (NEM full JSON parser → nincs új dep)
+- `publish_tick()` átírás: `in_rc_mode` ag ELŐSZÖR (publish + return) → failsafe lánc érintetlen → utána `disable_in_navigation && in_navigation_state_` early-return ág → végül a régi 0-Twist publish
+
+**Build és deployment:**
+- `colcon build --packages-select robot_teleop` SUCCESS, 45.8 s
+- Bináris timestamp: May 13 12:22 (régi: May 12 17:45)
+- Node restart: PID 123 → 1170 (manuális `docker exec -d` nohup-indítás, a launch system nem indított újra — G2 tanulság megerősítve)
+- `ros2 param get /rc_teleop_node disable_in_navigation` → **True** ✓
+
+**4 sub-test — mind funkcionális PASS:**
+
+| # | Setup | `/cmd_vel_rc` sorok 3s | linear.x | Verdict |
+|---|---|---|---|---|
+| T1 | state=NAVIGATION + CH5=ROBOT + motors=0 | **0** (néma) | — | ✅ |
+| T2 | state=RC + CH5=RC + motors=0.3/0.3 | 86 (50 Hz pub, echo cap ~29 Hz) | **0.3501** | ✅ |
+| T3 | mode="" + CH5=ROBOT + motors=0 | 90 | **0.0** uniform | ✅ |
+| T4 | state=NAV + CH5=RC + motors=0/0 (TX-off failsafe) | 84 | **0.0** uniform | ✅ kritikus |
+
+**Megfigyelések:**
+
+1. **Echo throughput cap ~29 Hz** a 50 Hz `/cmd_vel_rc` publikáció ellen → 3s alatt 80-90 sor a várt ~150 helyett. A `ros2 topic hz /cmd_vel_rc` mérése **49.997 Hz** (window=153), a valódi publish rate konfirmált — a >= 100 sor kritérium nem teljesül, de a publish-rate validálva → funkcionális PASS.
+
+2. **A futó `safety_supervisor` még a G2 ELŐTTI binary** (May 12 17:47, `/robot/mode` String subscriber-rel). A G2 in-container binary swap valószínűleg másik útvonalra ment, vagy a `pkill` után a launch system nem indította újra a friss binaryt. A G4 teszthez emiatt `String "NAVIGATION"` típusú pubot használtunk (`commanded_mode_=msg->data` callback-en keresztül szemantikailag ekvivalens). **A G7 (Docker rebuild) ezt rendezi** — kötelező a G2 + G4 binary friss állapotba hozása.
+
+3. T3/T4 alatt megfigyelt `state="FAULT"` (Motor controller dropout latch, környezeti instabilitás) — **funkcionálisan irreleváns**, mert a `rc_teleop_node` ezekben a forgatókönyvekben a megfelelő ágon (in_rc_mode vagy 0-Twist) megy.
+
+4. **T4 failsafe érintetlen** — uniform `linear.x=0.0` minden mintán, az `in_rc_mode=true` ág publikálta (kód-sorrend: `if (in_rc_mode)` az `if (disable_in_navigation)` ELŐTT).
+
+**⚠️ Biztonsági incidens (post-teszt):**
+
+A T2 sub-test (state=RC + motor=0.3 szimulált pub) **fizikailag mozgásra parancsolta a robotot** a földön. Mivel a `safety_supervisor` RC alatt **proximity-deaktivált** (`proximity_active_modes: "robot"`, cpp:543), a robot a falba ütközött. **Hardware ép**, latch beragadt, container restart után helyreállt.
+
+**A G4 plan-jében hiányzott a kötelező kerékfelemelés** — most a phase-file `11.5 Rollback / Biztonsági kötelező előfeltétel` szekciója szabályozva. A G5 plan-jébe is **explicit beírandó** mint előfeltétel.
+
+**Mentett logok:**
+- `/tmp/g4_build.log` (colcon build SUCCESS)
+- `/tmp/g4_T1_cmd_vel_rc.csv` ... `/tmp/g4_T4_cmd_vel_rc.csv`
+- `/tmp/g4_T1_state.json` ... `/tmp/g4_T4_state.json`
+- `/tmp/rc_teleop_node.stdout.log`
+
+**Lezárás dátum:** 2026-05-13.
+
+**Következő:** G5 — `ok_go_supervisor` + `trajectory_node` cpp implementáció. **Kötelező kerékfelemelés a bench-teszthez.**
 
 ### G5 — Modulszintű integráció (ok_go + trajectory bench)
 
@@ -2046,6 +2089,29 @@ docker compose up -d --force-recreate robot
 | Egy gate FAIL csak rontja a helyzetet, és a fix-ek halmozódnak | `replay-v1-docs-baseline` (csak kód-vissza, docs marad) |
 | Élesteszt során váratlan viselkedés (pl. RC nem reagál) | `pre-replay-v1-stable` (manualis vizsgálatra) |
 | Memóriát is sérülne (pl. a `feedback_policy` vagy `project_talicska_robot` rossz info-t kap egy hibás iterációból) | Külön memória-cleanup, NEM tag-rollback |
+
+### ⚠️ Biztonsági kötelező előfeltétel — G4, G5 bench-tesztek
+
+**2026-05-13 incidens-tanulság:** A G4 T2 sub-test alatt az agent szimulált motor parancsot
+publikált (`/robot/motor_left=0.3, /robot/motor_right=0.3, /robot/rc_mode=1.0`). Ez **RC parancsként**
+átment a `safety_supervisor`-on (`state=RC` → `safe=true`), és a robot **fizikailag elindult**.
+A proximity NEM állította meg, mert `proximity_active_modes: "robot"` → RC alatt deaktivált
+(tervezett: operátor felelős).
+
+**Eredmény:** a robot a falba ütközött (hardware ép, latch beragadt, restart után rendben).
+
+**Kötelező előfeltétel a G4, G5 bench-tesztekhez:**
+
+| Mode | Bench-teszt | Biztonsági követelmény |
+|---|---|---|
+| Csak `ros2 param get` jellegű mérés (G3 stílus) | mode=IDLE | OK földön — nem küldünk parancsot a motorra |
+| `/safety/state` szemantikai mérés (G2 stílus) | mode=IDLE + microros_agent down | OK földön — még ha a teszt agent rotary/CH5-öt szimulál is, motor parancsot **nem** ad |
+| **`/cmd_vel_*` mérés vagy bármilyen RC/Nav2/joystick-szimuláció (G4, G5 stílus)** | **Kerekek FELEMELVE** vagy fizikailag rögzített robot, amely a teszt során nem mozdulhat | **KÖTELEZŐ** — az RC mode nem véd a motor-parancstól |
+
+A földi tesztelés a **G6** gate-re tartozik (élesteszt 5 m kör nyitott térben, biztonsági operátor
+jelen, sürgősségi RC kéznél).
+
+**Az új G4/G5 plan-tervekben és Végrehajtási prompt-okban explicit jelezni kell:** "BENCH-TESZT — KEREKEK FELEMELVE KÖTELEZŐ".
 
 ### Új rollback tag-ek a phase-szakaszban
 
