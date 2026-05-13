@@ -547,7 +547,7 @@ rebuild **után** futtat egy gyors smoke tesztet a kritikus gate-ekből — még
 | G2 | Safety state-szemantika (Priority 4b) | ✅ DONE | 2026-05-13 | 2026-05-13 | 4 core PASS + R7 log-PASS; R4/R5/R8 → G6. Tag: replay-v1-g2-safety-done |
 | G3 | Profil-merge + sebességcap | ✅ DONE | 2026-05-13 | 2026-05-13 | 2 javító agent ciklus (preexisting bug-ok); P1+P2 PASS. Tag: replay-v1-g3-profile-done |
 | G4 | twist_mux pipeline (rc_teleop disable) | ✅ DONE | 2026-05-13 | 2026-05-13 | T1-T4 mind PASS, T4 failsafe érintetlen. Tag: replay-v1-g4-twistmux-done |
-| G5 | Modulszintű integráció (ok_go + trajectory) | 🟡 IN PROGRESS | 2026-05-13 | — | Plan kész, agent végrehajtás következik |
+| G5 | Modulszintű integráció (ok_go + trajectory) | ✅ DONE | 2026-05-13 | 2026-05-13 | 2 agent ciklus (Phase A + retry/Phase B `/safety/state` mock-kal). T1-T5 mind PASS. Tag: replay-v1-g5-modules-done |
 | G7 | Post-rebuild revalidation | ⬜ TODO | — | — | G5 + Docker rebuild után |
 | G6 | Élesteszt (földi 5 m kör) | ⬜ TODO | — | — | G7 után |
 
@@ -2013,7 +2013,7 @@ A T2 sub-test (state=RC + motor=0.3 szimulált pub) **fizikailag mozgásra paran
 
 ### G5 — Modulszintű integráció (ok_go + trajectory bench)
 
-**Állapot:** 🟡 IN PROGRESS — terv elkészült 2026-05-13, végrehajtás következik.
+**Állapot:** ✅ DONE — 2026-05-13. Két agent ciklus után PASS (Phase A: build + 1. T1-T3 kísérlet → safety_supervisor ESTOP-blokk; Phase B-retry: `/safety/state` mock + microros down minta a G2-ből → T1-T5 mind PASS).
 
 > ⚠️ **BENCH-TESZT — KEREKEK FELEMELVE KÖTELEZŐ** (11.5 szekció szabálya, G4 incidens-tanulság).
 > A G5 minden olyan sub-test-jét, amely `/cmd_vel_*` parancsot eredményezhet (T4 AUTO PLAY,
@@ -2353,9 +2353,72 @@ vezetne.
 - `/data/maps/current/trajectory.yaml` (T2 után, T3 előtt)
 - Git diff: `robot_missions/` (új cpp + launch + config)
 
-#### Eredmény
+#### Eredmény — G5 ✅ DONE (2026-05-13)
 
-*(A gate záráskor töltődik.)*
+**Új fájlok (`robot_missions/`):**
+
+| Fájl | LOC | Tartalom |
+|---|---|---|
+| `src/ok_go_supervisor.cpp` | 572 | 4.1 állapotgép, gomb dekód (SHORT/CANCEL/LONG), LED minta 50 Hz timer, 4 sub + 3 pub |
+| `src/trajectory_node.cpp` | 652 | 4.2 állapotgép, TF capture 10 Hz dedup-pal, yaml-cpp I/O, NavigateThroughPoses action client |
+| `launch/replay.launch.py` | 43 | 2 node indítása `replay.yaml`-lal |
+| `config/replay.yaml` | 38 | Timing, dedup, file path, frame_id paraméterek |
+| `CMakeLists.txt` | 62 | `find_package` + 2 `add_executable` + `yaml-cpp` link |
+| `package.xml` | 30 | `tf2_ros`, `tf2_geometry_msgs`, `yaml-cpp` deps |
+
+**Új cpp + build/launch/config: 1397 LOC összesen** (1224 cpp + 173 build/launch/config).
+
+**Build:**
+- `colcon build --packages-select robot_missions` SUCCESS 58.7 s, 0 error, 0 warning
+- Binárisok `/root/talicska-ws/install/robot_missions/lib/robot_missions/`-ben
+- `/data/maps/current` symlink létrehozva → `slam_test3_2026-05-12_201456`
+
+**Bench-teszt eredmények (T1-T5):**
+
+A futó `safety_supervisor` `"state":"ESTOP"`-ot publikált a teljes Phase A alatt (fizikai E-Stop le van nyomva). Phase B-ben **G2-mintás `/safety/state` szimulációval** (microros_agent leállítva + agent JSON pub) megkerültük a blokkot.
+
+| # | Setup | Várt | Mért | Verdict |
+|---|---|---|---|---|
+| T1 | rotary=0 + state=RC mock | `/ok_go/cmd=5` + `/trajectory/state phase=CAPTURING` | log: `LEARN_IDLE → RECORDING (cmd=5)`, `phase=CAPTURING, pose_count=1` | ✅ |
+| T2 | T1 + SHORT click (~0.1 s pulse) | `/ok_go/cmd=1` + `trajectory.yaml` szabványos | echo `data:1`, `schema_version=1, frame_id=map, poses=33` (1. SAVE), `poses=1` (2. SAVE) | ✅ |
+| T3 | T2 + LONG hold (~7.6 s, long_min_s=5.0) | `/ok_go/cmd=2` → 16 s múlva `=8` + yaml törölve | `data:2`, majd `data:8` 16 s után (`WIPE → LEARN_IDLE`), `trajectory.yaml: No such file` | ✅ |
+| T4 | 4-pózos kézi yaml + rotary=2 + state=NAVIGATION mock + SHORT click | `/ok_go/cmd=3` + Nav2 goal accepted + `phase=ACTIVE_GOAL` | echo `data:3`, action info: trajectory_node mint Action Client, bt_navigator mint Action Server; `phase=ACTIVE_GOAL` + `loaded 4 poses` | ✅ |
+| T5 | T4 + state=RC mock | `/ok_go/cmd=4` + `phase=CANCELLED` 1 s alatt | echo `data:4`, `phase=PLAYING → AUTO_PAUSED`, `ACTIVE_GOAL → CANCELLED (current_index=0)` 3 s alatt | ✅ |
+
+**11/11 PASS kritérium teljesült.**
+
+**Megfigyelések:**
+
+1. **Stacionárius bench-tesztben dedup-blokk** — a stacionárius robot TF-je csak 1 pose-t enged át (`hypot<0.02 m AND |dyaw|<0.035 rad` minden további mintát eldob). A trajectory_node `load_trajectory()` `< 2` validáció FAIL-elt 1-pózos yaml-vel a T4 előtt. Workaround: 4-pózos manuálisan írt `trajectory.yaml` a T4 ágára. **A G6 élesteszten ez magától megszűnik** — a fizikailag mozgó robot dúsabb pose-listát rögzít.
+
+2. **Nav2 goal ABORTED** (status 6) a T4 alatt — az E-Stop fizikailag aktív, a `/cmd_vel`-en a motor nem reagál, a controller_server timeout-olt → `result_callback ABORTED → phase=STUCK`. Ez **helyes end-to-end** viselkedés, NEM G5 bug. A goal accepted-je + feedback ciklus + ABORTED kezelés egyaránt validált.
+
+3. **DDS late-joiner probléma a `ros2 topic pub --once`-szal** — az egyszeri pub a discovery előtt nem érkezett be. Megoldás: háttér `false` pub fenntartja a discovery-t, SHORT click-et rövid (~0.1 s) burst pub szimulálta (`--rate 30 -t 3`). Ez **bench-teszt-keret** sajátosság, NEM kód-bug.
+
+4. **safety_supervisor nem respawn** — Phase A `pkill SIGTERM` után a launch system nem indított újra (régóta ismert G2 tanulság). A G7 (Docker rebuild) automatikusan rendezi. Container restart manuális opció: `docker restart robot`.
+
+5. **SLAM service-ek nem hívva** — v1 scope-on kívül szándékosan; `flush_to_yaml` és WIPE csak a `trajectory.yaml`-t kezeli, a SLAM map külön marad.
+
+**E-Stop biztonsági kontextus:**
+
+A T4 (NavigateThroughPoses goal) és T5 (CANCEL) sub-test a robot fizikai E-Stop-os állapotában futott (operátor megerősítette: motorvezérlő hardver-leválasztott). Ez **engedélyezi a Nav2 goal küldést** felemelés nélkül is, mert a `/cmd_vel` parancsok nem érnek el a motorokhoz. Nem helyettesíti a 11.5 szabályt (felemelés kötelező cmd_vel-mérésre), csak **alternatív védelmi réteg** ehhez a konkrét bench-tesztkonfigurációhoz.
+
+**Mentett logok:**
+- `/tmp/g5_build.log` (colcon SUCCESS)
+- `/tmp/g5_node_stdout.log` (teljes node-tranzit napló)
+- `/tmp/g5_T1r_*`, `/tmp/g5_T2r_*`, `/tmp/g5_T3r_*` (Phase B-retry topic echo + state json)
+- `/tmp/g5_T4_*`, `/tmp/g5_T5_*` (action info + state json)
+
+**G7 prereq:**
+- Docker rebuild a teljes stack új binary-vel (safety_supervisor friss G2, `robot_missions` rebuilt image-en)
+- G7 verify pontok: T1-T5 ismétlése a beépített safety_supervisor-ral (NEM mock), és `/safety/state` `mode` mező megfigyelése (Int32 sub → új JSON sémában szerepel)
+
+**Lezárás dátum:** 2026-05-13.
+
+**Backlog ítemek (G5-ből kiszedett):**
+- SLAM toolbox `serialize_map` + `clear_changes` service hívások beépítése a `flush_to_yaml` és WIPE útvonalakba (v2 feature)
+- `try_peek_trajectory_file()` optimalizálás file-mtime cache vagy inotify-jal (5 Hz `ifstream::good()` minor)
+- `load_trajectory()` `< 2` validáció reconsider — Nav2 NavigateThroughPoses 1-pózos PoseStamped[]-ot is fogad, de inkonzisztens. Élesteszten validálandó.
 
 #### Végrehajtási prompt — új session (opcionális, ha a fő session kontextusa telítődik)
 

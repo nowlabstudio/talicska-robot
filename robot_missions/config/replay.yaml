@@ -1,0 +1,38 @@
+# =============================================================================
+# replay.yaml — Trajectory Replay v1 paraméterek (mindkét node)
+# =============================================================================
+# A phase-file `docs/phase_trajectory_replay.md` 6 + S4 szekciói szerint.
+# =============================================================================
+
+ok_go_supervisor:
+  ros__parameters:
+    # Gomb dekódolás
+    short_max_s: 1.0        # SHORT trigger küszöb (release-kor)
+    long_min_s:  5.0        # LONG trigger küszöb (held >=)
+
+    # LED minta időtartamok
+    save_flash_duration_s: 2.0
+    wipe_flash_duration_s: 16.0
+
+    # Blink periódusok (a LED 50 Hz timer használja)
+    blink_2hz_period_s: 0.25
+    blink_4hz_period_s: 0.125
+    blink_5hz_period_s: 0.1
+
+trajectory_node:
+  ros__parameters:
+    # TF capture
+    sampling_hz: 10.0                # TF lookup ráta CAPTURING fázisban
+    dedup_min_dist_m: 0.02           # spatial dedup küszöb
+    dedup_min_yaw_rad: 0.035         # ~2° dedup küszöb
+    tf_lookup_timeout_ms: 50         # lookupTransform timeout
+
+    # Frames
+    map_frame: map
+    base_frame: base_link
+
+    # Fájl I/O
+    trajectory_file: /data/maps/current/trajectory.yaml
+
+    # Nav2 action
+    nav_action_name: /navigate_through_poses
