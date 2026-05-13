@@ -544,7 +544,7 @@ rebuild **után** futtat egy gyors smoke tesztet a kritikus gate-ekből — még
 | # | Gate | Állapot | Kezdés | Lezárás | Megjegyzés |
 |---|---|---|---|---|---|
 | G1 | Stack-validation (NavigateThroughPoses bench) | ✅ DONE | 2026-05-13 | 2026-05-13 | 3 ciklus után PASS — footprint-fix bench-scriptben, ld. 11.1 Eredmény |
-| G2 | Safety state-szemantika (Priority 4b) | 🟡 IN PROGRESS | 2026-05-13 | — | Részletes plan ld. 11. G2 alatt |
+| G2 | Safety state-szemantika (Priority 4b) | ✅ DONE | 2026-05-13 | 2026-05-13 | 4 core PASS + R7 log-PASS; R4/R5/R8 → G6. Tag: replay-v1-g2-safety-done |
 | G3 | Profil-merge + sebességcap | ⬜ TODO | — | — | G2 után |
 | G4 | twist_mux pipeline (rc_teleop disable) | ⬜ TODO | — | — | G2 + G3 után |
 | G5 | Modulszintű integráció (ok_go + trajectory) | ⬜ TODO | — | — | G4 után |
@@ -1446,9 +1446,70 @@ változás a `determine_state()`-ben az **egész safety architektúrát** instab
 - `docker logs robot --since "10m"` (build/restart utáni state)
 - `safety_supervisor.cpp` git diff (`git diff HEAD -- robot_safety/src/safety_supervisor.cpp`)
 
-#### Eredmény
+#### Eredmény — G2 ✅ DONE (2026-05-13)
 
-(üres — a teszt után töltődik)
+**Cpp patch alkalmazva (3 lokáció):**
+- `safety_supervisor.cpp:977-982` Priority 4b — RC override alatt `mode = commanded_mode_`
+  (volt: `state="RC"`, `mode="RC"`, `last_active_mode_="RC"`)
+- `safety_supervisor.cpp:1393-1394` — komment frissítés: `last_active_mode_` csak Priority 6
+  `commanded_mode_`-ból frissül, RC override (Priority 4b) NEM írja felül
+- Git diff: 1 file changed, 7 insertions(+), 3 deletions(-)
+
+**Build és deployment:**
+- `colcon build --packages-select robot_safety` **SUCCESS**, 1m 35s
+  (csak preexistens `-Wreorder` warning a privát tag-en, nem az új patch okozza)
+- Build base: `/tmp/build_safety`, install base: `/tmp/inst_safety`
+- **Workspace a containerben: `/root/talicska-ws`** (a phase-file korábban `/ros2_ws`-t említett — javítva)
+- Bináris csere: `/root/talicska-ws/install/robot_safety/lib/robot_safety/safety_supervisor`
+  (4490176 byte, May 13 10:56). Backup: `safety_supervisor.bak_g2`
+- Node restart: régi PID 219 → új PID 2756. **Megjegyzés:** a lifecycle manager NEM
+  automatikusan restartálta a node-ot — manuális `nohup` indítás kellett azonos paraméter-
+  fájllal és remap-okkal. Ezt G7 (Docker rebuild) természetesen megoldja
+
+**Core regressziós teszt — 4/4 PASS:**
+
+| # | rotary | CH5 | ESTOP | Mért state | Mért mode | Verdict |
+|---|---|---|---|---|---|---|
+| R1 | 2 (AUTO) | 0.0 | false | NAVIGATION | NAVIGATION | ✅ |
+| R2 | 2 (AUTO) | 1.0 | false | RC | **NAVIGATION** | ✅ **kritikus új viselkedés** |
+| R3 | 2 (AUTO) | **-1.0** ¹ | false | NAVIGATION | NAVIGATION | ✅ |
+| R6 | 0 (LEARN) | 1.0 | false | RC | `""` | ✅ |
+
+¹ A phase-file előkészítésében CH5=0.0 szerepelt, de a hardware **kettős hysteresis**
+küszöbe `enter > 0.85`, `exit < -0.85`. CH5=0.0 nem trigger-eli az RC→ROBOT átmenetet.
+A teszt a valós CH5 alsó véghelyzettel (`-1.0`) készült — ez a hardware-mintával egyezik.
+
+**Extended teszt:**
+
+| # | Forgatókönyv | Eredmény |
+|---|---|---|
+| R7 | rotary=2, CH5=1.0, ESTOP=true | **Log-ból PASS:** `State: ESTOP \| Mode: NAVIGATION` — a `last_active_mode_` patch a Priority 5/6 fallback úton is helyesen viselkedik |
+| R4 | tilt szim. `/sensors/imu/data` | **G6-ra halasztva** — bno08x_driver folyamatosan publikál, dupla publisher nem garantáltan érvényes |
+| R5 | tilt szim. + RC | **G6-ra halasztva** — ugyanaz |
+| R8 | proximity szim. `/scan` | **G6-ra halasztva** — rplidar_node folyamatosan publikál |
+
+A 3 halasztott teszt élesteszten validálódik (G6) a fizikai stimulussal — robot megdöntés,
+akadály elé helyezés.
+
+**Verifikációk a G2 után:**
+- `microros_agent` visszaindítva, `/robot/mode` rate 9.86 Hz (várt ~10) — Pico él
+- A `safety_supervisor.cpp` változás **commit-olva** (lentebb)
+- A `nav2_params.yaml` inflation_radius=0.25 patch **továbbra is uncommitted**, G3 alatt rendezzük
+
+**Mellékhatás megfigyelés:** A `mode=NAVIGATION` érték **megőrződik** ESTOP/FAULT alatt is
+(R7 + post-Pico-restart `/safety/state` echo) — a Priority 5/6 fallback ágak (`mode = last_active_mode_`)
+mostantól a rotary-eredetű kontextust tükrözik, **NEM** a korábbi "RC" override-fertőzött értéket. Ez
+egy **bónusz fix** a tegnap megbeszélt scope-ban (ERROR alatti mode konzisztencia).
+
+**Lezárás dátum:** 2026-05-13.
+
+**Mentett logok:**
+- `/tmp/g2_build.log` (in-container colcon build)
+- `/tmp/g2_state_R1.json` ... `/tmp/g2_state_R6.json`, `/tmp/g2_state_R7.json` (forgatókönyv eredmények)
+- `/tmp/g2_final_state.json` (Pico visszaindítás utáni state)
+- Backup binary: container `/root/talicska-ws/install/robot_safety/lib/robot_safety/safety_supervisor.bak_g2`
+
+**Következő:** G3 — NAVIGATION_REPLAY profil + `get_merged()` flat-key fix + `inflation_radius=0.25` commit.
 
 ### G3 — Profil-merge + sebességcap
 

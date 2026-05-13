@@ -975,9 +975,11 @@ private:
     // RC→robot váltáskor a watchdog_tick() törli a sensor latch-eket és újraindítja az ellenőrzést.
     // Hysteresis-szűrt belépés (rc_mode_sub_ callback frissíti rc_active_-t a kettős küszöbbel).
     if (rc_active_) {
-      last_active_mode_ = "RC";
       state = "RC";
-      mode  = "RC";
+      // mode a rotary-eredetű parancsnoki kontextust tükrözi, hogy CH5=RC→ROBOT
+      // visszakapcsolásnál a trajectory_node és más AUTO-figyelők folytathassák a feladatot.
+      mode = commanded_mode_;
+      // last_active_mode_ szándékosan nem módosul a Priority 5, 6 fallback-jéhez.
       return;
     }
 
@@ -1390,7 +1392,9 @@ private:
   std::string fault_reason_   = "";
   std::string error_reason_   = "";
 
-  // last_active_mode_: only updated by RC or ROBOT/FOLLOW/SHUTTLE — preserved during ESTOP/ERROR/FAULT
+  // last_active_mode_: only updated by Priority 6 commanded_mode_ — ROBOT/FOLLOW/NAVIGATION.
+  // NOT updated by RC override (Priority 4b) — ez biztosítja, hogy a rotary-eredetű feladat
+  // kontextusa megőrződjön RC pause alatt.
   std::string last_active_mode_ = "IDLE";
 
   // Publish rate control
