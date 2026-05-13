@@ -549,7 +549,7 @@ rebuild **után** futtat egy gyors smoke tesztet a kritikus gate-ekből — még
 | G4 | twist_mux pipeline (rc_teleop disable) | ✅ DONE | 2026-05-13 | 2026-05-13 | T1-T4 mind PASS, T4 failsafe érintetlen. Tag: replay-v1-g4-twistmux-done |
 | G5 | Modulszintű integráció (ok_go + trajectory) | ✅ DONE | 2026-05-13 | 2026-05-13 | 2 agent ciklus (Phase A + retry/Phase B `/safety/state` mock-kal). T1-T5 mind PASS. Tag: replay-v1-g5-modules-done |
 | G7 | Post-rebuild revalidation | ✅ DONE | 2026-05-13 | 2026-05-13 | 17/17 sub-point PASS friss image-en (`make build` + manuális rotary/CH5 vezérlés). Backlog: `replay.launch.py` bringup-include |
-| G6 | Élesteszt (földi 5 m kör) | ⬜ TODO | — | — | G7 után |
+| G6 | Élesteszt (szűkített, 1m+1m + interfész tanulás) | ⬜ TODO | — | — | Plan elkészült 2026-05-13. Felhasználó kézi vezérléssel végrehajtja. 5 m kör G6b külön. |
 
 ---
 
@@ -2820,9 +2820,232 @@ Mit NE csinálj:
 Visszajelentés: a phase-file `Agent report sablon` szerint.
 ```
 
-### G6 — Élesteszt (földi 5 m kör)
+### G6 — Élesteszt (szűkített, 1m+1m + interfész tanulás)
 
-**Állapot:** ⬜ TODO (kibővítendő a kanban-haladás során)
+**Állapot:** ⬜ TODO — plan elkészült 2026-05-13. Felhasználói kézi vezérléssel végrehajtandó (NEM agent feladat).
+
+> ⚠️ **Élesteszt fizikai motion-nal — a felhasználó felügyel.** A robot földön, 1m előre + 1m hátra
+> biztonságos mozgástérrel + 0.25 m Nav2 inflation puffer. **Proximity kikapcsolva** a szűk hely
+> miatt. **CH5=RC bármikor megáll** a robotot, fizikai E-Stop tartalék.
+
+#### Cél
+
+A Trajectory Replay v1 feature **élesteszt-szintű validálása** szűkített térben:
+- A felhasználó megtanulja a Pico interfészt (rotary, CH5, OK GO gomb)
+- A robot rövid (~70-80 cm) trajectory-t LEARN-ben felvesz, AUTO-ban visszajátssza
+- RC override (CH5=RC) AUTO közben pause-CANCEL → CH5=ROBOT resume-folytat
+
+Az eredeti phase-file 5 m kör **későbbi G6b** (nagyobb térben, kültérre vagy nagyobb terembe).
+Ez a G6 a feature **kezdeti élesteszt-PoC-ja**.
+
+#### Függőség (input)
+
+- ✅ G7 DONE — friss image-en 17/17 PASS, valódi safety_supervisor + valódi Nav2 stack
+- **Fizikai prereq:**
+  - Robot földön, kerekek súrlódási tapadással
+  - **1m előre + 1m hátra biztonsági mozgástér** + 0.25 m inflation puffer = ~2.5 m összesen
+  - Akadálymentes mozgástér (oszlop, fal, ember NEM a tesztsávban)
+  - **Felhasználó jelen van** (biztonsági operátor)
+  - **Sürgősségi RC kéznél** (CH5 átkapcsolás bármikor + fizikai E-Stop tartalék)
+- **Stack prereq:**
+  - `safety_supervisor` `/safety/state` `estop:false, safe:true, watchdog_ok:true, tilt:false`
+  - `bt_navigator`, `controller_server`, `planner_server` lifecycle `active`
+  - `slam_toolbox` aktív, `/tf map → base_link` 50 Hz érkezik
+  - `ok_go_supervisor` + `trajectory_node` futnak (manuálisan indítva ha kell, ld. G7 backlog ítem)
+  - `/data/maps/current/` symlink él, és **NEM tartalmaz** régi `trajectory.yaml`-t (különben az AUTO PLAY a régi pályára menne)
+- **Config prereq:**
+  - `ROBOT_MODE=NAVIGATION_REPLAY` (a `desired_linear_vel=0.555` cap miatt)
+  - **`proximity_enabled: false` runtime override** — szűk hely, hamis triggerek elkerülése
+  - `inflation_radius: 0.25` (a G3-ban beállított default, már aktív)
+
+#### Prereq config — proximity kikapcsolás
+
+A szűk teszt-tér miatt a 360° proximity zóna (`proximity_dist=0.782 m`) hamis pozitívan trigger-elne (fal, oszlop, közelben tartózkodó felhasználó). **Runtime kikapcsolás** (nem yaml-edit + rebuild):
+
+```bash
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ros2 param set /safety_supervisor proximity_enabled false
+'
+
+# Verify
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ros2 param get /safety_supervisor proximity_enabled
+'
+# Várt: Boolean value is: False
+
+# /safety/state JSON-ban a "proximity" mező figyelése — várt: false stabilan
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  timeout 3 ros2 topic echo /safety/state --once | grep -oE "\"proximity\":[a-z]+"
+'
+```
+
+**A G6 zárása után visszakapcsolandó:**
+```bash
+docker exec robot bash -lc 'source /opt/ros/jazzy/setup.bash && ros2 param set /safety_supervisor proximity_enabled true'
+```
+
+Vagy stack restart (`make down && make up`) automatikusan a yaml-default `true`-ra visszaáll.
+
+#### Sub-test fázisok
+
+##### S1 — Setup és pre-flight (5 perc)
+
+1. Robot a tesztsávban a kezdőpozícióban (a felhasználó vizuálisan ellenőrzi az 1m+1m mozgásteret)
+2. `/data/maps/current/trajectory.yaml` törlése (régi G5 teszt-adat ne zavarjon)
+3. `proximity_enabled` runtime kikapcsolás (fent)
+4. `replay.launch.py` futása ellenőrzése (`ros2 node list` mutatja az `ok_go_supervisor` és `trajectory_node`-ot); ha nem, manuálisan indítása
+5. `/safety/state` snapshot: `state="IDLE"` vagy `"ROBOT"` (rotary alapján), `safe=true`, `proximity=false`, `estop=false`
+
+##### S2 — Interfész tanulás (5-10 perc, NEM mozgat)
+
+A felhasználó megismerkedik a Pico kapcsolókkal **fizikai mozgás nélkül**. A Foxglove-on vagy
+`ros2 topic echo` segítségével követhetők a topic-állapotok.
+
+**Mit nézzünk Foxglove-on (3 topic):**
+- `/safety_parsed` (a `safetystate.ts` szkript által dekódolt JSON) — `state`, `mode`, `safe`,
+  `proximity`, `estop`, `tilt`, stb. strukturált mezők
+- `/ok_go/state` JSON — `phase`, `rotary_mode`, `safety_state`, `button_pressed`, `long_triggered`,
+  `trajectory_loaded`, `led_state`
+- `/trajectory/state` JSON — `phase`, `pose_count`, `current_index`, `trajectory_loaded`,
+  `saved`, `done`, `stuck`
+
+**Tanulási lépések (kerekek a földön, de nincs RC parancs adva):**
+
+| # | Művelet | Várt megfigyelés |
+|---|---|---|
+| L1 | rotary AUTO (2) → LEARN (0) | `/safety/state` `state="ROBOT"` → `"ROBOT"` (mode mező változik 2→0); `/ok_go/state rotary_mode: 2 → 0` |
+| L2 | LEARN-ben CH5: ROBOT → RC | `/safety/state state` `"ROBOT" → "RC"`; `/ok_go/state phase: LEARN_IDLE → RECORDING`; `/trajectory/state phase: IDLE → CAPTURING` |
+| L3 | LEARN+RC-ben OK GO SHORT click (<1 s) | `/ok_go/cmd` 1 üzenet `data: 1` (SAVE); `/trajectory/state saved: true`; `/data/maps/current/trajectory.yaml` létrejön (de `pose_count=1` mert robot nem mozdul) |
+| L4 | LEARN+RC-ben OK GO LONG hold (>5 s) | `/ok_go/cmd` `data: 2` (WIPE), majd 16 s múlva `data: 8` (WIPE_COMPLETE); `trajectory.yaml` törölve |
+| L5 | LEARN+RC-ben OK GO CANCEL hold (1-5 s) | `/ok_go/cmd` üzenet **NEM** jön (mert CANCEL = "nem érvényes click"); a `RECORDING` állapot megmarad |
+| L6 | rotary LEARN → AUTO (2) | `/ok_go/state rotary_mode: 0 → 2`; ha van mentett `trajectory.yaml`, akkor `phase: AUTO_LOADED` |
+| L7 | AUTO+RC → AUTO+ROBOT (CH5 átkapcsol) | `/safety/state state="RC" → "NAVIGATION"`; `/ok_go/state phase: AUTO_LOADED` (még nem PLAYING) |
+
+**S2 PASS feltétel:** mind a 7 lépés helyes topic-reakcióval. **NINCS fizikai mozgás eddig.**
+
+##### S3 — LEARN-SAVE-AUTO 1m mozgás (10-15 perc)
+
+A felhasználó RC-vel óvatosan vezeti a robotot előre ~70-80 cm-t, majd visszafele.
+
+**Setup:**
+- rotary=LEARN (0) + CH5=RC → robot RC-re vált, `RECORDING + CAPTURING` aktív
+- `/data/maps/current/trajectory.yaml` **NEM létezik** (S1 vagy L4 utáni törlés után)
+
+**S3 lépések:**
+
+| # | Művelet | Várt |
+|---|---|---|
+| M1 | RC-vel óvatosan **előre ~30-50 cm** | `/trajectory/state pose_count` nőj 1 → 5-10 (10 Hz × 5-10 s, dedup-pal a tényleges pose-szám függ a sebességtől) |
+| M2 | RC-vel óvatosan **vissza a kezdőpontra** | `pose_count` további növekedés (vissza-pose-ok) |
+| M3 | OK GO SHORT click (<1 s) | `/ok_go/cmd data: 1` (SAVE); `trajectory.yaml` létrejön; `pose_count` rögzített |
+| M4 | Verify `trajectory.yaml` tartalma | YAML schema_version=1, `frame_id: map`, `poses_count >= 5` |
+| M5 | rotary LEARN → AUTO; CH5 RC → ROBOT | `/safety/state state="NAVIGATION"`; `/ok_go/state phase: AUTO_LOADED` |
+| M6 | OK GO SHORT click | `/ok_go/cmd data: 3` (PLAY); `/trajectory/state phase: ACTIVE_GOAL`; Nav2 `NavigateThroughPoses` goal accepted |
+| M7 | **Megfigyelés:** robot AUTO-ban követi az utat | `/cmd_vel_nav2 linear.x ~0.555 m/s`, robot fizikailag halad ugyanazon az úton előre + vissza |
+| M8 | Lezárás: AUTO végén `/trajectory/state phase: DONE` (`done: true`) | LED `STEADY_ON` |
+
+**Biztonsági szabály M7 alatt:** ha a robot **bármilyen váratlan mozgást** mutat (oldalirány,
+gyorsulás, irányváltás meglepő helyen), a felhasználó **azonnal CH5=RC-re kapcsol** → robot
+RC-re vált, megáll. Ez a S4 előkészítése is.
+
+**S3 PASS feltételek:**
+- M3: `trajectory.yaml` mentve, `poses >= 5`
+- M6: Nav2 goal accepted (NEM rejected, NEM rögtön ABORTED)
+- M7: robot **fizikailag halad** a felvett trajectory-n (>20 cm tényleges elmozdulás megfigyelhető)
+- M8: vagy DONE (sikeresen befejezte) **vagy** STUCK error_code-dal — STUCK is informatív, a
+  feature mechanikája akkor is működik
+
+##### S4 — RC override mid-AUTO (PAUSE-RESUME, 5-10 perc)
+
+Az S3 vagy egy új S3-ciklus AUTO PLAYING fázisában a felhasználó **CH5=RC-re kapcsol** a robot
+mozgása közben.
+
+**Setup:** S3 M6 után, amikor a `phase: ACTIVE_GOAL` aktív és a robot mozog.
+
+**S4 lépések:**
+
+| # | Művelet | Várt |
+|---|---|---|
+| O1 | AUTO PLAYING közben CH5 ROBOT → RC | `/safety/state state="NAVIGATION" → "RC"` (a robotot pillanatok alatt átveszi); `/ok_go/state phase: PLAYING → AUTO_PAUSED`; `/trajectory/state phase: ACTIVE_GOAL → CANCELLED`; Nav2 goal cancel-elve |
+| O2 | RC-ben **megáll** (nincs joystick input) vagy óvatosan **mozgat egy kicsit** | A robot az RC parancsra reagál; AUTO háttér-állapot megőrizve (`current_index` rögzítve a Nav2 feedback-ből) |
+| O3 | CH5 RC → ROBOT visszakapcsolás | `/safety/state state="RC" → "NAVIGATION"`; **ha** `/ok_go/state phase: AUTO_PAUSED → PLAYING` (4.1 tranzit `PAUSED (AUTO) → PLAYING` `state="NAVIGATION"`-re); új `NavigateThroughPoses send_goal(trajectory[current_index:])` |
+| O4 | AUTO folytatódik a maradék útvonalon | robot a `current_index`-től tovább halad; `/trajectory/state phase: ACTIVE_GOAL` újra |
+
+**S4 PASS feltételek:**
+- O1: AUTO → CANCELLED 1 s alatt (CH5 átkapcsolás → Nav2 goal cancel)
+- O3: AUTO_PAUSED → PLAYING automatikus a CH5=ROBOT-ra való visszakapcsolásra
+- O4: a robot a maradék útvonalon (NEM újraindul a 0. pose-tól)
+
+Ha O3-O4 FAIL: a feature PAUSE-RESUME mechanikája hibás, javító agent szükséges. A G6 PASS így
+részleges, de a **LEARN-SAVE-AUTO** (S3) önmagában is feature-kész.
+
+#### PASS kritériumok — összesített
+
+| Sub-test | Szigorúan kötelező | Tolerált FAIL |
+|---|---|---|
+| S1 setup | proximity off, /safety/state safe | — |
+| S2 interfész | L1-L7 mind PASS (legalább 6/7) | egy-egy edge-case-ban LED-anomália |
+| S3 mozgás | M3 (SAVE), M6 (goal accepted), M7 (fizikai motion) | M8 STUCK elfogadható (NEM kötelező DONE) |
+| S4 RC override | O1 (CANCEL gyors), O3 (auto-resume) | O4 részleges (resume goal-küldés FAIL → backlog) |
+
+#### FAIL diagnosztika
+
+| Tünet | Gyökér-ok |
+|---|---|
+| L1 — rotary kapcsolás nem észlelt | Pico hardware probléma, vagy `/robot/mode` topic nem publikál (microros_agent down) |
+| L3 — SAVE után `trajectory.yaml` nem létrejön | `trajectory_node` `flush_to_yaml` exception, vagy `/data/maps/current` symlink rossz |
+| M6 — Nav2 goal `rejected` | `bt_navigator` lifecycle NEM `active`, vagy a felvett pose-okhoz az aktuális kezdőpose túl messze (>tolerance) |
+| M6 — Nav2 goal `accepted` de rögtön ABORTED | `inflation_radius` a felvett pose-ok körül blokkol; vagy SLAM lokalizáció elveszett |
+| M7 — robot **NEM mozdul** AUTO PLAY-ben | `/cmd_vel` lánc szakadt: `controller_server → /cmd_vel_nav2 → velocity_smoother → /cmd_vel_nav2 → twist_mux → /cmd_vel_raw → safety_supervisor gate → /cmd_vel → diff_drive_controller`. Verify minden topicon `ros2 topic hz` |
+| M7 — robot **rossz irányba/sebességgel mozog** | `desired_linear_vel` rossz (NEM 0.555 — V2.P3 verify); vagy a felvett trajectory yaw értékei elsős nem helyesek |
+| O1 — RC override NEM cancel-el | `trajectory_node /safety/state` sub-szöveg-keresés rossz, vagy a `goal_handle.cancel_goal_async()` exception-t dob |
+| O3 — auto-resume nem trigger-el | `ok_go_supervisor` 4.1 tranzit `PAUSED (AUTO) → PLAYING` `state="NAVIGATION"`-re tévesen másra reagál; vagy `current_index` reset-elt (regression) |
+| Proximity hamis trigger a teszt során | `proximity_enabled` paraméter visszaállt true-ra, vagy egy más node felülírta — re-set |
+
+#### Visszalépési pont
+
+- L1-L7 FAIL → ne folytasd, fizikai/interfész probléma — `make down + make up` clean restart, és Pico cyklusos behajtás (újraindítás)
+- M6 ABORTED / M7 mozgás-FAIL → CH5=RC azonnal → `git checkout replay-v1-g7-revalidated -- .` és új Docker rebuild (de G7 már zöld → valószínűleg fizikai/SLAM probléma)
+- O1 CANCEL-FAIL → **azonnali fizikai E-Stop press** → robot megáll → diagnosztika
+
+#### Regressziós veszély
+
+A G6 NEM editel kódot, csak fizikai mérés a már G7-validált stack-en. **Nincs visszafelé
+regressziós veszély a kódbázisban.** A `proximity_enabled false` runtime override viszont
+**nem perzisztens** — a G6 után visszaállítandó (vagy stack restart automatikusan helyreállítja).
+
+#### DONE feltétel
+
+- [ ] S1 setup PASS (proximity off, stack él)
+- [ ] S2 interfész tanulás PASS (legalább 6/7 lépés)
+- [ ] S3 LEARN-SAVE-AUTO PASS (M3+M6+M7 kötelező)
+- [ ] S4 RC override PASS (O1+O3 kötelező, O4 részleges elfogadható)
+- [ ] `proximity_enabled` visszakapcsolva true-ra (vagy stack restart)
+- [ ] `/data/maps/current/trajectory.yaml` állapot dokumentálva (megőrzés vagy törlés)
+- [ ] G6 `Eredmény` szekció kitöltve + Kanban G6 → ✅ DONE
+- [ ] Git tag `replay-v1-g6-onfloor-done` (opcionális, csak mérési mérföldkő)
+- [ ] `docs/progress.md` 2026-05-13 bejegyzés a G6 tanulságaival
+
+#### Felhasznált logok / outputs
+
+- Foxglove screencast vagy screenshot a 3 topic változásairól (S2 + S3)
+- `/data/maps/current/trajectory.yaml` (S3 SAVE után)
+- `docker exec robot ros2 bag record -o /tmp/g6_bag /safety/state /ok_go/state /trajectory/state /cmd_vel /cmd_vel_nav2 /cmd_vel_rc /robot/mode /robot/rc_mode` opcionális teljes mérés-rögzítés
+
+#### Eredmény
+
+*(A gate záráskor töltődik a felhasználó tanulság-listájával: melyik tranzit volt evidens,
+melyik volt nem-intuitív, melyik FAIL-elt és miért. Ezek a backlog-jelölés alapja a v1 utáni
+UX-finomításhoz.)*
+
+#### Megjegyzés: G6b (5 m kör) későbbi külön gate
+
+Az eredeti phase-file 5 m kör tesztje nagyobb térben hajtható végre (kültér vagy ipari terem).
+A G6 jelenleg a v1 első élesteszt PoC-ja a meglévő szűk térben — a 5 m kör **G6b**-ként
+később kerül futtatásra (esetleg a v2 alatt vagy demo-előkészítésként).
 
 ---
 
