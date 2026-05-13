@@ -606,30 +606,204 @@ Egyenként kerülnek kibővítésre a kanban-haladás során. Sablon minden gate
 > **Végrehajtási prompt — új session:** a következő session által betöltendő szöveg, ami
 > elindítja a gate végrehajtását vagy a következő gate-et (ld. [Munkamenet folyamat](#munkamenet-folyamat--session-boundary))
 
-### Munkamenet folyamat — session-boundary
+### Munkamenet folyamat — Orchestrator-Agent pattern
 
-**Szabály (2026-05-13):** Minden gate plan végén — a részletes terv és az előkészítés
-befejeztével — **új sessiont indítunk** a tényleges végrehajtáshoz, hogy a Claude friss
-kontextussal dolgozzon. A nagy projekt-szakaszok közbeni kontextus-akkumuláció ronthatja
-a következő gate-en végzett munkát; ezt elkerüljük.
+**Szabály (2026-05-13):** A projekt szakasz végrehajtása **orchestrator-agent** mintában
+történik. Az orchestrator (a fő session) felügyel, tervez, dönt — nem implementál.
+A subagentek (friss kontextussal indított worker-ek) végrehajtják a gate konkrét lépéseit,
+és tömör reporttal jelentenek vissza.
 
-**Hogyan:**
-1. A gate `Végrehajtási prompt — új session` szakaszában megfogalmazódik, hogy mit kell a
-   következő sessionnek tennie — explicit lépéssor, hivatkozással a phase-file releváns
-   szekcióira és memóriához
-2. A jelenlegi session: `git commit` + `git push` (a phase-file frissítésével együtt), majd
-   lezárás
-3. Új session indul a felhasználó által, a `Végrehajtási prompt` beilleszthető kiindulóként
-   vagy egyszerűen a `phase_trajectory_replay.md` betöltése elegendő
+**Why:** Hatékony token-használat + tiszta felelősség-szétválasztás. Az orchestrator
+kontextusába csak a tervezési viták, a phase-file aktuális állapota, és az agent
+report-jai kerülnek — NEM a cpp kód, NEM a Bash output flood, NEM a build log. Az agentek
+viszont friss kontextussal, fókuszáltan dolgoznak egy adott feladaton.
 
-**A session-boundary helyei:**
-- Gate plan **részletes terve elkészültével** (mielőtt a végrehajtás kezdődne)
-- Gate **végrehajtásának lezárásakor** (mielőtt a következő gate plan-jét írnánk)
-- Gate **FAIL diagnosztika közben**, ha a diagnosztika hosszan elnyúlik és a kontextus
-  elavul
+#### A két szerepkör
 
-Az új session a phase-file betöltésével azonnal tudja, hol vagyunk a kanban táblában és
-mit kell tenni — nem kell narratív "összegzés"-t betölteni a korábbi sessionből.
+| | **Orchestrator** (fő session, "én") | **Agent** (subagent, worker) |
+|---|---|---|
+| Kontextus | Tervezési viták, phase-file, döntésnapló, agent report-ok | Egyetlen prompt + amit ő olvas a fájlokból |
+| Tools | Read, Edit, Bash (orchestration), Agent (spawn), AskUserQuestion | Bash, Read, Write, Edit (a feladat szerinti scope-ban) |
+| Feladat | Gate-plan írás, agent indítás, report review, döntés, phase-file frissítés, git commit | Egyetlen lokalizált feladat végrehajtása + tömör report |
+| Hány gate egyszerre | 1 gate orchestrálása | 1 agent = 1 lokalizált feladat (gate-rész) |
+| Időtartam | Egész projekt szakasz | Egyetlen feladat (perctől órákig) |
+
+#### Az orchestrator dolga
+
+1. **Tervez** — phase-file `Per-Gate Plan` szakaszok írása, sablon kitöltése
+2. **Spawn-ol** — `Agent` tool, `general-purpose` subagent_type, explicit prompt
+3. **Review-ál** — az agent report-ját értelmezi, PASS/FAIL megítélés
+4. **Dönt** — PASS → következő gate; FAIL → javító agent vagy user-konzultáció vagy backlog
+5. **Frissít** — phase-file `Eredmény`, kanban tábla, döntésnapló
+6. **Commit/push** — gate-záráskor a phase-file változások verziókezelve
+
+#### Az agent dolga
+
+1. **Olvas** — a phase-file releváns gate szekcióját, a hivatkozott forrásfájlokat
+2. **Végrehajt** — Bash parancsok, Edit/Write fájlokon, Python script futtatás
+3. **Mér** — a `PASS kritériumok` szerinti adatok gyűjtése
+4. **Jelent** — tömör report a sablon szerint (lentebb)
+
+#### Mit az agent **NEM** csinál
+
+- **Nem javít FAIL esetén** — B opció: visszajön a diagnosztikai output-tal,
+  az orchestrator dönti el a javítást (új agentet vagy konzultációt)
+- **Nem lép a következő gate-re** — egy agent egy lokalizált feladat
+- **Nem frissíti a kanban táblát** — csak az `Eredmény` szekcióra ad javaslatot,
+  az orchestrator szerkeszti be
+- **Nem commit/push** — kivéve, ha az orchestrator kifejezetten kéri a feladatban
+- **Nem kérdezi a usert** — minden user-konzultáció az orchestrator dolga
+- **Nem indít másik agentet** — egyszintű spawn, nincs ágazat
+- **Nem hoz scope-bővítő döntést** — pl. backlogba teendő vs azonnal fixálandó
+
+#### FAIL policy — B opció (2026-05-13 választott)
+
+```
+Agent végrehajt → FAIL detektál → tömör report a tünettel és diagnosztikával → STOP
+       │
+       ▼
+Orchestrator értelmezi a phase-file `FAIL diagnosztika` táblája szerint
+       │
+       ▼
+Döntés:
+  (a) Új javító agent — EXPLICIT, szűk feladattal (pl. "javítsd a controller_server
+      lifecycle-t úgy, hogy …")
+  (b) User konzultáció — AskUserQuestion-nel preferencia/scope tisztázása
+  (c) Backlog — ha a javítás scope-bővítés, későbbre tolódik
+  (d) Gate visszalépés — előfeltétel-szintű FAIL, korábbi gate-et kell újra
+```
+
+A javító agent **NEM ugyanaz**, mint a végrehajtó agent — friss kontextussal indul,
+csak a javítási feladatot kapja meg, NEM az eredeti gate teljes terhét.
+
+#### Kommunikációs protokoll
+
+**Prompt struktúra (orchestrator → agent), kötelező elemek:**
+
+```
+**[Agent szerepkör]** — Trajectory Replay v1 projekt szakasz, [Gate ID] végrehajtó vagy
+[Javító/Diagnosztikai] agent.
+
+**Kontextus:** olvasd be elsőként a `docs/phase_trajectory_replay.md`-t. A projekt
+szakasz fő hivatkozása. A munkamenet-szabályokat a `Munkamenet folyamat` szekcióban
+találod. Ezekhez tartsd magad.
+
+**Feladat:** [pontos, lokalizált — egy gate egy szakasza VAGY egy konkrét javítás]
+
+**Lépéssor:**
+1. ...
+2. ...
+
+**Sikerkritériumok:** [PASS feltételek, hivatkozva a phase-file releváns kritériumaira]
+
+**Mit NE csinálj:**
+- Ne javíts FAIL esetén — térj vissza diagnosztikai output-tal
+- Ne lépj a következő gate-re
+- Ne módosítsd a kanban táblát
+- Ne commit/push
+
+**Visszajelentés formátum:** alább specifikálva (a phase-file `Agent report sablon`).
+```
+
+**Report struktúra (agent → orchestrator), kötelező elemek:**
+
+```markdown
+## [Gate ID / Javítás-azonosító] Agent Report
+
+### Mit csináltam
+[1 bekezdés, 2-5 mondat — mit hajtottam végre]
+
+### Eredmény
+| Kritérium | Várt | Mért | PASS/FAIL |
+|---|---|---|---|
+
+### Logok / output mintái
+[releváns kódblokkok, max ~20 sor/blokk]
+
+### Anomáliák / FAIL diagnosztika (ha van)
+- **Tünet:** ...
+- **Diagnosztikai output:** ...
+- **Phase-file `FAIL diagnosztika` táblájával egyeztetve:** ... (vagy: új típus)
+
+### Javasolt phase-file Eredmény szekció tartalma
+[az orchestrator beszerkeszti, ha jóváhagyja]
+```
+
+#### Mikor kell mégis új user-session
+
+Az agent-pattern mellett a user-session-boundary **másodlagos**, és csak akkor kell:
+
+- Az **orchestrator kontextusa telítődik** (sok gate után, hosszú döntésnapló) — a
+  felhasználó "új session" jelzésére az orchestrator zárja a folyamatot és a phase-file
+  betöltése elég a folytatáshoz
+- A felhasználó **explicit kéri** (pl. munkamegszakítás, holnap folytatás)
+- A projekt szakasz **lezárul** — új szakasz új phase-file-lel és új session-nel
+
+#### Hatékonyság szabályok
+
+1. **Egy agent egy lokalizált feladat** — ne adjunk át "az egész gate-et" egyetlen agentnek,
+   ha a gate több független fázisra bontható
+2. **Javító agentek SZŰKEK** — egy probléma, egy fix, NEM "javítsd ki az egész G3-at"
+3. **Az orchestrator a phase-file-t a gate záráskor frissíti**, NEM közben — a kanban
+   reflektálja a végállapotot, az `Eredmény` szekció pedig az agent végső report-ját
+4. **Párhuzamos agentek csak függetlenül**: ha két javítás teljesen független
+   (pl. G3 yaml-fix + G4 callback-fix), spawn-olhatóak egyszerre. Egyébként sorban.
+5. **`SendMessage` követő tisztázásra**: ha egy agent jelent, és követő részlet kell
+   (pl. teljes log-fájl, vagy egy ellenőrző Bash parancs), ne új agent — `SendMessage`-szel
+   az eredeti agent folytatja saját kontextusával
+6. **Az orchestrator NEM kódol** — minden Edit/Write **forrásfájlon** (kivéve a phase-file
+   és docs) agent feladata. Az orchestrator a phase-file-t és a `docs/`-t szerkeszti
+   közvetlenül
+
+#### Határok (mire kell ügyelni)
+
+| Határ | Orchestrator | Agent |
+|---|---|---|
+| Forráskód edit (cpp, yaml, py, launch) | ❌ nem | ✅ igen, a feladat scope-jában |
+| `docs/phase_trajectory_replay.md` edit | ✅ igen | ❌ nem (csak javaslat report-ban) |
+| `docs/*.md` egyéb edit | ✅ igen (záráskor) | ✅ csak ha a feladat ezt kéri |
+| `git commit` / `push` | ✅ igen | ❌ nem (kivéve explicit feladat) |
+| `docker build/rebuild` | csak ha rövid (<2 min) | ✅ rebuild-feladat agent dolga |
+| `ros2 service call`, `topic echo`, `param get` | ✅ orchestration, állapotellenőrzés | ✅ feladat-mérés |
+| Cpp/launch debug log olvasás | átfogó, döntéshozatalhoz | részletes, FAIL diagnosztikához |
+| User-kérdés (AskUserQuestion) | ✅ igen | ❌ soha |
+| Memória írás/olvasás | ✅ igen | ❌ nem (az orchestrator szabálya marad) |
+| Új agent spawn | ✅ igen | ❌ nem |
+
+#### Példa folyamat egy gate-en
+
+```
+1. Orchestrator: G3 plan részletezése (phase-file Edit)
+2. Orchestrator: git commit "phase: G3 plan részletes terv"
+3. Orchestrator: Agent spawn — "G3 végrehajtó agent" prompt
+   ├─ Agent: olvas phase-file G3, olvas navigation.launch.py
+   ├─ Agent: Edit navigation.launch.py (flat-key fix)
+   ├─ Agent: Edit robot_params.yaml (NAVIGATION_REPLAY profil)
+   ├─ Agent: Edit nav2_params.yaml (inflation_radius 0.25)
+   ├─ Agent: Bash: container restart
+   ├─ Agent: Bash: param get desired_linear_vel → mért érték
+   └─ Agent: Report visszaad: PASS (4 kritérium, 1 anomália dokumentálva)
+4. Orchestrator: Report review, PASS jóváhagyás
+5. Orchestrator: Edit phase-file (G3 Eredmény, kanban G3 → ✅ DONE)
+6. Orchestrator: git commit + push "phase: G3 lezárás, NAVIGATION_REPLAY 0.555 m/s validálva"
+7. Orchestrator: G4 plan részletezése (új gate kezdődik)
+```
+
+Egy FAIL eset:
+
+```
+3. Orchestrator: Agent spawn — "G3 végrehajtó agent"
+   ├─ Agent: ... próbálja, a param get 0.5-öt ad 0.555 helyett
+   └─ Agent: Report FAIL — tünet, diagnosztika, NEM próbál javítani
+4. Orchestrator: Report review, diagnosztika értelmezése
+   → A flat_for_ros2 nem flat-eli a "FollowPath" subdict-et helyesen
+5. Orchestrator: Agent spawn — "G3 javító agent (flat-key bug)"
+   ├─ Agent: olvas navigation.launch.py
+   ├─ Agent: Edit (specifikus javítás)
+   ├─ Agent: Bash: container restart, param get → 0.555 PASS
+   └─ Agent: Report PASS
+6. Orchestrator: phase-file frissítés (G3 Eredmény: két agent jelentett, anomália + fix)
+```
 
 ### G1 — Stack-validation (NavigateThroughPoses bench)
 
