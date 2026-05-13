@@ -548,7 +548,7 @@ rebuild **után** futtat egy gyors smoke tesztet a kritikus gate-ekből — még
 | G3 | Profil-merge + sebességcap | ✅ DONE | 2026-05-13 | 2026-05-13 | 2 javító agent ciklus (preexisting bug-ok); P1+P2 PASS. Tag: replay-v1-g3-profile-done |
 | G4 | twist_mux pipeline (rc_teleop disable) | ✅ DONE | 2026-05-13 | 2026-05-13 | T1-T4 mind PASS, T4 failsafe érintetlen. Tag: replay-v1-g4-twistmux-done |
 | G5 | Modulszintű integráció (ok_go + trajectory) | ✅ DONE | 2026-05-13 | 2026-05-13 | 2 agent ciklus (Phase A + retry/Phase B `/safety/state` mock-kal). T1-T5 mind PASS. Tag: replay-v1-g5-modules-done |
-| G7 | Post-rebuild revalidation | ⬜ TODO | — | — | G5 + Docker rebuild után |
+| G7 | Post-rebuild revalidation | ✅ DONE | 2026-05-13 | 2026-05-13 | 17/17 sub-point PASS friss image-en (`make build` + manuális rotary/CH5 vezérlés). Backlog: `replay.launch.py` bringup-include |
 | G6 | Élesteszt (földi 5 m kör) | ⬜ TODO | — | — | G7 után |
 
 ---
@@ -2450,7 +2450,7 @@ Visszajelentés: a phase-file `Agent report sablon` szerint.
 
 ### G7 — Post-rebuild revalidation
 
-**Állapot:** ⬜ TODO — plan elkészült 2026-05-13. Végrehajtás a `make build` (~20 perc) után.
+**Állapot:** ✅ DONE — 2026-05-13. Friss image-en (build 19:38 helyi idő) 17/17 sub-point PASS. Manuális rotary/CH5 vezérléssel a fizikai inputok, agent-pub override nélkül → tiszta mérés a valódi `safety_supervisor`-ral.
 
 #### Cél
 
@@ -2730,9 +2730,63 @@ build + új G7 ciklus.
   `/tmp/g7_V4_*` (3 fájl)
 - `docker images robot-robot --format '{{.CreatedAt}}'` snapshot
 
-#### Eredmény
+#### Eredmény — G7 ✅ DONE (2026-05-13)
 
-*(A gate záráskor töltődik.)*
+**Build:** `docker compose build robot` SUCCESS, ~14 perc (19:24 → 19:38 helyi idő), exit code 0. Új image `robot-robot:latest` SHA `470b136a`, méret 5.65 GB. Snapshot `robot-robot:pre-g7` SHA `81c7831d` rollback pontként megőrizve.
+
+**Stack restart:** `make down` + `ROBOT_MODE=NAVIGATION_REPLAY sudo -E docker compose up -d --force-recreate robot`. Healthy ~10 s alatt, lifecycle ACTIVATED ~60 s alatt.
+
+**Mérési metódus:** **manuális rotary + CH5 vezérlés** (felhasználó fizikailag állította a Pico kapcsolókat), agent-pub override nélkül. Ez kiküszöbölte a multi-publisher race-t és tisztán a valódi `safety_supervisor` reakcióját mértük.
+
+**Sub-verify eredmények — 17/17 PASS:**
+
+| # | Kritérium | Várt | Mért | Verdict |
+|---|---|---|---|---|
+| V1.P1 | binary timestamp > G5 commit | 2026-05-13 16:00 UTC után | 2026-05-13 17:37 UTC | ✅ |
+| V1.P2 | `/robot/mode` sub type | `Int32` | `Int32` | ✅ G2 type migráció |
+| V1.P3 | `/safety/state state` rotary=2+CH5=RC | `"RC"` | `"RC"` | ✅ |
+| V1.P4 | `mode` Priority 4b RC override alatt | `"NAVIGATION"` | `"NAVIGATION"` | ✅ **G2 patch friss binary-ben** |
+| V2.P1 | `ROBOT_MODE` env | `NAVIGATION_REPLAY` | `NAVIGATION_REPLAY` | ✅ |
+| V2.P2 | `/controller_server` lifecycle | `active [3]` | `active [3]` | ✅ |
+| V2.P3 | `FollowPath.desired_linear_vel` | `0.555` | `0.555` | ✅ **G3 profil-merge + flat-key bugfix friss image-en** |
+| V3.P1 | `/rc_teleop_node disable_in_navigation` | `True` | `True` | ✅ G4 patch |
+| V3.P2 | `/cmd_vel_rc` 3s sor AUTO+ROBOT (WARN-szűrt) | `0` | `0` | ✅ **G4 némasága friss binary-ben** |
+| V4.P1 | `ok_go_supervisor` + `trajectory_node` fut | 2 node | mind a 2 a `ros2 node list`-en | ✅ (manuálisan indítva, ld. lent) |
+| V4.P2 | `/safety/state` publisher | `safety_supervisor` node | `safety_supervisor` (NEM mock) | ✅ |
+| V4.P3 | `/ok_go/state phase` rotary=0+CH5=RC | `"RECORDING"` | `"RECORDING"`, `safety_state="RC"`, `rotary_mode=0` | ✅ |
+| V4.P4 | `/trajectory/state phase` | `"CAPTURING"` | `"CAPTURING"`, `pose_count=1`, `trajectory_loaded=true` | ✅ TF capture él |
+| Bonus | V1.P3 verify CH5 | `/robot/rc_mode ~1.0` | `0.9997` | ✅ |
+| Bonus | V3.P2 verify CH5 | `/robot/rc_mode ~-1.0` | `-0.99999` | ✅ |
+| Bonus | `/data/maps/current` symlink | létezik | `→ slam_test3_2026-05-12_201456` | ✅ |
+| Bonus | E-Stop status verify | `estop:false, safe:true, watchdog_ok:true, tilt:false` | mind a 4 | ✅ |
+
+**Megfigyelések:**
+
+1. **`replay.launch.py` NEM auto-includálódik a `robot.launch.py`-ben** — a 2 új node manuálisan indítva `docker exec -d robot ros2 launch robot_missions replay.launch.py`-szel. **Backlog ítem:** `robot_bringup/launch/robot.launch.py`-ba `IncludeLaunchDescription` hozzáadás. Nem blokkolja a G6-ot, csak a permanens stack-integrációt.
+
+2. **Stack-él indulási tranzit:** a `replay.launch.py` indítás után közvetlenül a `/safety/state state="RC"` volt (a felhasználó már LEARN+RC állásban hagyta a Pico-t a V3.P2 után), ezért az `ok_go_supervisor` automatikusan `LEARN_IDLE → RECORDING (cmd=5)` tranzittal indult. Ez **helyes 4.1 viselkedés** — a node a startup-statot a `/safety/state` aktuális állapotából rögtön levezeti.
+
+3. **`/safety/state mode` üres "" indulás után** — a `safety_supervisor` `commanded_mode_` initial state lehet "" (üres), és csak az első `/robot/mode` Int32 msg után frissül. RC override alatt (Priority 4b) ez "üres" marad. **Nem hibás viselkedés**, csak rögzítendő edge-case.
+
+4. **TF capture stacionárius robotnál** — `pose_count=1` (a dedup 0.02 m / 0.035 rad küszöb után az első pose marad, a többi azonos). A G6 élesteszten ez magától dúsabb lesz.
+
+5. **`pgrep -af ok_go_supervisor` üres**, holott a node fut és topic-okat publikál. Ez a `docker exec -d` indítási mód PID-namespace anomália — `ros2 node list`-en megerősített.
+
+**G6 prereq:**
+- E-Stop feloldva ✓
+- Stack él friss image-en ✓
+- LEARN/AUTO állapotgép-tranzitok validáltak (V4) ✓
+- Csak a fizikai motion-tesztelés hátra (élesteszt 5 m kör vagy 1m+1m smoke a jelenlegi térben)
+
+**Mentett logok:**
+- `/tmp/g7_docker_build.log` — build SUCCESS
+- `/tmp/g7_V3P2_cmdvel_rc.csv` — V3.P2 WARN-szűrt mérés
+- `/tmp/g7_V4_launch.log` — replay.launch.py startup tranzitok
+
+**Lezárás dátum:** 2026-05-13.
+
+**Backlog ítemek (G7-ből kiszedett):**
+- `robot_bringup/launch/robot.launch.py`-ba `IncludeLaunchDescription("robot_missions/launch/replay.launch.py")` — a 2 új node auto-induljon a stack-startup-jakor
 
 #### Végrehajtási prompt — új session
 
