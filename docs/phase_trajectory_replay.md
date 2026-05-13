@@ -544,7 +544,7 @@ rebuild **után** futtat egy gyors smoke tesztet a kritikus gate-ekből — még
 | # | Gate | Állapot | Kezdés | Lezárás | Megjegyzés |
 |---|---|---|---|---|---|
 | G1 | Stack-validation (NavigateThroughPoses bench) | ✅ DONE | 2026-05-13 | 2026-05-13 | 3 ciklus után PASS — footprint-fix bench-scriptben, ld. 11.1 Eredmény |
-| G2 | Safety state-szemantika (Priority 4b) | ⬜ TODO | — | — | G1 után |
+| G2 | Safety state-szemantika (Priority 4b) | 🟡 IN PROGRESS | 2026-05-13 | — | Részletes plan ld. 11. G2 alatt |
 | G3 | Profil-merge + sebességcap | ⬜ TODO | — | — | G2 után |
 | G4 | twist_mux pipeline (rc_teleop disable) | ⬜ TODO | — | — | G2 + G3 után |
 | G5 | Modulszintű integráció (ok_go + trajectory) | ⬜ TODO | — | — | G4 után |
@@ -1255,7 +1255,200 @@ Az új session indulásakor a Claude a következő prompttal folytatja a G1-et:
 
 ### G2 — Safety state-szemantika (Priority 4b)
 
-**Állapot:** ⬜ TODO (kibővítendő a kanban-haladás során)
+**Állapot:** 🟡 IN PROGRESS — 2026-05-13
+
+#### Cél
+
+A `safety_supervisor` `/safety/state` JSON-jának `mode` mezője az **RC override** alatt a
+rotary-eredetű parancsnoki kontextust tükrözze (`NAVIGATION` / `FOLLOW` / `""`), NEM `"RC"`-t.
+Ezt a változtatást a holnapi `trajectory_node` PAUSED→PLAYING tranzitja igényli: a
+`mode == "NAVIGATION"` lesz a "van mit folytatni" jel az RC pause alatt is. Lásd a phase-file
+**6.4 szekcióját** a pontos diff-szel, és a **3.4 szekciót** a jel-úttal.
+
+#### Függőség (input)
+
+- G1 ✅ DONE — a stack alkalmas, a futó node-ok ACTIVATED
+- `safety_supervisor.cpp` forrás elérhető és buildálható in-container
+- Pico E-Stop board fizikailag csatlakoztatva (vagy a `microros_agent` átmeneti leállítása
+  és az agent saját szimulált publikációi a `/robot/mode`, `/robot/rc_mode`, `/robot/estop`
+  topicokra)
+- A `/safety/state` JSON szerkezet a phase-file 6. szekciójában
+
+#### Előkészítés
+
+##### Kód módosítás (3 lokáció — phase-file 6.4 + 9. szekció pontos diff-jeit követve)
+
+| # | Fájl:sor | Változás |
+|---|---|---|
+| 1 | `robot_safety/src/safety_supervisor.cpp:977-982` | Priority 4b átírás: `mode = commanded_mode_` (volt `"RC"`), `last_active_mode_ = "RC"` sor törölve |
+| 2 | `robot_safety/src/safety_supervisor.cpp:1393-1394` | `last_active_mode_` komment frissítés ("NOT updated by RC override Priority 4b") |
+| 3 | (opcionális) | Ha a build során a `nav_msgs` dep nem kell a változtatáshoz, hagyjuk érintetlenül |
+
+##### Build és bináris csere (in-container, gyors iteráció)
+
+```bash
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  cd /ros2_ws
+  colcon build --packages-select robot_safety \
+    --build-base /tmp/build_safety \
+    --install-base /tmp/inst_safety \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release
+' 2>&1 | tee /tmp/g2_build.log
+
+# A futó binary felülírása (a `safety.launch.py` mount-rendszerét követve)
+docker exec robot cp /tmp/inst_safety/lib/robot_safety/safety_supervisor \
+                    /opt/ros/jazzy/install/lib/robot_safety/safety_supervisor
+
+# Node restart (csak a safety_supervisor, NEM a teljes container)
+docker exec robot bash -lc 'pkill -SIGTERM -f safety_supervisor || true'
+# A lifecycle manager vagy a launch script automatikusan újraindítja
+sleep 5
+```
+
+**Megjegyzés:** ez a tegnapi 2026-05-13 in-container fix módszer (Blokker 1 megoldása). A
+teljes Docker rebuild a G7 alatt fog a teljes stack-en futni.
+
+##### Pico-bridge átmeneti leállítás (autonóm tesztelés)
+
+A regressziós tesztek **szimulált** Pico inputokat használnak, hogy az agent autonóm
+tudjon futni fizikai operátor nélkül:
+
+```bash
+# microros_agent leállítása (a Pico publikációk eltűnnek a DDS-ről)
+docker stop microros_agent
+
+# A teszt-szekvencia futtatása az agent saját publikációival
+# (ld. lentebb a 8 regressziós teszt)
+
+# A teszt végén
+docker start microros_agent
+
+# Verify: a Pico publishel és a /safety/state a fizikai inputra reagál
+docker exec robot bash -lc 'source /opt/ros/jazzy/setup.bash && \
+  ros2 topic hz /robot/mode --window 20'
+# Várt: ~10 Hz (Pico polling rate)
+```
+
+#### A 8 regressziós forgatókönyv
+
+Mind a 8 teszt egy **közös skeleton** szerint fut:
+
+```bash
+# A teszt SETUP — a forgatókönyv-specifikus topic-publikációk háttérben
+docker exec robot bash -lc 'source /opt/ros/jazzy/setup.bash && \
+  ros2 topic pub --rate 10 /robot/mode std_msgs/msg/Int32 "{data: <ROTARY>}" > /dev/null 2>&1 &
+  ros2 topic pub --rate 10 /robot/rc_mode std_msgs/msg/Float32 "{data: <CH5>}" > /dev/null 2>&1 &
+  ros2 topic pub --rate 10 /robot/estop std_msgs/msg/Bool "{data: <ESTOP>}" > /dev/null 2>&1 &'
+
+# Várj 3 s a hysteresis-stabilizálásra (kettős küszöb a safety_supervisor-ban)
+sleep 3
+
+# Olvasd ki az effektív /safety/state-et
+docker exec robot bash -lc 'source /opt/ros/jazzy/setup.bash && \
+  timeout 2 ros2 topic echo /safety/state --once' > /tmp/g2_state_R<N>.json
+
+# CLEANUP — pub processek megölése
+docker exec robot bash -lc 'pkill -f "ros2 topic pub /robot" || true'
+sleep 1
+```
+
+| # | Forgatókönyv | Rotary (`/robot/mode`) | CH5 (`/robot/rc_mode`) | Egyéb | Várt `state` | Várt `mode` |
+|---|---|---|---|---|---|---|
+| R1 | Rotary=AUTO, CH5=ROBOT, normál | 2 | 0.0 | — | `NAVIGATION` | `NAVIGATION` |
+| R2 | Rotary=AUTO, **CH5=RC** | 2 | 1.0 | — | `RC` | **`NAVIGATION`** ✓ új |
+| R3 | RC→ROBOT visszakapcsolás (R2 után) | 2 | 0.0 | (R2 után 3 s-cel) | `NAVIGATION` | `NAVIGATION` |
+| R4 | Rotary=AUTO, tilt fault, CH5=ROBOT | 2 | 0.0 | tilt szimulált IMU pub | `ERROR` | **`NAVIGATION`** ✓ új (volt `RC`) |
+| R5 | Rotary=AUTO, tilt fault, CH5=RC | 2 | 1.0 | tilt szimulált IMU pub | `ERROR` | `NAVIGATION` (megőrződik RC alatt is) |
+| R6 | Rotary=AUTO→LEARN közben CH5=RC | 0 | 1.0 | (R2 után rotary 2→0 váltás) | `RC` | `""` (commanded_mode_ üres) |
+| R7 | Rotary=AUTO, CH5=RC, E-Stop press | 2 | 1.0 | estop=true | `ESTOP` | `NAVIGATION` (last_active megőrződik) |
+| R8 | Rotary=ROBOT(2), proximity fault | 2 | 0.0 | proximity laser pub szimulált | `ERROR` | `NAVIGATION` (last_active) |
+
+**Tilt fault szimuláció (R4, R5):** Az IMU `roll` vagy `pitch` érték > `tilt_*_limit_`
+(25° / 20° default). Az agent publishel `/sensors/imu/data` (sensor_msgs/Imu) Quaternion-nal
+amelynek RPY pl. roll=30°. A `tilt_latch_` aktivál egy minta után.
+
+**Proximity fault szimuláció (R8):** Az `obstacle_layer` egy `LaserScan` minta egy
+range = 0.5 m-rel (a `proximity_dist=0.782 m` alatt). Az agent publishel `/scan`-re
+egy módosított `LaserScan`-t.
+
+**Megjegyzés:** A `safety_supervisor` minden topic-callback-jén csak akkor reagál friss
+adat, ha az érkezik. Ezért a `ros2 topic pub --rate 10` egy szándékos folyamatos publish
+ami felülbírálja a Pico-t (ami most leállt a `microros_agent` stop-pal).
+
+#### PASS kritériumok
+
+Mind a 8 forgatókönyv `/safety/state` JSON-ja **pontosan** a fenti `state` és `mode` értékeket
+adja. A többi mező (estop, watchdog_ok, tilt, proximity, latch-ek) **konzisztens** a
+forgatókönyvvel.
+
+Plusz egy közvetlen verifikáció a build sikerességére:
+
+```bash
+# A build után a binary timestamp friss
+docker exec robot stat /opt/ros/jazzy/install/lib/robot_safety/safety_supervisor | grep Modify
+
+# A futó node a friss binary-t használja
+docker exec robot bash -lc 'pgrep -af safety_supervisor'
+```
+
+#### FAIL diagnosztika
+
+| Tünet | Gyökér-ok | Javító akció |
+|---|---|---|
+| R2 `mode="RC"` | Priority 4b változás nem build-elt be (régi binary) | Re-build + binary csere + node kill+restart |
+| R2 `mode=""` (üres) | `/robot/mode` publish nem érkezik a `safety_supervisor`-hoz | `ros2 topic echo /robot/mode` ellenőrzés, hash-mismatch? |
+| R2 `state="IDLE"` | A `commanded_mode_` callback `mode_topic_timeout_s_` lejár (5s default), és az agent `pub --rate 10`-en nem érkezik át | Topic info, callback rate ellenőrzés |
+| R4 `mode="RC"` ERROR alatt | A 977. sor `last_active_mode_ = "RC"` törlése nem ment át | Diff revisit, build, restart |
+| R6 `mode="NAVIGATION"` LEARN-re váltás után | A Priority 6 `mode_topic_timeout_s_` (5s) miatt commanded_mode_ még él | Várj 6+s a `ros2 topic pub` rotary-váltás után |
+| R5 `state="RC"` várt `ERROR` helyett | Tilt fault szimuláció nem trigger-elt (egy IMU minta vagy debounce filter) | IMU pub többszöri minta, várj a `tilt_debounce_s` lejártáig |
+| R8 `state` nem `ERROR` | Proximity fault nem trigger-elt (clusters min_points=10, egyetlen laser scan minta nem elég) | Több scan publikálás, vagy a `proximity_min_points` ellenőrzés |
+| Build hiba | Compile error a `safety_supervisor.cpp`-ben | `g2_build.log` ellenőrzés, syntax fix |
+
+#### Visszalépési pont
+
+- **Bináris csere FAIL:** eredeti binary visszamásolás (a `pre-replay-v1-stable` tag-ből
+  rebuild egy referencia binary-t) + container restart
+- **Code bug:** `git checkout pre-replay-v1-stable -- robot_safety/src/safety_supervisor.cpp`
+  + rebuild
+- **Súlyos regressziós FAIL (3+ R-eset bukik):** `git reset --hard pre-replay-v1-stable`,
+  docker restart, és a `safety_supervisor` változtatás újratervezése
+- **A `microros_agent` nem indul újra:** `docker compose up -d --force-recreate microros_agent`
+
+#### Regressziós veszély
+
+A `safety_supervisor` az **autoritatív állapot-forrás** a teljes stack-ben. Egy rossz
+változás a `determine_state()`-ben az **egész safety architektúrát** instabillá tehet:
+- ERROR alatt rossz fallback → robot indul el blokkolt state-ben (safety break)
+- E-Stop nem aktivál → katasztrofális mozgás
+- A `last_active_mode_` szemantikai változása a `proximity_fault` ágon (Priority 6) is
+  problémát okozhat, ezért az R8 forgatókönyv kötelező a regressziós tesztben
+
+**A `pre-replay-v1-stable` rollback tag a teljes safety állapotot vissza tudja állítani.**
+
+#### DONE feltétel
+
+- [ ] Cpp diff a phase-file 6.4 szekciója szerint, build sikeres
+- [ ] Bináris csere a futó container-ben (timestamp friss)
+- [ ] Mind a 8 regressziós teszt PASS (várt `state`/`mode` minden esetben)
+- [ ] `/safety/state` topic 1 Hz baseline + on-change publikáció továbbra is működik
+- [ ] `microros_agent` visszaindítva, Pico fizikai inputra a `/safety/state` reagál
+- [ ] G2 Eredmény szekció kitöltve a 8 forgatókönyv JSON-jával
+- [ ] Kanban G2 → ✅ DONE
+- [ ] Git tag `replay-v1-g2-safety-done` létrehozva a HEAD-re
+- [ ] `safety_supervisor.cpp` változás **commit-olva** (uncommitted patch most a nav2_params.yaml
+      `inflation_radius=0.25` — ez a G3 alatt megy commit-ra)
+
+#### Felhasznált logok / outputs
+
+- `/tmp/g2_build.log` (in-container colcon build)
+- `/tmp/g2_state_R1.json` ... `/tmp/g2_state_R8.json` (8 forgatókönyv JSON)
+- `docker logs robot --since "10m"` (build/restart utáni state)
+- `safety_supervisor.cpp` git diff (`git diff HEAD -- robot_safety/src/safety_supervisor.cpp`)
+
+#### Eredmény
+
+(üres — a teszt után töltődik)
 
 ### G3 — Profil-merge + sebességcap
 
