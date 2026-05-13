@@ -762,14 +762,23 @@ Az agent-pattern mellett a user-session-boundary **másodlagos**, és csak akkor
 2. **Javító agentek SZŰKEK** — egy probléma, egy fix, NEM "javítsd ki az egész G3-at"
 3. **Az orchestrator a phase-file-t a gate záráskor frissíti**, NEM közben — a kanban
    reflektálja a végállapotot, az `Eredmény` szekció pedig az agent végső report-ját
-4. **Párhuzamos agentek csak függetlenül**: ha két javítás teljesen független
-   (pl. G3 yaml-fix + G4 callback-fix), spawn-olhatóak egyszerre. Egyébként sorban.
+4. **Párhuzamos agentek függetlenségi szabály alatt — ha lehet, párhuzamosíts:** ha két
+   feladat ténylegesen független (nem osztoznak forrásfájlon, nem ütik egymás output-ját,
+   és a teszt-feltételek külön validálhatók), spawn-olj **egyetlen üzenetben** több
+   Agent tool-hívást párhuzamosan. Ha sorrend kell (egyik output a másik inputja), sorban.
 5. **`SendMessage` követő tisztázásra**: ha egy agent jelent, és követő részlet kell
    (pl. teljes log-fájl, vagy egy ellenőrző Bash parancs), ne új agent — `SendMessage`-szel
    az eredeti agent folytatja saját kontextusával
 6. **Az orchestrator NEM kódol** — minden Edit/Write **forrásfájlon** (kivéve a phase-file
    és docs) agent feladata. Az orchestrator a phase-file-t és a `docs/`-t szerkeszti
    közvetlenül
+7. **200k kontextus küszöb — új agent indítás:** ha egy agent a feladat közben megközelíti
+   a 200k token kontextust (saját jelzés vagy a token-számláló alapján), az orchestrator
+   új agentet indít a maradék feladatra, a fennmaradó állapotot a phase-file-ba vagy
+   `/tmp/*`-ba mentve. A kontextus telítése után minőség-romlás várható — ez az agent
+   tervezett kicserélésével előzhető meg. A `SendMessage` továbbra is működik 200k alatt,
+   új agent fölött. **Az orchestrator saját kontextusára** ugyanez vonatkozik: ha telítődik,
+   új user-session-boundary (a phase-file betöltésével a következő session folytatja).
 
 #### Határok (mire kell ügyelni)
 
