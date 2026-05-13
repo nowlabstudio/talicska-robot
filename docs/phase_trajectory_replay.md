@@ -2450,7 +2450,321 @@ Visszajelentés: a phase-file `Agent report sablon` szerint.
 
 ### G7 — Post-rebuild revalidation
 
-**Állapot:** ⬜ TODO (kibővítendő a kanban-haladás során)
+**Állapot:** ⬜ TODO — plan elkészült 2026-05-13. Végrehajtás a `make build` (~20 perc) után.
+
+#### Cél
+
+A G2-G5 gate-feltételek **revalidálása a friss Docker image-en**, a G2-G5 alatt használt
+mock-ok és in-container `colcon build` + binary swap megkerülésével. A G7 zárja ki a
+"régi binary csapdát" (G4 alatt felfedezett lose-end: a G2 in-container build új binary-t
+hozott létre, de a launch system nem indította újra → tesztelés a régi binary-vel).
+
+A G7 ~10 perces smoke teszt, NEM teljes regressziós futás. A 4 sub-verify mindegyike
+1-3 percig tart.
+
+#### Függőség (input)
+
+- ✅ G5 DONE — `robot_missions/` csomag commit-olva (tag `replay-v1-g5-modules-done`)
+- ✅ Minden gate-érintette fájl push-olva GitHub-ra (a `make build` az image-be kerülő
+  kódot a checkout-tól vagy bind-mount-tól veszi — verify-ni kell a Dockerfile-ban)
+- **`make build` SUCCESS** — friss `robot-robot:latest` image (a `feedback_build.md`
+  szerint ~20 perc, "átgondoltan indítsd"). A build előtt érdemes snapshot-ot venni:
+  `docker tag robot-robot:latest robot-robot:pre-g7` (11.5 minta)
+- **`make up` SUCCESS** — a friss image-ből indul a stack
+- A V4 (G5 lánc) prereq-jei (csak ehhez a sub-verify-hoz):
+  - **Kerékfelemelés** (11.5 szabály — Nav2 motion-generáló teszt)
+  - **E-Stop feloldva** (`/safety/state` `"estop":false, "safe":true`) — különben a
+    `safety_supervisor` blokkolja az `ok_go_supervisor` 4.1 tranzitjait
+
+#### A 4 sub-verify
+
+| # | Verify | Mit ellenőriz | Kerékfelemelés | E-Stop |
+|---|---|---|---|---|
+| V1 | G2 safety semantika | `safety_supervisor` Int32 `/robot/mode` sub + Priority 4b `mode=commanded_mode_` | nem szükséges | bármelyik |
+| V2 | G3 profil-merge | `NAVIGATION_REPLAY` env-vel `desired_linear_vel=0.555` | nem szükséges | bármelyik |
+| V3 | G4 twist_mux | `disable_in_navigation=true` + `/cmd_vel_rc` AUTO-ban néma | nem szükséges (csak topic-mérés) | bármelyik |
+| V4 | G5 modulszintű lánc | `replay.launch.py` indul + okgo_btn → ok_go_supervisor → trajectory_node → NavigateThroughPoses **valódi `safety_supervisor`-ral, NEM mock** | **KÖTELEZŐ** | **FELOLDVA** |
+
+##### V1 — G2 safety semantika verify (1-2 perc)
+
+A friss `safety_supervisor` binary timestamp ellenőrzése + a Priority 4b szemantika
+revalidálása. Egyetlen pub-batch a rotary + CH5 + reset-pin szimulációval (kerékfelemelés
+NEM szükséges, csak topic-pub).
+
+```bash
+# Binary timestamp (várt: a build dátumánál friss)
+docker exec robot bash -lc 'stat -c "%y %n" /opt/ros_ws/install/robot_safety/lib/robot_safety/safety_supervisor'
+
+# Subscriber-típus ellenőrzés (várt: Int32, NEM String)
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ros2 topic info /robot/mode --verbose 2>&1 | grep -A 2 "Subscription count\|Type"
+'
+
+# Háttér pub: rotary=2 (AUTO, "NAVIGATION"-t commandol) + CH5=RC (RC override)
+docker exec -d robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ros2 topic pub --rate 10 /robot/mode std_msgs/msg/Int32 "{data: 2}" > /dev/null 2>&1
+'
+docker exec -d robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ros2 topic pub --rate 10 /robot/rc_mode std_msgs/msg/Float32 "{data: 1.0}" > /dev/null 2>&1
+'
+
+sleep 4   # hysteresis stabilizálás
+
+# Mérés
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  timeout 2 ros2 topic echo /safety/state --once
+' > /tmp/g7_V1_state.json
+
+# Cleanup
+docker exec robot bash -lc 'pkill -f "ros2 topic pub" 2>/dev/null; sleep 1'
+```
+
+**PASS kritériumok:**
+| # | Kritérium | Várt |
+|---|---|---|
+| V1.P1 | `safety_supervisor` binary timestamp | > G5 commit dátum (`f7efa89`, 2026-05-13) |
+| V1.P2 | `/robot/mode` subscriber type | `std_msgs/msg/Int32` |
+| V1.P3 | `/safety/state` JSON `"state"` (rotary=2 + CH5=RC) | `"RC"` |
+| V1.P4 | `/safety/state` JSON `"mode"` (rotary=2 + CH5=RC) | `"NAVIGATION"` (NEM `"RC"`) — Priority 4b |
+
+##### V2 — G3 profil-merge verify (1 perc)
+
+A `ROBOT_MODE=NAVIGATION_REPLAY` env változóval indított `controller_server` paraméterének
+ellenőrzése. **A `make up`-ot a felhasználó indítja `ROBOT_MODE=NAVIGATION_REPLAY` env-vel**
+mielőtt a V2 fut, vagy a docker-compose.yml manuálisan átírható.
+
+```bash
+# Verify a ROBOT_MODE env a futó containerben
+docker exec robot bash -lc 'env | grep ROBOT_MODE'
+
+# Várjuk meg a controller_server ACTIVATED-et (lifecycle stabilizálás)
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  for i in $(seq 1 30); do
+    state=$(ros2 lifecycle get /controller_server 2>/dev/null | grep -oE "active|inactive|unconfigured")
+    if [ "$state" = "active" ]; then
+      echo "controller_server ACTIVATED after $i s"
+      break
+    fi
+    sleep 1
+  done
+'
+
+# Param read
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ros2 param get /controller_server FollowPath.desired_linear_vel
+' > /tmp/g7_V2_vel.txt
+```
+
+**PASS kritériumok:**
+| # | Kritérium | Várt |
+|---|---|---|
+| V2.P1 | `ROBOT_MODE` env a containerben | `NAVIGATION_REPLAY` |
+| V2.P2 | `/controller_server` lifecycle 30 s-on belül | `active` |
+| V2.P3 | `FollowPath.desired_linear_vel` | `0.555` (NEM `0.5` default) |
+
+##### V3 — G4 twist_mux verify (1-2 perc)
+
+A `rc_teleop_node` `disable_in_navigation` paraméter ellenőrzése + AUTO+CH5=ROBOT alatt a
+`/cmd_vel_rc` topic némaságának validálása. A T4-es failsafe (TX-off) **NEM** ismétlődik
+itt (mert smoke), csak az alap T1 (AUTO+ROBOT némaság) — a teljes T1-T4 a G4 záráskor már
+PASS volt.
+
+```bash
+# Param read
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ros2 param get /rc_teleop_node disable_in_navigation
+' > /tmp/g7_V3_param.txt
+
+# Háttér: rotary=2 (NAVIGATION) + CH5=ROBOT (0.0) + motors=0
+docker exec -d robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ros2 topic pub --rate 10 /robot/mode std_msgs/msg/Int32 "{data: 2}" > /dev/null 2>&1
+'
+docker exec -d robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ros2 topic pub --rate 10 /robot/rc_mode std_msgs/msg/Float32 "{data: 0.0}" > /dev/null 2>&1
+'
+
+sleep 4  # safety_supervisor stabilizál NAVIGATION-re
+
+# Várt: /cmd_vel_rc 3s alatt 0 sor (néma)
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  timeout 3 ros2 topic echo /cmd_vel_rc --csv 2>&1 | wc -l
+' > /tmp/g7_V3_cmdvel_rc_count.txt
+
+# Cleanup
+docker exec robot bash -lc 'pkill -f "ros2 topic pub" 2>/dev/null; sleep 1'
+```
+
+**PASS kritériumok:**
+| # | Kritérium | Várt |
+|---|---|---|
+| V3.P1 | `/rc_teleop_node disable_in_navigation` param | `True` |
+| V3.P2 | `/cmd_vel_rc` sor-szám 3 s alatt AUTO+ROBOT-ban | `0` (néma) |
+
+##### V4 — G5 modulszintű lánc verify (3-5 perc) — **KERÉKFELEMELÉS + E-STOP FELOLDVA**
+
+**Az operátor kötelező előfeltételei:**
+1. A robot kerekekkel **felemelve** vagy fizikailag rögzítve (motorral hajtás megengedett, de
+   nem mozdulhat)
+2. A fizikai **E-Stop feloldva** (csavarja jobbra release-elésre), `safety_supervisor`
+   `/safety/state` `"estop":false, "safe":true` mutat
+3. A `safety_supervisor` ESTOP-latcha **resetelve** (`ros2 topic pub --once /robot/reset
+   std_msgs/msg/Empty {}` ha kell)
+
+A V4 az **integrált rendszer** smoke-ja: a Pico OK GO publishere még mindig nem létezik
+(ROS2-Bridge repó nem érintett), tehát az `okgo_btn`-t **továbbra is `ros2 topic pub`-bal
+szimuláljuk**, de minden egyéb (`safety_supervisor`, Nav2 stack, lifecycle) a friss image-ből
+fut.
+
+```bash
+# A) Verify a 2 új node bekerült a launch system-be
+docker exec robot bash -lc 'pgrep -af "ok_go_supervisor\|trajectory_node"'
+
+# Ha nem fut: vagy a launch system nem indítja automatikusan (a robot.launch.py-be
+# nem hivatkozik), VAGY manuális indítás kell:
+docker exec -d robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  source /opt/ros_ws/install/setup.bash
+  ros2 launch robot_missions replay.launch.py 2>&1 | tee /tmp/g7_V4_launch.log
+'
+sleep 5
+docker exec robot bash -lc 'pgrep -af "ok_go_supervisor\|trajectory_node"'
+
+# B) Verify a /safety/state valódi safety_supervisor-ból jön (NEM agent mock)
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ros2 topic info /safety/state --verbose 2>&1 | grep "Publisher count"
+' > /tmp/g7_V4_state_publisher.txt
+# Várt: legalább 1 publisher, ami a safety_supervisor
+
+# C) Mini lánc-teszt: LEARN belépés
+docker exec -d robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ros2 topic pub --rate 10 /robot/mode std_msgs/msg/Int32 "{data: 0}" > /dev/null 2>&1
+'
+docker exec -d robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ros2 topic pub --rate 10 /robot/rc_mode std_msgs/msg/Float32 "{data: 1.0}" > /dev/null 2>&1
+'
+sleep 4
+
+# Verify: /ok_go/state phase = "RECORDING" (a 4.1 tranzit lefutott)
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  timeout 2 ros2 topic echo /ok_go/state --once
+' > /tmp/g7_V4_okgo_state.json
+
+# Verify: /trajectory/state phase = "CAPTURING"
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  timeout 2 ros2 topic echo /trajectory/state --once
+' > /tmp/g7_V4_traj_state.json
+
+# Cleanup
+docker exec robot bash -lc 'pkill -f "ros2 topic pub" 2>/dev/null; sleep 1'
+```
+
+**PASS kritériumok:**
+| # | Kritérium | Várt |
+|---|---|---|
+| V4.P1 | `ok_go_supervisor` + `trajectory_node` futnak | 2 PID `pgrep` után |
+| V4.P2 | `/safety/state` publisher | a `safety_supervisor` node (nem ad-hoc `ros2 topic pub`) |
+| V4.P3 | `/ok_go/state` phase rotary=0+CH5=RC után | `"RECORDING"` |
+| V4.P4 | `/trajectory/state` phase | `"CAPTURING"` |
+
+**Megjegyzés:** A V4 a teljes lánc PoC-ja a rebuilt rendszerrel. NEM ismétli a T2-T5 sub-testet
+(SAVE/WIPE/PLAY/PAUSE) — a G5 záráskor azokat már bench-validáltuk. A V4 csak azt zárja ki,
+hogy a rebuild után az új `safety_supervisor` semantika törje meg az `ok_go_supervisor`
+4.1 belépő tranzitját. A T2-T5 a G6 (élesteszt) alatt fizikailag megismétlődik.
+
+#### FAIL diagnosztika
+
+| Tünet | Gyökér-ok |
+|---|---|
+| V1.P1 FAIL — binary timestamp régi | `make build` nem érintette a `robot_safety` package-t — verify a Dockerfile + ws-mount-rendszer |
+| V1.P2 FAIL — `/robot/mode` String sub | A G2 patch nem került be a build-be — `git log --all -- robot_safety/src/safety_supervisor.cpp` ellenőrzés |
+| V1.P4 FAIL — `mode=="RC"` | A Priority 4b patch nincs az image-en, vagy a `commanded_mode_` állapotgép nem update-elt — log `/safety/state` 5 másodpercig |
+| V2.P1 FAIL — env nem `NAVIGATION_REPLAY` | docker-compose vagy `make up` env passthrough hiba — `docker compose config` |
+| V2.P3 FAIL — `desired_linear_vel=0.5` (default) | `flatten_for_ros2()` + `get_merged()` G3 patch nincs az image-en, vagy a `robot_params_file` path rossz a `robot.launch.py:148`-ban |
+| V3.P1 FAIL — `disable_in_navigation` paraméter nem létezik | G4 patch nincs az image-en |
+| V3.P2 FAIL — `/cmd_vel_rc` nem néma | `rc_teleop_node` `parse_safety_state` nem találja `"NAVIGATION"`-t (json fragment-keresés rossz), vagy `disable_in_navigation=false` |
+| V4.P1 FAIL — `ok_go_supervisor` nem fut | A `bringup` launcher nem includálja `replay.launch.py`-t — backlog: `robot_bringup` integráció |
+| V4.P3 FAIL — `phase="LEARN_IDLE"` (nem `RECORDING`) | `/safety/state`-ben még mindig `state="ESTOP"` (operátor előfeltétel nem teljesült), vagy a `safety_supervisor` G2 Priority 4b szemantika új viselkedése félrement |
+
+#### Visszalépési pont
+
+- V1-V3 FAIL → új javító agent EXPLICIT a gyökér-ok ellen (a `git diff <gate-tag> -- <fájl>`
+  mutatja, mi került ki/be a build során)
+- V4.P1 FAIL (launch integráció) → backlog ítem, nem blokkolja a G6-ot (manuális
+  `ros2 launch robot_missions replay.launch.py` is OK)
+- V4.P3-P4 FAIL (lánc bug) → 2026-05-13 `feedback_estop_motor_isolation.md` szerinti E-Stop
+  verify; ha valóban lánc-bug, akkor visszafejtés G5-be: `git diff replay-v1-g5-modules-done HEAD -- robot_missions/`
+
+#### Regressziós veszély
+
+A G7 csak **mér**, NEM editel — a rebuilt rendszer állapotát rögzíti. Nincs visszafelé
+regressziós veszély. Ha bármelyik V1-V4 FAIL, az csak diagnosztikai jel — a fix egy újabb
+build + új G7 ciklus.
+
+#### DONE feltétel
+
+- [ ] `make build` SUCCESS + új `robot-robot:latest` image (timestamp `> 2026-05-13`)
+- [ ] `make up` SUCCESS, lifecycle ACTIVATED a `bt_navigator` + `controller_server` +
+  `safety_supervisor` node-okon
+- [ ] V1-V4 mind PASS (V4 a kerékfelemelés + E-Stop feloldás operátor-prereq-jeivel)
+- [ ] G7 `Eredmény` szekció kitöltve + Kanban G7 → ✅ DONE
+- [ ] Git tag `replay-v1-g7-revalidated` (opcionális — csak rebuild-mark, nem új kód)
+
+#### Felhasznált logok / outputs
+
+- `/tmp/g7_V1_state.json`, `/tmp/g7_V2_vel.txt`, `/tmp/g7_V3_cmdvel_rc_count.txt`,
+  `/tmp/g7_V4_*` (3 fájl)
+- `docker images robot-robot --format '{{.CreatedAt}}'` snapshot
+
+#### Eredmény
+
+*(A gate záráskor töltődik.)*
+
+#### Végrehajtási prompt — új session
+
+```
+G7 — Trajectory Replay v1 Post-rebuild revalidation végrehajtó agent.
+
+Kontextus: olvasd be docs/phase_trajectory_replay.md "G7 — Post-rebuild revalidation"
+szekcióját. Tartsd magad a `Munkamenet folyamat — Orchestrator-Agent pattern` szabályaihoz.
+
+Prereq verify (kötelező első lépés):
+- `make build` lefutott, friss image timestamp ellenőrzése
+- `make up` lefutott, lifecycle ACTIVATED
+- V4 előtt explicit verify: kerékfelemelés + E-Stop feloldva (a /safety/state-ben
+  "estop":false, "safe":true)
+
+Feladat:
+1. V1 — G2 safety semantika (binary timestamp + Int32 sub + Priority 4b `mode`)
+2. V2 — G3 profil-merge (NAVIGATION_REPLAY env + desired_linear_vel=0.555)
+3. V3 — G4 twist_mux (disable_in_navigation paraméter + /cmd_vel_rc némasága)
+4. V4 — G5 modulszintű lánc (replay.launch.py fut + okgo_btn → /ok_go/state → /trajectory/state)
+
+Sikerkritériumok: a phase-file `PASS kritériumok` táblái szerint, 14/14 (V1.P1-P4 +
+V2.P1-P3 + V3.P1-P2 + V4.P1-P4 = 13 — corrigálok). 13/13.
+
+Mit NE csinálj:
+- Ne javíts FAIL esetén — agent report-tal térj vissza
+- Ne lépj G6-ra
+- Ne módosítsd a kanban táblát
+- Ne commit/push (csak az orchestrator)
+
+Visszajelentés: a phase-file `Agent report sablon` szerint.
+```
 
 ### G6 — Élesteszt (földi 5 m kör)
 
