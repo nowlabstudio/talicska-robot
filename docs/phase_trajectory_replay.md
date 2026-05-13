@@ -1068,6 +1068,70 @@ Ez **pontosan** a tegnapi "régi binary" mintázat, csak más rétegben.
 futtatás a robot biztonsági állapotától függ, a G1 végrehajtás folytatása **új sessionben**
 történik, friss kontextussal.
 
+---
+
+#### Eredmény — G1 végrehajtási ciklusok (2026-05-13)
+
+A G1 háromszor futott a végrehajtási fázisban (orchestrator-agent pattern szerint). Két FAIL után
+diagnoszta agent a gyökér-okot azonosította:
+
+**1. ciklus — első futás (FAIL):**
+- `inflation_radius=1.0` lefedte a goal pose-okat (x ∈ [0, 0.30])
+- planner_server: `Failed to create plan with tolerance of: 0.150000`
+- result: Status 6 (ABORTED), error_code **308** (NO_VALID_PATH), feedback_count 7431
+- `/cmd_vel_nav` üres (controller sosem aktivált)
+
+**2. ciklus — inflation fix retry (FAIL):**
+- Javító agent: `nav2_params.yaml` inflation_radius 1.0 → 0.25 mindkét costmap-en (uncommitted patch)
+- Container restart + lifecycle ACTIVATED OK
+- Param verify: mindkét costmap inflation_radius = 0.25 ✓
+- DE a planner UGYANAZT a hibát adja → új hipotézisek (A: footprint, B: costmap-méret)
+
+**3. ciklus — diagnoszta agent (kétutas vizsgálat):**
+
+**A hipotézis: footprint blokkolja a close-range goal-okat → IGAZOLVA.**
+
+A robot footprint `[[0.605, 0.4], [0.605, -0.4], [-0.495, -0.4], [-0.495, 0.4]]`:
+- **+0.605 m kinyúlik előre** a base_link X tengelyén
+- A 5 goal pose `x ∈ [0, 0.30]` mind a footprint **belsejében** vannak → lethal cellákon álltak
+- Planner ezért `NO_VALID_PATH=308`
+
+Far-script (x ∈ [1.0, 1.4]) teszt: a `Failed to create plan` üzenet **nem jelent meg többé**, a
+controller_server megkapta a path-et, `Failed to make progress` log a várt mode=IDLE blokk miatt.
+**A footprint-en kívüli goal-okra a planning sikeres.**
+
+**B hipotézis: global_costmap kicsi → CÁFOLVA.**
+
+A param-szintű `width=5, height=5` default érték megtévesztő. A static_layer a `/map` topic-ból
+(SLAM map: 229×121 cella @ 0.05 res = 11.5×6.0 m) átveszi a tényleges geometriát. A publikált
+`/global_costmap/costmap` mérete is 229×121. A globális költségtérkép **bőven elég**.
+
+**Felfedezett finomságok:**
+- `static_layer.map_topic` runtime értéke üres string `""`, de a `/map` default fallback-kal
+  betöltődik. Ez NEM bug a mi setup-unkban
+- `inflation_radius=0.25` uncommitted patch jelenleg él, de **NEM szükséges** a G1 sikerhez
+  (a footprint az ok). A G3 alatti `NAVIGATION_REPLAY` profil úgyis tartalmazza 0.25-öt; a `nav2_params.yaml` base érték rendezése G3-ra halasztva
+- A bench-script `get_result_async()` time-out hiányzik — a result `None` lehet hosszan futó
+  nav esetén, és AttributeError-be fut. A javítás trivial: timeout + null-check
+
+**A G1 PASS feltétele tisztázódott:**
+1. `/tmp/ntp_client.py` goal pose-ait módosítani: x ∈ [0.7, 1.2] vagy hasonló (a footprint +0.605 m peremén kívül)
+2. A `get_result_async()` ágat időkezeléssel javítani
+3. A bench-en a P1-P6 kritériumok ezt követően teljesülnek
+
+**Baseline rögzítve (G3 input):** `FollowPath.desired_linear_vel = 0.8` (NAVIGATION default,
+NAVIGATION_REPLAY profil **még nincs**).
+
+**Mentett logok:**
+- `/tmp/g1_script.log` (1. ciklus, FAIL)
+- `/tmp/g1_retry_script.log`, `/tmp/g1_retry_cmd_vel_nav.csv` (2. ciklus, FAIL)
+- `/tmp/g1_diag_*.log` (3. ciklus, paraméter-feltárás)
+- `/tmp/g1_diag_far_script.log` (3. ciklus, A-hipotézis teszt PASS)
+- `/tmp/ntp_client.py` (eredeti), `/tmp/ntp_client_far.py` (diagnoszta-variáns)
+
+**A G1 állapota: 🟡 IN PROGRESS** — egy javító agent a perm bench-script fix-szel
+**rövidesen** ✅ DONE állapotra hozza.
+
 #### Végrehajtási prompt — új session a G1 lezárására
 
 Az új session indulásakor a Claude a következő prompttal folytatja a G1-et:
