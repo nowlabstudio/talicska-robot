@@ -93,13 +93,32 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 ---
 
 
-### 🟢 Trajectory Replay — Tanított útvonal-lejátszás (2026-05-13 indul)
+### ✅ Trajectory Replay v1 KÉSZ (2026-05-13)
 
-**Cél:** A felhasználó az **OK GO** gomb és a Pico 3-állású rotary (LEARN/FOLLOW/AUTO) segítségével
+**Státusz:** A teljes feature kódbázis-szinten implementálva, build-elve, élesteszten validálva. G1-G5 + G7 + G6 mind ✅ DONE. **Fő referencia:** `docs/phase_trajectory_replay.md` (G6 Eredmény szekció a tanulságokkal). Tag: `replay-v1-g6-floortest-done`.
+
+**Élesteszten validált viselkedés (1m+1m szűk térben):**
+- LEARN: RC-vel "csak előre" mintával felvett ~70 cm-es trajectory (`pose_count` ~60-130 dedup után)
+- SAVE: OK GO SHORT → `trajectory.yaml` mentése (`/data/maps/current/`)
+- AUTO PLAY: rotary=AUTO + CH5=ROBOT + OK GO SHORT → robot autonóm visszamegy ~0.278 m/s (1 km/h) cap-en
+- RC override: CH5=RC mid-AUTO → cancel, robot megáll, RC-vel irányítható; CH5=ROBOT vissza → automatikus folytatás `current_index`-től
+
+**v1 limitációi (a v2-höz vagy későbbi fix-hez):**
+
+1. **🔴 NavigateThroughPoses "goal pose" szemantika** — A Nav2 NEM garantálja a köztes pose-ok bejárását, csak a goal pose elérését. U-alakú LEARN (visszamenés a kezdőpontra) → goal-pose a kezdőponton → robot már ott → SUCCEEDED 0 cm motion. Workaround: "csak előre" minta. Backlog tétel: `wait_for_pose` per-pose iteráció `NavigateToPose`-zal vagy `FollowPath` (B-variáns).
+2. **🟡 `trajectory_node` 4.2 állapotgép `DONE` ág** — PLAY → DONE után a node nem tud új tanulásba átmenni; SAVE/WIPE/START_RECORDING parancsokra nem reagál. Workaround: `pkill` + `replay.launch.py` restart. Backlog tétel: 4.2 tranzitok bővítése.
+3. **🟡 `ok_go_supervisor` rotary 0→2 váltáskor** nem küld `cmd=PAUSE_RECORDING (6)`-ot, `trajectory_node` `CAPTURING`-ban marad. Backlog tétel.
+4. **🟡 `robot_bringup` integráció** — `replay.launch.py` jelenleg manuálisan indítandó, nincs auto-include a `robot.launch.py`-ban.
+5. **🟢 0.555 cap-en sebesség-burst hipotézis** — a Regulated Pure Pursuit fordulás után 0 → 0.555 m/s gyors gyorsulás. Backlog tétel: `velocity_smoother max_accel` tunning.
+
+**v1 fejlesztés-történet, eredeti terv és tervezett komponensek (megőrizve historikusan):**
+
+A felhasználó az **OK GO** gomb és a Pico 3-állású rotary (LEARN/FOLLOW/AUTO) segítségével
 taníthat egy útvonalat (LEARN), majd AUTO módban a robot autonóm lejátssza azt **maximum
 2 km/h (0.555 m/s)** sebességgel. RC override (CH5) bármikor megszakítja és pausolja a
-folyamatot; RC-ből visszakapcsolva folytatódik onnan, ahol abbahagyta. **B-variáns:**
-trajektória-replay (felvett pose-szekvencia), NEM goal-pose alapú Nav2 navigáció.
+folyamatot; RC-ből visszakapcsolva folytatódik onnan, ahol abbahagyta. **Eredetileg B-variáns**
+(FollowPath), majd **A-variánsra váltott 2026-05-13** (NavigateThroughPoses) az akadálykerülés
+támogatásához.
 
 **Új komponensek:**
 | Csomag/Node | Nyelv | Felelősség |

@@ -6,6 +6,51 @@
 
 ---
 
+## 2026-05-13 ESTE — Trajectory Replay v1 ✅ KÉSZ (G1-G7 + G6 mind PASS)
+
+**Eredmény:** A Trajectory Replay v1 feature **kódbázis + élesteszt-szinten kész**. Egyetlen napos szakasz, **7 gate** ✅ DONE (G1 stack-validation → G2 safety semantika → G3 profil-merge → G4 twist_mux → G5 modulszintű integráció → G7 post-rebuild revalidation → G6 élesteszt).
+
+**Fő referencia:** `docs/phase_trajectory_replay.md` (1500+ sor a teljes szakaszról). A backlog.md "Trajectory Replay v1" szekciója a v1 KÉSZ + limitációk listával.
+
+**Új kódbázis (1397 LOC):**
+- `robot_missions/src/ok_go_supervisor.cpp` (572 LOC) — OK GO gomb dekód (SHORT/CANCEL/LONG), LED minta-időzítés, 4.1 állapotgép (LEARN/AUTO ágak)
+- `robot_missions/src/trajectory_node.cpp` (652 LOC) — TF capture 10 Hz dedup-pal, yaml-cpp I/O, NavigateThroughPoses action client, 4.2 állapotgép
+- `robot_missions/launch/replay.launch.py` + `config/replay.yaml`
+- `robot_safety/src/safety_supervisor.cpp` — G2 Priority 4b: `mode = commanded_mode_` RC override alatt
+- `robot_teleop/src/rc_teleop_node.cpp` — G4: `disable_in_navigation` paraméter + `/safety/state` sub
+- `robot_bringup/launch/navigation.launch.py` — G3: `flatten_for_ros2()` + `get_merged()` flat-key bugfix
+- `config/robot_params.yaml` — G3: új `NAVIGATION_REPLAY` profil (0.555 m/s cap)
+- `robot_bringup/config/nav2_params.yaml` — G3: `inflation_radius: 0.25`
+
+**Gate tag-ek (rollback pontok):** `replay-v1-g2-safety-done`, `replay-v1-g3-profile-done`, `replay-v1-g4-twistmux-done`, `replay-v1-g5-modules-done`, `replay-v1-g7-revalidated`, `replay-v1-g6-floortest-done`.
+
+**Élesteszt G6 — szűkített 1m+1m + interfész tanulás:**
+- S1 Setup: `proximity_safety_margin_m 0.10→0.05` (szűk tér, container recreate), `desired_linear_vel 0.555→0.278` runtime
+- S2 Interfész tanulás: L1-L7 mind PASS (rotary + CH5 + OK GO SHORT/LONG/CANCEL tranzitok), G2 Priority 4b szemantika élesben validálva
+- S3 LEARN-SAVE-AUTO: "csak előre" minta sikeresen lefutott — robot fizikailag mozog
+- S4 RC override mid-AUTO: PAUSE-CANCEL + auto-RESUME PASS
+
+**Bag-elemzés — sebesség-profil 0.278 m/s cap-en (`g6_bag_play`):** mean=0.190 m/s, max=0.278 (cap betartva), 0% > 0.35 m/s (semmilyen burst). Egyenes szakasz lin_avg=0.255 (~92% desired), forduló lin_avg=0.103 (Regulated Pure Pursuit lelassítja). Konzisztens, várakozásnak megfelelő.
+
+**5 backlog ítem a v1-ből (átdokumentálva `docs/backlog.md`-be):**
+
+1. 🔴 **v2: per-pose iteráció / `wait_for_pose`** — a NavigateThroughPoses "goal-pose" szemantika problémája (U-alakú trajectory → robot már a goal-on → 0 motion). Workaround: "csak előre" minta.
+2. 🟡 **`trajectory_node` 4.2 `DONE` ág** — SAVE/WIPE/START_RECORDING parancsokat figyelmen kívül hagy, ezért egy PLAY → DONE után új tanulás node-restart nélkül NEM megy.
+3. 🟡 **`ok_go_supervisor` rotary 0→2 váltáskor** nem küld `cmd=PAUSE_RECORDING`-ot, `trajectory_node` `CAPTURING`-ban marad.
+4. 🟡 **`robot_bringup` integráció** — `replay.launch.py` manuálisan indítandó.
+5. 🟢 **0.555 cap-en sebesség-burst hipotézis** — `velocity_smoother max_accel` tunning vagy `regulated_linear_scaling` paraméterek.
+
+**Bench és élesteszt biztonsági szabály-frissítés a 11.5 szekcióból (G4 incidens):**
+- `/cmd_vel_*` mérés vagy RC/Nav2 szimuláció → kerékfelemelés KÖTELEZŐ
+- VAGY: fizikai E-Stop aktív (motorvezérlő hardver-leválasztott)
+- VAGY: fizikai mozgástér + biztonsági operátor (G6 minta)
+
+Új feedback memóriák: `feedback_estop_motor_isolation` (E-Stop = motor hardware-szintű leválasztás, Nav2 goal accepted és cmd_vel publikálódik, de motion nincs).
+
+**Következő szakasz:** v2 fejlesztés a backlog ítemek alapján (1-es prioritás: `wait_for_pose` mechanika), vagy egy másik feature-szakasz.
+
+---
+
 ## 2026-05-13 — Trajectory Replay prototípus élesteszt | ⏸ MEGÁLLT, HOLNAP TISZTA IMPL.
 
 **Cél:** A holnapi cpp implementáció előtt élesben validálni a Nav2 FollowPath replay-t egy
