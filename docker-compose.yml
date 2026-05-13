@@ -61,6 +61,12 @@ services:
       retries: 3
       start_period: 30s
     env_file: .env
+    # FIX (G3 2026-05-13): propagate host ROBOT_MODE env into container so that
+    # `ROBOT_MODE=NAVIGATION_REPLAY docker compose up -d robot` actually overrides
+    # the .env default. Without an explicit `environment:` block compose ignores
+    # host-level ROBOT_MODE and always uses the .env value.
+    environment:
+      ROBOT_MODE: ${ROBOT_MODE:-NAVIGATION}
     devices:
       - /dev/bus/usb:/dev/bus/usb
     volumes:

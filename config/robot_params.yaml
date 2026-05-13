@@ -148,6 +148,24 @@ _profiles_:
       max_velocity: [0.8, 0.0, 1.5]
       min_velocity: [-0.3, 0.0, -1.5]
 
+  # ── NAVIGATION_REPLAY — Trajectory Replay v1 lejátszás ────────────────────────
+  # Felvett pose-szekvencia (trajectory.yaml) Nav2 NavigateThroughPoses action-ön át.
+  # Max 2 km/h (0.555 m/s) sebességcap a tanult útvonal pontos követéséhez.
+  # A controller (RPP) és velocity_smoother kettős védelem (defense in depth).
+  NAVIGATION_REPLAY:
+    rplidar_node:
+      scan_mode:      ""
+      scan_frequency: 10.0
+
+    controller_server:
+      FollowPath:
+        desired_linear_vel:           0.555
+        min_approach_linear_velocity: 0.1
+
+    velocity_smoother:
+      max_velocity: [0.555, 0.0, 1.5]
+      min_velocity: [-0.2, 0.0, -1.5]
+
 
 # =============================================================================
 # NODE ALAP KONFIGURÁCIÓK

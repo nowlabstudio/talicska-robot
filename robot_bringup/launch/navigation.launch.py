@@ -38,11 +38,24 @@ def launch_setup(context, *args, **kwargs):
     with open(robot_params_file) as f:
         rp = yaml.safe_load(f)
 
+    def flatten_for_ros2(d, prefix=""):
+        """Nested dict → flat 'a.b.c' kulcsok, hogy a ROS2 Node parameters helyesen
+        alkalmazza profil-szintű overridként az nav2_params.yaml base értékeire."""
+        flat = {}
+        for k, v in d.items():
+            key = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
+            if isinstance(v, dict):
+                flat.update(flatten_for_ros2(v, key))
+            else:
+                flat[key] = v
+        return flat
+
     def get_merged(node_name):
-        base     = rp.get(node_name, {}).get("ros__parameters", {})
+        """A _profiles_/MODE/node_name nested dict-et flat 'a.b.c' kulcsokra alakítja.
+        A base értékek a nav2_params.yaml-ban vannak (params_file), ezt a Node parameters
+        listájának első eleme adja; a get_merged() output (második elem) felülírja."""
         override = rp.get("_profiles_", {}).get(robot_mode, {}).get(node_name, {})
-        # _profiles_ alatti értékek plain dict-ek (nincs ros__parameters szint)
-        return {**base, **override}
+        return flatten_for_ros2(override)
 
     controller_merged = get_merged("controller_server")
     smoother_merged   = get_merged("velocity_smoother")

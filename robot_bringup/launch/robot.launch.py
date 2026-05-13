@@ -145,7 +145,12 @@ def generate_launch_description():
                     "use_slam":          LaunchConfiguration("use_slam"),
                     "map_file":          LaunchConfiguration("map_file"),
                     "params_file":       PathJoinSubstitution([pkg, "config", "nav2_params.yaml"]),
-                    "robot_params_file": params_file,
+                    # FIX (G3 2026-05-13): explicit absolute path to robot_params.yaml.
+                    # Earlier we passed `params_file` (the outer LaunchConfiguration), but
+                    # the dict re-keys `params_file` to nav2_params.yaml first, so the
+                    # `robot_params_file` arg ended up pointing at nav2_params.yaml — that
+                    # YAML has no `_profiles_` section, so profile merge silently no-op'd.
+                    "robot_params_file": "/config/robot_params.yaml",
                 }.items(),
                 condition=IfCondition(LaunchConfiguration("use_nav")),
             )

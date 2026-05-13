@@ -192,7 +192,7 @@ global_costmap:
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 3.0
-        inflation_radius: 1.0           # 1m inflation for 100kg robot
+        inflation_radius: 0.25          # reduced from 1.0 for G1 bench (goals near robot)
       always_send_full_costmap: true
 
 # ── Local costmap ────────────────────────────────────────────────────────────
@@ -232,7 +232,7 @@ local_costmap:
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 3.0
-        inflation_radius: 0.8
+        inflation_radius: 0.25          # reduced from 0.8 for G1 bench (goals near robot)
       always_send_full_costmap: true
 
 # ── Map server ───────────────────────────────────────────────────────────────

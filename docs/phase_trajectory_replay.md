@@ -545,7 +545,7 @@ rebuild **után** futtat egy gyors smoke tesztet a kritikus gate-ekből — még
 |---|---|---|---|---|---|
 | G1 | Stack-validation (NavigateThroughPoses bench) | ✅ DONE | 2026-05-13 | 2026-05-13 | 3 ciklus után PASS — footprint-fix bench-scriptben, ld. 11.1 Eredmény |
 | G2 | Safety state-szemantika (Priority 4b) | ✅ DONE | 2026-05-13 | 2026-05-13 | 4 core PASS + R7 log-PASS; R4/R5/R8 → G6. Tag: replay-v1-g2-safety-done |
-| G3 | Profil-merge + sebességcap | 🟡 IN PROGRESS | 2026-05-13 | — | Részletes plan ld. 11. G3 alatt |
+| G3 | Profil-merge + sebességcap | ✅ DONE | 2026-05-13 | 2026-05-13 | 2 javító agent ciklus (preexisting bug-ok); P1+P2 PASS. Tag: replay-v1-g3-profile-done |
 | G4 | twist_mux pipeline (rc_teleop disable) | ⬜ TODO | — | — | G2 + G3 után |
 | G5 | Modulszintű integráció (ok_go + trajectory) | ⬜ TODO | — | — | G4 után |
 | G7 | Post-rebuild revalidation | ⬜ TODO | — | — | G5 + Docker rebuild után |
@@ -1685,9 +1685,56 @@ NAVIGATION_REPLAY-en alkalmazva. Ez backlog opció.
 - [ ] `safety_supervisor.cpp` változás már committed (G2), a teljes G3 csomag commit-olva
 - [ ] Git tag `replay-v1-g3-profile-done` létrehozva
 
-#### Eredmény
+#### Eredmény — G3 ✅ DONE (2026-05-13)
 
-(üres — a teszt után töltődik)
+**Két agent ciklus kellett** a B opció FAIL policy alatt:
+
+**1. ciklus — első G3 agent:**
+- `navigation.launch.py`: `flatten_for_ros2()` + új `get_merged()` (a 6.3 szekció szerint)
+- `config/robot_params.yaml`: `NAVIGATION_REPLAY` profil hozzáadva (5. profil az 4 mellé)
+- Python `py_compile` PASS, YAML `safe_load` PASS (5 profil)
+- Containerbe propagált verifikáció: **FAIL** — a `desired_linear_vel` továbbra is a `nav2_params.yaml` base értéke (0.8), a profile override nem érvényesült
+
+**Diagnosztika — 2 preexisting bug (G3 scope-on kívüliek, de blokkolók):**
+
+| # | Bug | Hely | Miért |
+|---|---|---|---|
+| 1 | `robot_params_file` rossz path | `robot_bringup/launch/robot.launch.py:148` | Az IncludeLaunchDescription `launch_arguments` dict ugyanazon `params_file` kulcsot előbb `nav2_params.yaml`-ra felülírja, így a `robot_params_file` argument is erre evaluálódik a child contextben. A `_profiles_` szekció soha nem volt látható → `get_merged()` üres dict |
+| 2 | `ROBOT_MODE` env passthrough hiányzik | `docker-compose.yml` `robot` service | Csak `env_file: .env` volt; a host `ROBOT_MODE=NAVIGATION_REPLAY docker compose up -d` nem propagálódott a containerbe (mindig `.env` `NAVIGATION` jutott be) |
+
+**2. ciklus — javító agent fix-ei:**
+
+- `robot.launch.py:148`: `"robot_params_file": "/config/robot_params.yaml"` (explicit abszolút path, egyezik a `docker-compose.yml` `./config:/config:ro` mount-jával és a `navigation.launch.py` `robot_params_file` argument default-jával)
+- `docker-compose.yml` `robot` service: `environment: ROBOT_MODE: ${ROBOT_MODE:-NAVIGATION}` hozzáadva (host env propagálás, default fallback `NAVIGATION`)
+
+**Tesztek — mindkettő PASS:**
+
+| Profil | `FollowPath.desired_linear_vel` | `velocity_smoother.max_velocity` | Container `ROBOT_MODE` env |
+|---|---|---|---|
+| NAVIGATION (control regressziós) | **0.5** ✓ | **[0.5, 0.0, 1.5]** ✓ | NAVIGATION ✓ |
+| **NAVIGATION_REPLAY** (új) | **0.555** ✓ | **[0.555, 0.0, 1.5]** ✓ | NAVIGATION_REPLAY ✓ |
+
+**Érintett fájlok (mind commit-olva ebben a G3 csomagban):**
+- `robot_bringup/launch/navigation.launch.py` — `flatten_for_ros2()` + `get_merged()` (1. ciklus)
+- `config/robot_params.yaml` — `NAVIGATION_REPLAY` profil hozzáadva (1. ciklus)
+- `robot_bringup/launch/robot.launch.py` — `robot_params_file` abszolút path fix (2. ciklus)
+- `docker-compose.yml` — `ROBOT_MODE` env passthrough (2. ciklus)
+- `robot_bringup/config/nav2_params.yaml` — **`inflation_radius=0.25`** patch (G1 javító agent munkája, eddig uncommitted, most a G3 commit-jában rendezve)
+
+**Mentett logok:**
+- `/tmp/g3_navigation.log` (1. ciklus, FAIL — 0.8 érték)
+- `/tmp/g3_fix_navigation.log` (2. ciklus, P1 PASS — 0.5)
+- `/tmp/g3_fix_navigation_replay.log` (2. ciklus, P2 PASS — 0.555)
+
+**Tanulság:** a tegnapi `desired_linear_vel=0.8` anomália **két rétegben** rejtőzött:
+- Felső réteg: a `flatten_for_ros2()` flat-key hiánya (a phase-file 6.3 szerint, fixálva)
+- Mélyebb réteg: a `robot_params_file` rossz path-ra mutatás (preexisting, az 1. ciklus tárta fel)
+
+Ha csak a felsőt javítjuk, semmi változás. Az alsó réteg fix nélkül a profil-merge **soha nem érvényesülhetett**. A defense-in-depth itt megfizetődik: a `flatten_for_ros2()` továbbra is helyes és szükséges (a ROS2 paraméter-override nested dict kezelése).
+
+**Lezárás dátum:** 2026-05-13.
+
+**Következő:** G4 — `rc_teleop_node` `disable_in_navigation` + `/safety/state` subscriber (twist_mux pipeline).
 
 ### G4 — twist_mux pipeline (rc_teleop disable_in_navigation)
 
