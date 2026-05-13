@@ -547,7 +547,7 @@ rebuild **után** futtat egy gyors smoke tesztet a kritikus gate-ekből — még
 | G2 | Safety state-szemantika (Priority 4b) | ✅ DONE | 2026-05-13 | 2026-05-13 | 4 core PASS + R7 log-PASS; R4/R5/R8 → G6. Tag: replay-v1-g2-safety-done |
 | G3 | Profil-merge + sebességcap | ✅ DONE | 2026-05-13 | 2026-05-13 | 2 javító agent ciklus (preexisting bug-ok); P1+P2 PASS. Tag: replay-v1-g3-profile-done |
 | G4 | twist_mux pipeline (rc_teleop disable) | ✅ DONE | 2026-05-13 | 2026-05-13 | T1-T4 mind PASS, T4 failsafe érintetlen. Tag: replay-v1-g4-twistmux-done |
-| G5 | Modulszintű integráció (ok_go + trajectory) | ⬜ TODO | — | — | G4 után |
+| G5 | Modulszintű integráció (ok_go + trajectory) | 🟡 IN PROGRESS | 2026-05-13 | — | Plan kész, agent végrehajtás következik |
 | G7 | Post-rebuild revalidation | ⬜ TODO | — | — | G5 + Docker rebuild után |
 | G6 | Élesteszt (földi 5 m kör) | ⬜ TODO | — | — | G7 után |
 
@@ -2013,7 +2013,377 @@ A T2 sub-test (state=RC + motor=0.3 szimulált pub) **fizikailag mozgásra paran
 
 ### G5 — Modulszintű integráció (ok_go + trajectory bench)
 
-**Állapot:** ⬜ TODO (kibővítendő a kanban-haladás során)
+**Állapot:** 🟡 IN PROGRESS — terv elkészült 2026-05-13, végrehajtás következik.
+
+> ⚠️ **BENCH-TESZT — KEREKEK FELEMELVE KÖTELEZŐ** (11.5 szekció szabálya, G4 incidens-tanulság).
+> A G5 minden olyan sub-test-jét, amely `/cmd_vel_*` parancsot eredményezhet (T4 AUTO PLAY,
+> T5 PAUSE/RESUME), a robot felemelt kerekekkel kell végrehajtani.
+
+#### Cél
+
+A `robot_missions` ROS2 csomag feltöltése a Trajectory Replay v1 két új node-jával
+(`ok_go_supervisor`, `trajectory_node`), launch + config fájllal, és a két node állapotgépeinek,
+TF capture-jének, YAML I/O-jának, NavigateThroughPoses action-kliensének bench-validálása.
+
+A G5 a feature **kódbázis-szintű készségét** zárja le. A G6 (élesteszt) és G7 (Docker rebuild
+revalidation) ezt feltételezi.
+
+#### Függőség (input)
+
+- ✅ G2 DONE — `/safety/state` `mode` mező megőrzi a rotary kontextust RC override alatt
+  (PAUSE-RESUME logikához kell)
+- ✅ G3 DONE — `NAVIGATION_REPLAY` profil 0.555 m/s sebességcap
+- ✅ G4 DONE — `rc_teleop_node` `disable_in_navigation` aktív, twist_mux pipeline OK
+- `slam_toolbox` aktív, `/tf map → base_link` 50 Hz érkezik (LEARN TF capture)
+- `bt_navigator` ACTIVATED, `NavigateThroughPoses` action elérhető (AUTO replay)
+- `/data/maps/current/` symlink létezik (jelenleg nincs — a G5 előkészítés rendezi)
+- Pico OK GO gomb publishere — **nem létezik még a ROS2-Bridge repóban**, ezért a bench-teszt
+  `/robot/okgo_btn` topicot **`ros2 topic pub`-bal szimulálja**
+
+#### Tervezett változtatások — fájlok
+
+| Fájl | Művelet | Tartalom |
+|---|---|---|
+| `robot_missions/CMakeLists.txt` | Edit | `find_package(rclcpp, rclcpp_action, tf2_ros, tf2_geometry_msgs, yaml-cpp, std_msgs, geometry_msgs, nav_msgs, nav2_msgs)` + 2 `add_executable` |
+| `robot_missions/package.xml` | Edit | `<depend>tf2_ros</depend>`, `<depend>tf2_geometry_msgs</depend>`, `<depend>yaml-cpp</depend>` hozzáadás |
+| `robot_missions/src/ok_go_supervisor.cpp` | Új | Állapotgép a 4.1 szerint (LEARN_IDLE/RECORDING/SAVE/WIPE + AUTO_IDLE/AUTO_LOADED/PLAYING/PAUSED/DONE/STUCK), gomb dekódolás, LED minta |
+| `robot_missions/src/trajectory_node.cpp` | Új | Állapotgép a 4.2 szerint (IDLE/CAPTURING/ACTIVE_GOAL/CANCELLED/DONE/STUCK), TF lookup 10 Hz, YAML I/O, NavigateThroughPoses action client |
+| `robot_missions/launch/replay.launch.py` | Új | A 2 node indítása `replay.yaml` paraméterrel |
+| `robot_missions/config/replay.yaml` | Új | Timing (short_max_s, long_min_s, sampling_hz), dedup küszöbök, file path, sebességcap |
+| `robot_bringup/launch/robot.launch.py` (vagy bringup launcher) | Edit (kis) | `IncludeLaunchDescription(robot_missions/replay.launch.py)` hozzáadás |
+
+A `safety.launch.py` és `navigation.launch.py` **NEM** változik G5 alatt — a 2 új node
+önálló launch fájlba kerül, hogy izoláltan tesztelhető legyen.
+
+#### Implementáció — 6 sub-task
+
+##### S1 — Build-rendszer kibővítése (CMakeLists.txt + package.xml)
+
+Hozzáadandó dep-ek:
+- `tf2_ros` (TF lookup)
+- `tf2_geometry_msgs` (quaternion → yaw konverzió)
+- `yaml-cpp` (YAML I/O — system package `libyaml-cpp-dev`, ament-ben `<depend>yaml-cpp</depend>`)
+
+A CMakeLists.txt-ben minden eddig kommentelt `find_package` aktiválandó + új executable-ök
+hozzáadva:
+```cmake
+add_executable(ok_go_supervisor src/ok_go_supervisor.cpp)
+ament_target_dependencies(ok_go_supervisor rclcpp std_msgs)
+add_executable(trajectory_node src/trajectory_node.cpp)
+ament_target_dependencies(trajectory_node rclcpp rclcpp_action std_msgs
+  geometry_msgs nav_msgs nav2_msgs tf2_ros tf2_geometry_msgs)
+target_link_libraries(trajectory_node yaml-cpp)
+install(TARGETS ok_go_supervisor trajectory_node DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
+```
+
+##### S2 — `ok_go_supervisor.cpp` implementáció
+
+A **4.1 szekció állapotgépe szerint**, az alábbi főbb elemekkel:
+- 4 subscriber: `/robot/okgo_btn` (Bool), `/safety/state` (String JSON), `/robot/mode` (Int32),
+  `/trajectory/state` (String JSON)
+- 3 publisher: `/ok_go/cmd` (UInt8 enum), `/ok_go/state` (String JSON), `/robot/okgo_led` (Bool)
+- Gomb dekódolás: rising edge → `press_start_`, falling edge → SHORT (<1.0 s) vagy CANCEL
+  (1.0-5.0 s); held >5.0 s → LONG (release nem kell)
+- LED minta timer (50 Hz): OFF/STEADY_ON/BLINK_2HZ/BLINK_4HZ/BLINK_5HZ/SAVE_FLASH (2 s)/
+  WIPE_FLASH (16 s, ramp-up villogás)/STUCK_FLASH
+- Állapotgép tranzitok a 4.1 tábla szerint
+- `/safety/state` JSON parsing **egyszerű string-keresés** (NEM nlohmann/json dep) — a `"state"`
+  mező értékét regex/find-del izoláljuk (a G4 mintáját követve)
+- A `/trajectory/state` JSON szintén string-keresés (`"phase"`, `"saved"`, `"done"`, `"stuck"`)
+
+##### S3 — `trajectory_node.cpp` implementáció
+
+A **4.2 szekció állapotgépe szerint**, az alábbi főbb elemekkel:
+- 3 subscriber: `/ok_go/cmd` (UInt8), `/safety/state` (String JSON), TF (tf2_ros::Buffer +
+  TransformListener)
+- 2 publisher: `/trajectory/state` (String JSON), `/recorded_path` (nav_msgs/Path —
+  Foxglove vizualizáció)
+- 1 action client: `/navigate_through_poses` (`nav2_msgs::action::NavigateThroughPoses`)
+- **TF capture timer 10 Hz** (CAPTURING fázisban):
+  - `tfBuffer.lookupTransform("map", "base_link", tf2::TimePointZero, 50ms)`
+  - quaternion → yaw (`tf2::getYaw`)
+  - dedup: ha `hypot(dx, dy) < 0.02 m` ÉS `|dyaw| < 0.035 rad`, eldob
+  - `pose_buffer.push_back({t, x, y, yaw})`
+- **YAML I/O (yaml-cpp):**
+  - `flush_to_yaml(path)`: schema_version=1, recorded_at=ISO-8601, frame_id="map",
+    sampling_hz=10, dedup_min_dist_m=0.02, dedup_min_yaw_rad=0.035, poses=[...]
+  - `load_trajectory(path)`: schema_version check, frame_id check, poses count > 0
+- **NavigateThroughPoses send_goal:** PoseStamped tömb a buffer-ből, `current_index=0`,
+  feedback callback frissíti `current_index`-et (closest pose), result callback DONE/STUCK
+- **CANCEL útvonal:** `/safety/state` state="RC" callback → `goal_handle.cancel_goal_async()`,
+  `current_index` megmarad
+- **RESUME útvonal:** `/ok_go/cmd = PLAY` ÉS phase == CANCELLED ÉS state="NAVIGATION" →
+  `send_goal(trajectory[current_index:])`
+- **File path paraméterezett:** default `/data/maps/current/trajectory.yaml`, override
+  `replay.yaml`-ban
+- **slam_toolbox service-ek halasztva:** a G5 v1 NEM hívja a `serialize_map` és `clear_changes`
+  service-eket — a SAVE csak a `trajectory.yaml`-t írja, a WIPE csak a `trajectory.yaml`-t törli.
+  A SLAM map serialize/wipe **backlogba kerül** (a feature v1 scope-on kívül, lokális fix-ként
+  külön G-ben rendeznénk)
+
+##### S4 — `launch/replay.launch.py` + `config/replay.yaml`
+
+`replay.launch.py`:
+```python
+from launch import LaunchDescription
+from launch_ros.actions import Node
+from launch.substitutions import PathJoinSubstitution
+from launch_ros.substitutions import FindPackageShare
+
+def generate_launch_description():
+    cfg = PathJoinSubstitution([FindPackageShare("robot_missions"),
+                                 "config", "replay.yaml"])
+    return LaunchDescription([
+        Node(package="robot_missions", executable="ok_go_supervisor",
+             name="ok_go_supervisor", parameters=[cfg], output="screen"),
+        Node(package="robot_missions", executable="trajectory_node",
+             name="trajectory_node", parameters=[cfg], output="screen"),
+    ])
+```
+
+`config/replay.yaml`:
+```yaml
+ok_go_supervisor:
+  ros__parameters:
+    short_max_s: 1.0
+    long_min_s: 5.0
+    save_flash_duration_s: 2.0
+    wipe_flash_duration_s: 16.0
+    blink_2hz_period_s: 0.25
+    blink_4hz_period_s: 0.125
+    blink_5hz_period_s: 0.1
+
+trajectory_node:
+  ros__parameters:
+    sampling_hz: 10.0
+    dedup_min_dist_m: 0.02
+    dedup_min_yaw_rad: 0.035
+    trajectory_file: /data/maps/current/trajectory.yaml
+    map_frame: map
+    base_frame: base_link
+    tf_lookup_timeout_ms: 50
+    nav_action_name: /navigate_through_poses
+```
+
+##### S5 — In-container build
+
+A G2/G3/G4 mintával (`/root/talicska-ws`):
+
+```bash
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  cd /root/talicska-ws
+  colcon build --packages-select robot_missions \
+    --build-base /tmp/build_missions \
+    --install-base /tmp/inst_missions \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release
+' 2>&1 | tee /tmp/g5_build.log
+
+# Bináris csere (install/ alatt)
+docker exec robot bash -lc '
+  mkdir -p /root/talicska-ws/install/robot_missions/lib/robot_missions
+  cp /tmp/inst_missions/lib/robot_missions/ok_go_supervisor \
+     /root/talicska-ws/install/robot_missions/lib/robot_missions/
+  cp /tmp/inst_missions/lib/robot_missions/trajectory_node \
+     /root/talicska-ws/install/robot_missions/lib/robot_missions/
+  mkdir -p /root/talicska-ws/install/robot_missions/share/robot_missions
+  cp -r /tmp/inst_missions/share/robot_missions/launch \
+        /root/talicska-ws/install/robot_missions/share/robot_missions/
+  cp -r /tmp/inst_missions/share/robot_missions/config \
+        /root/talicska-ws/install/robot_missions/share/robot_missions/
+'
+
+# /data/maps/current symlink létrehozása (ha hiányzik)
+docker exec robot bash -lc '
+  if [ ! -e /data/maps/current ]; then
+    ln -sfn slam_test3_2026-05-12_201456 /data/maps/current
+  fi
+  ls -la /data/maps/current
+'
+
+# 2 node indítása manuálisan (a launch system nem indít újra automatikusan — G2 tanulság)
+docker exec -d robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  source /root/talicska-ws/install/setup.bash
+  ros2 launch robot_missions replay.launch.py 2>&1 | tee /tmp/g5_node_stdout.log
+'
+sleep 5
+docker exec robot pgrep -af "ok_go_supervisor\|trajectory_node"
+```
+
+##### S6 — Bench-teszt (5 sub-test, kerékfelemelve)
+
+Lásd a következő szekciót.
+
+#### Bench-teszt — 5 sub-test (KEREKEK FELEMELVE)
+
+A `microros_agent` lehet aktív vagy nem — a Pico OK GO publishere nem létezik még, ezért a
+gomb-jelet **mindenképp `ros2 topic pub /robot/okgo_btn`-bal szimuláljuk**.
+
+A `/safety/state` JSON-t **a futó (régi G2 előtti) safety_supervisor publikálja** — ezért a
+trajectory_node állapotgép `mode` mező alapú PAUSE-RESUME logikája a régi `"RC"` viselkedéssel
+operál: amikor CH5=RC, `state="RC"` ÉS `mode="RC"` (nem `"NAVIGATION"`). A trajectory_node
+**a `state` mezőre, nem a `mode` mezőre** alapozzon — így a régi binary-vel is működik. A G7
+után (Docker rebuild) a `mode` mező új szemantikája rendezve lesz.
+
+| # | Forgatókönyv | Setup | Várt observable |
+|---|---|---|---|
+| T1 | LEARN belépés + TF capture indítás | rotary=0 + CH5=RC pub | `/ok_go/cmd=5` (START_RECORDING), `/trajectory/state phase="CAPTURING"`, pose_buffer növekszik (TF lookup OK) |
+| T2 | SAVE (SHORT click LEARN-ben) | T1 utáni állapot + 0.5 s `okgo_btn` press-release | `/ok_go/cmd=1` (SAVE), `/data/maps/current/trajectory.yaml` létezik + schema_version: 1 + poses > 0 |
+| T3 | WIPE (LONG hold LEARN-ben) | T2 utáni állapot + 6.0 s `okgo_btn` true | `/ok_go/cmd=2` (WIPE), 16 s után `/ok_go/cmd=8` (WIPE_COMPLETE), `trajectory.yaml` törölve |
+| T4 | AUTO PLAY (SHORT AUTO_LOADED-ban) | T2 utáni állapot újra-rögzítve, rotary=2 + CH5=ROBOT pub, 0.5 s `okgo_btn` press-release | `/ok_go/cmd=3` (PLAY), NavigateThroughPoses goal accepted, feedback érkezik (ros2 action), `/trajectory/state phase="ACTIVE_GOAL"` |
+| T5 | PAUSE-CANCEL (CH5=RC AUTO közben) | T4 utáni állapot + CH5=RC pub | `/ok_go/cmd=4` (PAUSE) **VAGY** trajectory_node action cancel; `/trajectory/state phase="CANCELLED"`; `current_index` > 0 (megőrzi a haladást) |
+
+**Megjegyzés T4-hez:** a `bt_navigator` és `controller_server` ACTIVATED állapotban kell legyen
+és valós motion plant adhat (de a robot kerékfelemelve van, így a `cmd_vel_nav2` parancs a
+levegőben pörgeti a motorokat — biztonságos). Ha a planner FAIL-el (pl. footprint blokk), az a
+G1 regresszió, NEM G5 FAIL.
+
+**Tesztelési részletek minden sub-test-hez:**
+
+```bash
+# Háttér publish-ek (rotary, CH5, motors=0 — failsafe-konzervatív)
+docker exec -d robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ros2 topic pub --rate 10 /robot/mode std_msgs/msg/Int32 "{data: <R>}" > /dev/null 2>&1
+'
+docker exec -d robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ros2 topic pub --rate 10 /robot/rc_mode std_msgs/msg/Float32 "{data: <CH5>}" > /dev/null 2>&1
+'
+
+# Várj 3 s a hysteresis-stabilizálásra
+sleep 3
+
+# OK GO gomb szimuláció (T2: 0.5 s; T3: 6.0 s; T4: 0.5 s)
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ros2 topic pub --once /robot/okgo_btn std_msgs/msg/Bool "{data: true}"
+  sleep <HOLD_S>
+  ros2 topic pub --once /robot/okgo_btn std_msgs/msg/Bool "{data: false}"
+'
+
+# Observable rögzítés
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  timeout 3 ros2 topic echo /ok_go/cmd > /tmp/g5_T<N>_okgo_cmd.txt
+  timeout 3 ros2 topic echo /trajectory/state --once > /tmp/g5_T<N>_traj_state.json
+'
+
+# Cleanup
+docker exec robot bash -lc 'pkill -f "ros2 topic pub" 2>/dev/null; sleep 1'
+```
+
+#### PASS kritériumok
+
+| # | Kritérium | Várt |
+|---|---|---|
+| P1 | T1 — `/ok_go/cmd` minimum 1 üzenet, érték=5 (START_RECORDING) | ✓ |
+| P1b | T1 — `/trajectory/state` `phase`="CAPTURING" | ✓ |
+| P2 | T2 — `/ok_go/cmd`-ben érték=1 (SAVE) | ✓ |
+| P2b | T2 — `/data/maps/current/trajectory.yaml` létezik, `yaml-cpp::Load`-dal parseolható, `schema_version=1`, `poses.size() > 0` | ✓ |
+| P3 | T3 — `/ok_go/cmd`-ben sorrendben 2 (WIPE), 16 s múlva 8 (WIPE_COMPLETE) | ✓ |
+| P3b | T3 — `trajectory.yaml` törölve a 16 s végén | ✓ |
+| P4 | T4 — `/ok_go/cmd`-ben érték=3 (PLAY) | ✓ |
+| P4b | T4 — `ros2 action list` `/navigate_through_poses` aktív, **ÉS** `ros2 action info /navigate_through_poses` mutatja a trajectory_node-ot mint Action Client | ✓ |
+| P4c | T4 — `/trajectory/state` `phase`="ACTIVE_GOAL" 3 s-on belül | ✓ |
+| P5 | T5 — CH5=RC után `/trajectory/state` `phase`="CANCELLED" 1 s-on belül | ✓ |
+| P5b | T5 — `current_index` > 0 (a JSON state-ben) — folytatás-megőrzés | ✓ |
+
+**Az 5/11 kritérium kötelező a DONE-hoz.** Ha P4b vagy P4c FAIL-el (Nav2 stack nem kész), az a
+G1 regresszió — vissza G1-be. Ha P2b vagy P5b FAIL-el, az G5 belső bug, javító agent.
+
+#### FAIL diagnosztika
+
+| Tünet | Gyökér-ok |
+|---|---|
+| Build FAIL (`yaml-cpp` not found) | `package.xml` `<depend>yaml-cpp</depend>` hiányzik vagy `libyaml-cpp-dev` rossz vagy `target_link_libraries(trajectory_node yaml-cpp)` hiányzik |
+| Node nem indul (`replay.launch.py` ROS error) | Paraméter fájl path rossz, vagy executable nincs install-elve |
+| T1 — `/trajectory/state phase="CAPTURING"` nem érkezik | `/ok_go/cmd=5` nem ment ki, vagy a trajectory_node nem subscribe-ol rá; vagy a `state=RC` szemantika nem trigger-eli a LEARN_IDLE → RECORDING tranzitot |
+| TF lookup error spam (T1) | `tf2_ros::Buffer::lookupTransform` timeout; ellenőrizd `slam_toolbox` aktívságát + `map → odom → base_link` lánc megléteét |
+| T2 — yaml-cpp serialize crash | YAML emitter exception — pose_buffer kiürült vagy NaN érték |
+| T3 — WIPE_COMPLETE nem jön 16 s után | Timer logic bug — `wipe_flash_duration_s` paraméter nem érvényesül |
+| T4 — NavigateThroughPoses goal `rejected` | `bt_navigator` lifecycle nem ACTIVATED, vagy az ütős pose tomb üres |
+| T4 — `goal handle` rögtön ABORTED (status 6) | `inflation_radius` túl nagy, vagy a start pose footprint blokkolt — G1 regresszió, vissza G1 (mert ott már fixáltuk) |
+| T5 — CANCEL nem érkezik a Nav2-höz | `safety_state_cb` `state="RC"` parser nem matchel, vagy `goal_handle == nullptr` |
+
+#### Visszalépési pont
+
+- **Build hiba:** `git checkout replay-v1-g4-twistmux-done -- robot_missions/` + javító agent
+- **State machine bug (T1-T3):** javító agent EXPLICIT a bugot célozva (B opció FAIL policy)
+- **Nav2 regresszió (T4 P4b FAIL):** `git reset --hard replay-v1-g4-twistmux-done` + G1
+  újrafuttatás
+- **Safety bug (T5 nem CANCEL-el):** **azonnali** rollback + safety-kritikus konzultáció
+
+#### Regressziós veszély
+
+A `robot_missions` 2 új node-ja **NEM avatkozik be a már működő safety/twist_mux/Nav2
+láncba** — csak két új subscriber a `/safety/state`-re és egy action client. Új publish-er a
+`/ok_go/cmd` topicon, amire senki más nem subscribe-ol (a Pico nincs erre konfigurálva, csak
+LED-re).
+
+**A `/recorded_path` Foxglove publisher** nem critical-path — ha publish-er crash-el, a feature
+ettől még működik.
+
+**A trajectory_node send_goal-ja a NavigateThroughPoses-on** keresztül indít Nav2 motion plant.
+**Kerékfelemelés kötelező** (11.5 szekció). Ha a robot földön lenne, a T4 sub-test ütközéshez
+vezetne.
+
+#### DONE feltétel
+
+- [ ] `robot_missions/CMakeLists.txt` + `package.xml` deps frissítve
+- [ ] `ok_go_supervisor.cpp` + `trajectory_node.cpp` + `replay.launch.py` + `replay.yaml`
+  létrejöttek
+- [ ] In-container colcon build SUCCESS (`/tmp/g5_build.log` zéró warning + zéró error a
+  releváns csomagra)
+- [ ] 2 node `pgrep`-pel látszik
+- [ ] T1-T5 **mind PASS** (vagy a P4-es Nav2-FAIL backlogba rendelhető legitimen)
+- [ ] `/data/maps/current/trajectory.yaml` schema_version=1 mintán szabványos
+- [ ] G5 `Eredmény` szekció kitöltve + Kanban G5 → ✅ DONE
+- [ ] Git tag `replay-v1-g5-modules-done`
+- [ ] Új `robot_missions/src/*` + launch + config + bringup launcher commit
+
+#### Felhasznált logok / outputs
+
+- `/tmp/g5_build.log`
+- `/tmp/g5_node_stdout.log`
+- `/tmp/g5_T1_okgo_cmd.txt` ... `/tmp/g5_T5_okgo_cmd.txt`
+- `/tmp/g5_T1_traj_state.json` ... `/tmp/g5_T5_traj_state.json`
+- `/data/maps/current/trajectory.yaml` (T2 után, T3 előtt)
+- Git diff: `robot_missions/` (új cpp + launch + config)
+
+#### Eredmény
+
+*(A gate záráskor töltődik.)*
+
+#### Végrehajtási prompt — új session (opcionális, ha a fő session kontextusa telítődik)
+
+```
+G5 — Trajectory Replay v1 modulszintű integráció végrehajtó agent.
+
+Kontextus: olvasd be docs/phase_trajectory_replay.md "G5 — Modulszintű integráció" szekcióját.
+Tartsd magad a `Munkamenet folyamat — Orchestrator-Agent pattern` szabályaihoz.
+
+Feladat:
+1. S1: CMakeLists.txt + package.xml deps (tf2_ros, tf2_geometry_msgs, yaml-cpp)
+2. S2: ok_go_supervisor.cpp impl a 4.1 állapotgép szerint
+3. S3: trajectory_node.cpp impl a 4.2 állapotgép szerint
+4. S4: replay.launch.py + replay.yaml
+5. S5: in-container colcon build + binary install + /data/maps/current symlink
+6. S6: T1-T5 bench-tesztek (KEREKEK FELEMELVE!)
+
+Sikerkritériumok: a phase-file `PASS kritériumok` táblája szerint, 11/11 vagy a Nav2-blokkoló
+P4b/P4c-vel kifejezett indoklással.
+
+Mit NE csinálj:
+- Ne javíts FAIL esetén — agent report-tal térj vissza
+- Ne lépj G7 vagy G6-ra
+- Ne módosítsd a kanban táblát
+- Ne commit/push (csak az orchestrator)
+
+Visszajelentés: a phase-file `Agent report sablon` szerint.
+```
 
 ### G7 — Post-rebuild revalidation
 
