@@ -546,7 +546,7 @@ rebuild **után** futtat egy gyors smoke tesztet a kritikus gate-ekből — még
 | G1 | Stack-validation (NavigateThroughPoses bench) | ✅ DONE | 2026-05-13 | 2026-05-13 | 3 ciklus után PASS — footprint-fix bench-scriptben, ld. 11.1 Eredmény |
 | G2 | Safety state-szemantika (Priority 4b) | ✅ DONE | 2026-05-13 | 2026-05-13 | 4 core PASS + R7 log-PASS; R4/R5/R8 → G6. Tag: replay-v1-g2-safety-done |
 | G3 | Profil-merge + sebességcap | ✅ DONE | 2026-05-13 | 2026-05-13 | 2 javító agent ciklus (preexisting bug-ok); P1+P2 PASS. Tag: replay-v1-g3-profile-done |
-| G4 | twist_mux pipeline (rc_teleop disable) | ⬜ TODO | — | — | G2 + G3 után |
+| G4 | twist_mux pipeline (rc_teleop disable) | 🟡 IN PROGRESS | 2026-05-13 | — | Részletes plan ld. 11. G4 alatt |
 | G5 | Modulszintű integráció (ok_go + trajectory) | ⬜ TODO | — | — | G4 után |
 | G7 | Post-rebuild revalidation | ⬜ TODO | — | — | G5 + Docker rebuild után |
 | G6 | Élesteszt (földi 5 m kör) | ⬜ TODO | — | — | G7 után |
@@ -1738,7 +1738,235 @@ Ha csak a felsőt javítjuk, semmi változás. Az alsó réteg fix nélkül a pr
 
 ### G4 — twist_mux pipeline (rc_teleop disable_in_navigation)
 
-**Állapot:** ⬜ TODO (kibővítendő a kanban-haladás során)
+**Állapot:** 🟡 IN PROGRESS — 2026-05-13
+
+#### Cél
+
+A `rc_teleop_node`-ban új `disable_in_navigation: true` paraméter + `/safety/state` subscriber.
+A node AUTO mód alatt (`state == "NAVIGATION"`) **nem publikál** `/cmd_vel_rc`-re. A `twist_mux`
+1.0s timeout után az `rc` forrást inaktívnak ítéli, és a `navigation` prio 10 átveszi → a Nav2
+`/cmd_vel_nav2` átengedődik a downstream-en.
+
+A G2-ben validált `state="NAVIGATION"` szemantikára épül (a `state` mező az effektív RC override
+státuszt tükrözi, nem a parancsnoki kontextust). Az `in_rc_mode` CH5 alapú direkt detekció
+mindig elsőként értékelődik — a failsafe lánc érintetlen marad.
+
+Ez **megoldja a tegnapi Blokker 2-t**: `rc.priority=20 > navigation=10` továbbra is a config-ban,
+de az `rc` topic némítása révén a Nav2 átjut a motorhoz.
+
+#### Függőség (input)
+
+- G2 ✅ DONE — `/safety/state` mode szemantika új
+- G3 ✅ DONE — `NAVIGATION_REPLAY` profil aktiválható
+- `robot_teleop/src/rc_teleop_node.cpp` jelenlegi 221 soros forrás
+- `/safety/state` topic JSON formátum (a phase-file 6. szekciója)
+
+#### Előkészítés
+
+##### Kód módosítás — `rc_teleop_node.cpp`
+
+A phase-file 6.5 szekciója alapján.
+
+**Header additions:**
+```cpp
+#include "std_msgs/msg/string.hpp"
+#include <atomic>
+```
+
+**Constructor változások:**
+```cpp
+// declare_parameter
+this->declare_parameter("disable_in_navigation", true);
+disable_in_navigation_ = this->get_parameter("disable_in_navigation").as_bool();
+
+// new subscriber for /safety/state
+safety_state_sub_ = create_subscription<std_msgs::msg::String>(
+  "/safety/state", rclcpp::QoS(10),
+  [this](const std_msgs::msg::String::SharedPtr msg) {
+    parse_safety_state(msg->data);
+  });
+```
+
+**Új member változók:**
+```cpp
+bool disable_in_navigation_ = true;
+std::atomic<bool> in_navigation_state_{false};
+rclcpp::Subscription<std_msgs::msg::String>::SharedPtr safety_state_sub_;
+```
+
+**Új helper függvény — `parse_safety_state()`:**
+```cpp
+void parse_safety_state(const std::string & json_str) {
+  // Egyszerű string-keresés a "state":"NAVIGATION" mintára.
+  // A safety_supervisor a JSON-t fix sorrendben építi: "state":"<value>".
+  // NEM full JSON parser — elkerüljük az új dependenciát (nlohmann/json).
+  const auto pos = json_str.find("\"state\":\"NAVIGATION\"");
+  in_navigation_state_.store(pos != std::string::npos);
+}
+```
+
+**`publish_tick()` átírás (a 160-190. sor):**
+```cpp
+void publish_tick() {
+  geometry_msgs::msg::Twist twist;
+  const bool in_rc_mode = rc_mode_invert_
+    ? (rc_mode_ < -rc_mode_threshold_)
+    : (rc_mode_ >  rc_mode_threshold_);
+
+  if (in_rc_mode) {
+    // RC override — MINDIG publikál (felülírja a disable_in_navigation-t).
+    // Failsafe lánc: TX-off → vevő CH5=RC + motors=0 → 0-Twist publish →
+    // twist_mux prio 20 nyer → /cmd_vel_raw=0 → robot megáll.
+    /* ... a meglévő throttle/turn dekompozíció ... */
+    twist.linear.x  = throttle_curved * max_linear_vel_;
+    twist.angular.z = turn_curved     * max_angular_vel_;
+    cmd_vel_pub_->publish(twist);
+    return;
+  }
+
+  if (disable_in_navigation_ && in_navigation_state_.load()) {
+    // AUTO mód: NEM publikál — twist_mux 1.0s timeout után Nav2 forrást enged át.
+    return;
+  }
+
+  // Egyéb (IDLE, FOLLOW, SHUTTLE rotary alatt, RC ki, mégsem NAVIGATION):
+  // 0-Twist publish a régi viselkedés szerint.
+  cmd_vel_pub_->publish(twist);
+}
+```
+
+##### Build és bináris csere (a G2 mintával)
+
+```bash
+docker exec robot bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  cd /root/talicska-ws
+  colcon build --packages-select robot_teleop \
+    --build-base /tmp/build_teleop \
+    --install-base /tmp/inst_teleop \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release
+' 2>&1 | tee /tmp/g4_build.log
+
+# Binary csere
+docker exec robot cp /tmp/inst_teleop/lib/robot_teleop/rc_teleop_node \
+                    /root/talicska-ws/install/robot_teleop/lib/robot_teleop/rc_teleop_node
+
+# Node restart (csak rc_teleop_node)
+docker exec robot bash -lc 'pkill -SIGTERM -f rc_teleop_node || true'
+sleep 5
+docker exec robot bash -lc 'pgrep -af rc_teleop_node'  # új PID
+```
+
+##### `microros_agent` átmeneti leállítás (autonóm tesztelés)
+
+A G2-hoz hasonlóan az agent szimulált inputokat ad a `/robot/mode`, `/robot/rc_mode`, és
+`/robot/motor_left`, `/robot/motor_right` topicokra (a Pico-bridge némítva).
+
+```bash
+docker stop microros_agent
+```
+
+#### A 4 sub-test
+
+| # | Forgatókönyv | rotary (`/robot/mode`) | CH5 (`/robot/rc_mode`) | motor_L,R | Várt `/cmd_vel_rc` |
+|---|---|---|---|---|---|
+| T1 | AUTO + CH5=ROBOT | 2 | 0.0 | 0, 0 | **NÉMA** (no publish) |
+| T2 | AUTO + CH5=RC, joystick | 2 | 1.0 | 0.3, 0.3 | RC Twist (linear pozitív) |
+| T3 | LEARN + CH5=ROBOT | 0 | 0.0 | 0, 0 | 0-Twist (no NAVIGATION state) |
+| T4 | TX-off failsafe (CH5=RC + motors=0) | 2 | 1.0 | 0, 0 | **0-Twist** (in_rc_mode trigger, throttle=0) |
+
+**Teszt skeleton:**
+
+```bash
+# Cleanup előzményeket
+docker exec robot bash -lc 'pkill -f "ros2 topic pub" 2>/dev/null; sleep 1'
+
+# Háttér publish-ek (rotary + CH5 + motor jelek)
+docker exec robot bash -lc 'source /opt/ros/jazzy/setup.bash && \
+  ros2 topic pub --rate 10 /robot/mode std_msgs/msg/Int32 "{data: <R>}" > /dev/null 2>&1' &
+docker exec robot bash -lc 'source /opt/ros/jazzy/setup.bash && \
+  ros2 topic pub --rate 10 /robot/rc_mode std_msgs/msg/Float32 "{data: <CH5>}" > /dev/null 2>&1' &
+docker exec robot bash -lc 'source /opt/ros/jazzy/setup.bash && \
+  ros2 topic pub --rate 10 /robot/motor_left std_msgs/msg/Float32 "{data: <ML>}" > /dev/null 2>&1' &
+docker exec robot bash -lc 'source /opt/ros/jazzy/setup.bash && \
+  ros2 topic pub --rate 10 /robot/motor_right std_msgs/msg/Float32 "{data: <MR>}" > /dev/null 2>&1' &
+
+# Várj a hysteresis-stabilizálásra + safety_supervisor reakcióra
+sleep 5
+
+# Mérés: a /cmd_vel_rc topic-on hány üzenet érkezik 3 másodperc alatt
+docker exec robot bash -lc 'source /opt/ros/jazzy/setup.bash && \
+  timeout 3 ros2 topic echo /cmd_vel_rc --csv 2>&1' > /tmp/g4_T<N>_cmd_vel_rc.csv
+
+# A /safety/state state mezőjének rögzítése (verify)
+docker exec robot bash -lc 'source /opt/ros/jazzy/setup.bash && \
+  timeout 2 ros2 topic echo /safety/state --once' > /tmp/g4_T<N>_state.json
+
+# Cleanup
+docker exec robot bash -lc 'pkill -f "ros2 topic pub" 2>/dev/null; sleep 1'
+```
+
+**Várt CSV sorszámok 3s alatt:**
+- T1: **0 sor** (no publish AUTO+ROBOT alatt)
+- T2: ~150 sor (50 Hz publish_rate × 3 s)
+- T3: ~150 sor (0-Twist publish IDLE+ROBOT alatt)
+- T4: ~150 sor (0-Twist publish, motors=0, in_rc_mode true)
+
+#### PASS kritériumok
+
+| # | Kritérium | Várt |
+|---|---|---|
+| P1 | T1 `/cmd_vel_rc` 3s alatt | 0 sor (néma) |
+| P2 | T2 `/cmd_vel_rc` 3s alatt | >= 100 sor, `linear.x > 0` (joystick parancs) |
+| P3 | T3 `/cmd_vel_rc` 3s alatt | >= 100 sor, `linear.x == 0` |
+| P4 | T4 `/cmd_vel_rc` 3s alatt | >= 100 sor, `linear.x == 0` (in_rc_mode + L=R=0 → 0-Twist) |
+
+#### FAIL diagnosztika
+
+| Tünet | Gyökér-ok |
+|---|---|
+| T1 FAIL: `/cmd_vel_rc` 150 sorral | `disable_in_navigation` paraméter false, vagy `parse_safety_state` nem találja a "NAVIGATION"-t |
+| T2 FAIL: néma | `in_rc_mode` logika sérült, hysteresis nem trigger-el |
+| T4 FAIL: néma | TX-off failsafe sérült — kritikus safety break |
+| Build FAIL | Compile error, header miss |
+| `in_navigation_state_` állandóan false | `/safety/state` topic nem érkezik, vagy a JSON parsing rossz |
+
+#### Visszalépési pont
+
+- **Code bug:** `git checkout replay-v1-g3-profile-done -- robot_teleop/src/rc_teleop_node.cpp` + rebuild
+- **Safety break (T4 FAIL):** **azonnali rollback** `git reset --hard replay-v1-g3-profile-done`,
+  docker restart, és a `rc_teleop_node` változtatás újratervezése. A failsafe lánc nem törhető meg
+
+#### Regressziós veszély
+
+A `rc_teleop_node` failsafe lánca **kritikus safety mechanizmus**: TX-off → vevő failsafe →
+0-Twist publish → robot megáll. Ha az `in_rc_mode` ág módosul, ez a védelem sérül.
+
+**Az új `disable_in_navigation` ág a `publish_tick()`-ben az `in_rc_mode` UTÁN értékelődik
+ki**, így a CH5=RC esetén az RC parancs (vagy 0-Twist failsafe esetén) **mindenképp publikálódik**.
+A T4 sub-test ezt kötelezően validálja.
+
+#### DONE feltétel
+
+- [ ] `rc_teleop_node.cpp` patch + in-container build SUCCESS
+- [ ] Bináris csere + node restart (új PID)
+- [ ] **T1-T4 mind PASS** — különösen T4 (failsafe érintetlen)
+- [ ] `microros_agent` visszaindítva, fizikai CH5 + RC bridge a `/safety/state` reagálását
+  továbbra is helyesen kezeli
+- [ ] G4 Eredmény szekció kitöltve + Kanban G4 → ✅ DONE
+- [ ] Git tag `replay-v1-g4-twistmux-done` létrehozva
+- [ ] `rc_teleop_node.cpp` változás committed
+
+#### Felhasznált logok / outputs
+
+- `/tmp/g4_build.log`
+- `/tmp/g4_T1_cmd_vel_rc.csv` ... `/tmp/g4_T4_cmd_vel_rc.csv`
+- `/tmp/g4_T1_state.json` ... `/tmp/g4_T4_state.json`
+- `rc_teleop_node.cpp` git diff
+
+#### Eredmény
+
+(üres — a teszt után töltődik)
 
 ### G5 — Modulszintű integráció (ok_go + trajectory bench)
 
