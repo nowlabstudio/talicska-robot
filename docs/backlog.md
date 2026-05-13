@@ -12,6 +12,43 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ## Aktív feladatok (2026-04-06 CET)
 
+### 🔴 Trajectory Replay v2 — per-pose iteráció / `wait_for_pose` (2026-05-13 felfedezve G6 alatt)
+
+**Probléma:** A `trajectory_node` jelenleg `NavigateThroughPoses` action-t használ. A Nav2 `NavigateThroughPoses` szemantikája **"elérni a goal pose-t"**, NEM **"végigjárni az összes pose-t"**. Ha a felvett trajectory vége a kezdőpont közelében van (U-alakú tanulás), a controller_server **azonnal SUCCEEDED**-et ad, mert a robot a goal-tolerance-en (~0.25 m default) belül van.
+
+**Megfigyelt példa (G6 első ciklus 2026-05-13):**
+- yaml: 131 pose, x-tartomány 2.08 m (robot ténylegesen messzire ment a tanulás során)
+- Első-utolsó pose távolság: **0.244 m** (visszamentél a kezdőpont közelébe)
+- PLAY click → `phase=PLAYING`, `cmd=3` kiment, `trajectory_node send_goal` → Nav2 azonnal `SUCCEEDED` → `done=true, current_index=130`, **0 cm fizikai motion**
+
+**Felhasználói kívánság:** "kellene egy wait_for_pose állapot, ami akkor lesz valid, ha elérte a következő pontot. így nem lesz olyan hiba, hogy visszaállok a kezdőpontra és egyből teljesítettnek érzi az utat".
+
+**3 javaslati irány:**
+
+1. **Per-pose iteráció `NavigateToPose`-zal a `trajectory_node`-ban** (javasolt):
+   - `NavigateToPose` minden pose-ra külön, sorrendben
+   - `trajectory_node` 4.2 állapotgépbe új `WAITING_FOR_POSE` állapot
+   - Pose-ritkítás opcionális (pl. minden 5-ödik) sebességhez
+   - Per-pose tighter tolerance (pl. 0.10 m)
+   - **Előny:** pose-onkénti garantált elérés, természetes "wait_for_pose" semantika
+   - **Hátrány:** sok Nav2 round-trip, sűrű pose-listán lassú
+
+2. **FollowPath action visszaállítás (B-variáns):** közvetlenül a `controller_server` `FollowPath`-jét hívni, ami a Regulated Pure Pursuit-tal a **teljes pose-listán** követi
+   - **Előny:** natív Nav2 megoldás, gyors, simán követi a felvett pályát
+   - **Hátrány:** nincs akadálykerülés (a B → A váltás 2026-05-12 eredetileg ezért történt: planner replanning kell akadály körül)
+   - **Hibrid:** elsődleges FollowPath, akadály-detektáláskor NavigateThroughPoses fallback
+
+3. **NavigateThroughPoses `goal-tolerance` agresszív csökkentés + per-pose BT goal-checker:** bonyolult BT-XML módosítás, kerülendő ha lehet
+
+**Javaslat:** opció **1** (per-pose iteráció), pose-ritkítással. A `trajectory_node`-ban a 4.2 állapotgép kibővítése, **NEM** új action-server kell. A `wait_for_pose` mechanika a Nav2 feedback callback-en alapulhat (closest pose + threshold check).
+
+**Workaround G6 alatt:** "csak előre" tanulás minta — a SAVE-t az ÚJ végpozícióban csináld, NEM a kezdőponton vissza. RC-vel kézzel vidd vissza a robotot a kezdőpontra a PLAY előtt → így a Nav2 goal NEM közeli, a robot ténylegesen elmozdul.
+
+**Felfedezve:** 2026-05-13 G6 első LEARN-SAVE-AUTO ciklus.
+
+---
+
+
 ### 🟢 Trajectory Replay — Tanított útvonal-lejátszás (2026-05-13 indul)
 
 **Cél:** A felhasználó az **OK GO** gomb és a Pico 3-állású rotary (LEARN/FOLLOW/AUTO) segítségével

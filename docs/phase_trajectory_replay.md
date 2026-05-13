@@ -549,7 +549,7 @@ rebuild **után** futtat egy gyors smoke tesztet a kritikus gate-ekből — még
 | G4 | twist_mux pipeline (rc_teleop disable) | ✅ DONE | 2026-05-13 | 2026-05-13 | T1-T4 mind PASS, T4 failsafe érintetlen. Tag: replay-v1-g4-twistmux-done |
 | G5 | Modulszintű integráció (ok_go + trajectory) | ✅ DONE | 2026-05-13 | 2026-05-13 | 2 agent ciklus (Phase A + retry/Phase B `/safety/state` mock-kal). T1-T5 mind PASS. Tag: replay-v1-g5-modules-done |
 | G7 | Post-rebuild revalidation | ✅ DONE | 2026-05-13 | 2026-05-13 | 17/17 sub-point PASS friss image-en (`make build` + manuális rotary/CH5 vezérlés). Backlog: `replay.launch.py` bringup-include |
-| G6 | Élesteszt (szűkített, 1m+1m + interfész tanulás) | ⬜ TODO | — | — | Plan elkészült 2026-05-13. Felhasználó kézi vezérléssel végrehajtja. 5 m kör G6b külön. |
+| G6 | Élesteszt (szűkített, 1m+1m + interfész tanulás) | ✅ DONE | 2026-05-13 | 2026-05-13 | S1-S4 mind PASS, "csak előre" workaround a NavigateThroughPoses semantika miatt. Backlog: v2 wait_for_pose. Tag: replay-v1-g6-floortest-done |
 
 ---
 
@@ -2822,7 +2822,7 @@ Visszajelentés: a phase-file `Agent report sablon` szerint.
 
 ### G6 — Élesteszt (szűkített, 1m+1m + interfész tanulás)
 
-**Állapot:** ⬜ TODO — plan elkészült 2026-05-13. Felhasználói kézi vezérléssel végrehajtandó (NEM agent feladat).
+**Állapot:** ✅ DONE — 2026-05-13. Felhasználói kézi vezérléssel végrehajtva, mind a 4 fázis (S1-S4) PASS.
 
 > ⚠️ **Élesteszt fizikai motion-nal — a felhasználó felügyel.** A robot földön, 1m előre + 1m hátra
 > biztonságos mozgástérrel + 0.25 m Nav2 inflation puffer. **Proximity kikapcsolva** a szűk hely
@@ -3035,11 +3035,51 @@ regressziós veszély a kódbázisban.** A `proximity_enabled false` runtime ove
 - `/data/maps/current/trajectory.yaml` (S3 SAVE után)
 - `docker exec robot ros2 bag record -o /tmp/g6_bag /safety/state /ok_go/state /trajectory/state /cmd_vel /cmd_vel_nav2 /cmd_vel_rc /robot/mode /robot/rc_mode` opcionális teljes mérés-rögzítés
 
-#### Eredmény
+#### Eredmény — G6 ✅ DONE (2026-05-13)
 
-*(A gate záráskor töltődik a felhasználó tanulság-listájával: melyik tranzit volt evidens,
-melyik volt nem-intuitív, melyik FAIL-elt és miért. Ezek a backlog-jelölés alapja a v1 utáni
-UX-finomításhoz.)*
+**Setup:**
+- `proximity_safety_margin_m`: 0.10 → 0.05 m (yaml-edit + container recreate, szűk teszt-tér miatt)
+- `controller_server FollowPath.desired_linear_vel`: 0.555 → 0.278 m/s (runtime, 1 km/h)
+- `rc_teleop_node max_linear_vel`: változatlan (3.89 m/s, eredeti, expo curve dolgozik)
+
+**S1 Setup ✅**: proximity-margin csökkentés (cx=0.100, hl=0.414, side=0.45), trajectory.yaml törlés, `replay.launch.py` manuális indítás (G7 backlog ítem érvényesül itt is).
+
+**S2 Interfész tanulás ✅** — 7/7 lépés PASS:
+- L1: rotary mode váltás (LEARN ↔ AUTO) ✓
+- L2: CH5 ROBOT → RC LEARN-ben → RECORDING + CAPTURING ✓
+- L3: OK GO SHORT → SAVE → yaml létrejön (1 pose stacionárius) ✓
+- L4: OK GO LONG → WIPE → 16s múlva WIPE_COMPLETE → yaml törölve ✓
+- L5: OK GO CANCEL (1-5s hold) → nem trigger ✓
+- L6: rotary LEARN → AUTO → `phase=AUTO_IDLE` (nincs yaml) ✓ + **G2 Priority 4b szemantika élesben** (`state="RC", mode="NAVIGATION"`)
+- L7: AUTO+RC → AUTO+ROBOT → `state="NAVIGATION"`, `phase=AUTO_IDLE` ✓
+
+**Backlog ítem L6-ból:** `ok_go_supervisor` rotary 0→2 váltáskor NEM küld `cmd=PAUSE_RECORDING (6)` a `trajectory_node`-nak, ezért a `trajectory_node` `CAPTURING`-ban ragad. Apró tisztaság-bug — kibukik a következő PLAY-nél (a trajectory_node csak `IDLE`-ból fogadja a `PLAY (cmd=3)`-at, így az első próbálkozás "PLAYING látszik, de nincs goal" anomáliához vezet). Workaround a node-restart.
+
+**S3 LEARN-SAVE-AUTO ✅ (workaround-dal):**
+
+Első ciklus FAIL — U-alakú LEARN (A → B → A): a felvett 131-pose-os yaml első-utolsó távolsága 0.244 m. PLAY click → `NavigateThroughPoses send_goal` → Nav2 azonnal `SUCCEEDED` (goal-tolerance ~0.25 m), `done=true, current_index=130`, **0 cm fizikai motion**.
+
+**Gyökér-ok:** a `NavigateThroughPoses` szemantikája "elérni a goal-pose-t", NEM "végigjárni a köztes pose-okon". A felhasználó megfogalmazta a "wait_for_pose" igényt — backlog.md `Trajectory Replay v2`-ben 3 javasolt fix-irány rögzítve.
+
+**Workaround sikeres:** "csak előre" tanulás minta. RC-vel előre mentés ~50-70 cm-t, SAVE az új végpozíción, kézzel RC-vel vissza a kezdőpontra, PLAY → robot **fizikailag elmozdul** a felvett végpózusba. Többször ismételve PASS.
+
+**Bónusz tanulság:** a `local_costmap` futás közben **proximity trigger**-elt (`min range = 0.52 m, cluster = 14 pont`, ki-be váltakozó `state="ERROR" → "NAVIGATION"`), de mind cleared lett és a Nav2 stack-recovery (clear_costmap + új path) helyreállította a motion-t.
+
+**S4 RC override mid-AUTO ✅** — sikeres a PAUSE-CANCEL + RESUME mechanika. AUTO PLAY közben CH5=RC → robot megáll, RC-vel irányítható. CH5=ROBOT vissza → AUTO folytatódik a `current_index`-től, hátralévő útvonalon.
+
+**Open backlog ítemek a G6-ból:**
+
+1. **🔴 v2: wait_for_pose / per-pose iteráció** (`docs/backlog.md` Trajectory Replay v2 szekció) — alap architekturális fix a NavigateThroughPoses-szemantika problémájához
+2. **🟡 ok_go_supervisor: rotary 0→2 → cmd=PAUSE_RECORDING auto-küldés** — apró bug az L6-tanulság szerint
+3. **🟡 robot_bringup integráció**: `replay.launch.py` auto-include a `robot.launch.py`-ban (G7 backlog)
+4. **🟢 proximity_safety_margin_m visszaállítás 0.10-re vagy átgondolás** — production védettségi tradeoff (jelenleg 0.05 a yaml-ben a G6 alatti módosítás után)
+
+**Mentett logok:**
+- `/tmp/g6_replay_fresh.log` — replay.launch.py startup
+- `/data/maps/current/trajectory.yaml` — utolsó SAVE-ből (a felhasználó döntheti, megőrzendő-e)
+- safety_supervisor + controller_server + behavior_server logs (docker logs robot — proximity FAULT/cleared ciklusok dokumentálva)
+
+**Lezárás dátum:** 2026-05-13.
 
 #### Megjegyzés: G6b (5 m kör) későbbi külön gate
 
