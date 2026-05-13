@@ -600,6 +600,36 @@ Egyenként kerülnek kibővítésre a kanban-haladás során. Sablon minden gate
 > **Lezárás (DONE feltétel):** mi kell ahhoz, hogy ✅ legyen
 >
 > **Felhasznált logok / outputs:** mi kerüljön a dokumentációba a gate záráskor
+>
+> **Eredmény:** a tényleges teszt-output, anomáliák, döntések (a gate záráskor töltődik)
+>
+> **Végrehajtási prompt — új session:** a következő session által betöltendő szöveg, ami
+> elindítja a gate végrehajtását vagy a következő gate-et (ld. [Munkamenet folyamat](#munkamenet-folyamat--session-boundary))
+
+### Munkamenet folyamat — session-boundary
+
+**Szabály (2026-05-13):** Minden gate plan végén — a részletes terv és az előkészítés
+befejeztével — **új sessiont indítunk** a tényleges végrehajtáshoz, hogy a Claude friss
+kontextussal dolgozzon. A nagy projekt-szakaszok közbeni kontextus-akkumuláció ronthatja
+a következő gate-en végzett munkát; ezt elkerüljük.
+
+**Hogyan:**
+1. A gate `Végrehajtási prompt — új session` szakaszában megfogalmazódik, hogy mit kell a
+   következő sessionnek tennie — explicit lépéssor, hivatkozással a phase-file releváns
+   szekcióira és memóriához
+2. A jelenlegi session: `git commit` + `git push` (a phase-file frissítésével együtt), majd
+   lezárás
+3. Új session indul a felhasználó által, a `Végrehajtási prompt` beilleszthető kiindulóként
+   vagy egyszerűen a `phase_trajectory_replay.md` betöltése elegendő
+
+**A session-boundary helyei:**
+- Gate plan **részletes terve elkészültével** (mielőtt a végrehajtás kezdődne)
+- Gate **végrehajtásának lezárásakor** (mielőtt a következő gate plan-jét írnánk)
+- Gate **FAIL diagnosztika közben**, ha a diagnosztika hosszan elnyúlik és a kontextus
+  elavul
+
+Az új session a phase-file betöltésével azonnal tudja, hol vagyunk a kanban táblában és
+mit kell tenni — nem kell narratív "összegzés"-t betölteni a korábbi sessionből.
 
 ### G1 — Stack-validation (NavigateThroughPoses bench)
 
@@ -807,9 +837,86 @@ Ez **pontosan** a tegnapi "régi binary" mintázat, csak más rétegben.
 - [ ] Ennek a szekciónak az **Eredmény** alszekciója kitöltve (lentebb)
 - [ ] Kanban tábla G1 sora: állapot ✅ DONE, lezárás dátum kitöltve
 
-#### Eredmény (a gate záráskor kitöltendő)
+#### Eredmény — Előfeltételek 1-9 (2026-05-13)
 
-(üres — a teszt után kerül ide a tényleges output, anomáliák, döntések)
+**Automatikusan ellenőrzött (1-8):** 8/8 ✅ PASS
+
+| # | Feltétel | Eredmény | Megfigyelés |
+|---|---|---|---|
+| 1 | Robot stack fut | ✅ | `robot`, `microros_agent`, `foxglove_bridge` mind Up 3h healthy; plusz `ros2_realsense`, `portainer`, `mesh_server` |
+| 2 | Nav2 lifecycle ACTIVE | ✅ | `is_active` Trigger response: `success=True` |
+| 3 | bt_navigator ACTIVATED | ✅ | `active [3]` |
+| 4 | controller_server ACTIVATED | ✅ | `active [3]` |
+| 5 | planner_server ACTIVATED | ✅ | `active [3]` |
+| 6 | SLAM TF él | ✅ | `map → base_link` Translation `[-0.039, -0.984, 0.000]`, yaw `-7.6°`, stabil 12 s mintán. **Megjegyzés:** rövid `tf2_echo` timeout-tal kezdetben FAIL-nek tűnt — a `map→odom` TF a SLAM scan-match ütemében publikálódik, nem konstans 20 Hz-en. A `trajectory_node` `tfBuffer.lookupTransform("map", "base_link", rclcpp::Time(0))` ezt elviseli, mert a buffer megőrzi az utolsó értéket az időablakban |
+| 7 | Action elérhető | ✅ | `/navigate_through_poses` és `/navigate_to_pose` listálva |
+| 8 | Action típus stimmel | ✅ | `nav2_msgs/action/NavigateThroughPoses` a `/bt_navigator` action server-en |
+
+**Manuális megerősítés (9):** ❓ NYITOTT — a következő session első lépéseként kérendő a usertől:
+- mode=IDLE (rotary nincs AUTO-n, safety blokkol) VAGY
+- kerekek felemelve (a robot fizikailag nem tud mozdulni)
+
+**Kontextuális megfigyelések:**
+- `/scan` topic 6.85 Hz (a 10 Hz default-tól kisebb, de a SLAM számára elégséges)
+- `/map` topic 2 Hz publikáció — a térkép aktívan frissül
+- SLAM `mode: mapping` (NEM localization) — friss térkép-építés módban
+- `transform_publish_period: 0.05` (20 Hz elvi maximum, de scan match-függő)
+- `publish_to_tf` parameter: not explicitly set (default `true`)
+- Robot fizikai pozíciója a map-en: `(x=-0.039, y=-0.984)`, yaw `-7.6°` — közel a map origótól
+- **Sok CycloneDDS type-hash WARN** a MicroROS topicokon (`rt/robot/*`) — ezek tegnap óta ismertek, nem érintik a Nav2-t, csak vizuális zaj
+
+**Részleges PASS:** mivel a 9. előfeltétel manuális megerősítést igényel, és a Python script
+futtatás a robot biztonsági állapotától függ, a G1 végrehajtás folytatása **új sessionben**
+történik, friss kontextussal.
+
+#### Végrehajtási prompt — új session a G1 lezárására
+
+Az új session indulásakor a Claude a következő prompttal folytatja a G1-et:
+
+> **G1 — NavigateThroughPoses bench pre-flight folytatás (2026-05-13)**
+>
+> Olvasd be a `docs/phase_trajectory_replay.md` fájlt — ez a Trajectory Replay v1 projekt
+> szakasz fő hivatkozása, a `docs/backlog.md` helyett.
+>
+> A G1 gate IN PROGRESS állapotban van. Az automatikus 1-8 előfeltétel mind ✅ PASS (ld. G1
+> `Eredmény` szekció). A folytatás:
+>
+> 1. **Előfeltétel 9 — manuális megerősítés:** kérdezd meg a usertől, hogy a robot biztonságosan
+>    rögzítve van-e (mode=IDLE vagy kerekek felemelve). Ha NEM, a G1 nem futtatható — várj a
+>    rögzítésre.
+>
+> 2. **Python script létrehozás:** a phase-file G1 `Előkészítés` szekciójában lévő `ntp_client.py`
+>    kódmintát mentsd `/tmp/ntp_client.py`-ra a host-on, majd `docker cp` a `robot` containerbe.
+>
+> 3. **Baseline rögzítés:** futtasd `ros2 param get /controller_server FollowPath.desired_linear_vel`
+>    és jegyezd fel az értéket — ez G3 inputja.
+>
+> 4. **Echo terminálok:** két párhuzamos `ros2 topic echo` a `/cmd_vel_nav` (CSV-be) és
+>    `/safety/state` (logba) — `/tmp/g1_cmd_vel_nav.csv`, `/tmp/g1_safety_state.log`.
+>
+> 5. **Script futtatás:** `docker exec robot python3 /tmp/ntp_client.py`. Várd ki a result-ot.
+>
+> 6. **6 PASS kritérium ellenőrzése** (P1-P6 a phase-file G1 `PASS kritériumok` szekciójában):
+>    - P1: Goal ACCEPTED a script logban
+>    - P2: ugyanaz, csak külön kritérium
+>    - P3: `/cmd_vel_nav` CSV legalább 150 sor 10 s alatt (≈20 Hz)
+>    - P4: linear.x érték (0.555 vagy 0.5 / 0.8 — info G3-hoz)
+>    - P5: feedback_count >= 5 a script logban
+>    - P6: Status: 6 (ABORTED), error_code: 105 (FAILED_TO_MAKE_PROGRESS)
+>
+> 7. **Eredmény szekció kitöltése** a phase-file G1 alatt — a Python script teljes output, CSV
+>    minta, és a 6 PASS érték dokumentálva.
+>
+> 8. **Ha minden PASS:** G1 lezárás — Kanban tábla `🟡 IN PROGRESS → ✅ DONE`, lezárás dátum.
+>    Git commit + push. Majd készítsd elő a G2 plant a sablon szerint (a phase-file 11. szekció
+>    sablonja), és új session boundary következik (a phase-file Munkamenet folyamat szekciója
+>    szerint).
+>
+> 9. **Ha FAIL:** ne lépj G2-re. A phase-file G1 `FAIL diagnosztika` táblája szerint diagnosztizálj.
+>    Dokumentáld az anomáliát az Eredmény szekcióban, kommitold, és kérj user-iránymutatást.
+>
+> **Memória hivatkozások:** `project_talicska_robot`, `feedback_policy`, `feedback_phase_file_pattern`,
+> `feedback_decision_making`, `plan_autonomy_test_followup`.
 
 #### Felhasznált logok / outputs
 
