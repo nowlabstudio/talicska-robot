@@ -656,7 +656,7 @@ viszont friss kontextussal, fókuszáltan dolgoznak egy adott feladaton.
 - **Nem indít másik agentet** — egyszintű spawn, nincs ágazat
 - **Nem hoz scope-bővítő döntést** — pl. backlogba teendő vs azonnal fixálandó
 
-#### FAIL policy — B opció (2026-05-13 választott)
+#### FAIL policy — B opció + autonóm orchestration (2026-05-13)
 
 ```
 Agent végrehajt → FAIL detektál → tömör report a tünettel és diagnosztikával → STOP
@@ -665,16 +665,32 @@ Agent végrehajt → FAIL detektál → tömör report a tünettel és diagnoszt
 Orchestrator értelmezi a phase-file `FAIL diagnosztika` táblája szerint
        │
        ▼
-Döntés:
+Döntés (autonóm, user-konzultáció nélkül a legtöbb esetben):
   (a) Új javító agent — EXPLICIT, szűk feladattal (pl. "javítsd a controller_server
       lifecycle-t úgy, hogy …")
-  (b) User konzultáció — AskUserQuestion-nel preferencia/scope tisztázása
-  (c) Backlog — ha a javítás scope-bővítés, későbbre tolódik
-  (d) Gate visszalépés — előfeltétel-szintű FAIL, korábbi gate-et kell újra
+  (b) Gate visszalépés — előfeltétel-szintű FAIL, korábbi gate-et kell újra
+  (c) Sub-task előhozás — pl. G3 inflation-fix része előrehozható G1-be ha G1
+      enélkül nem futtatható
 ```
 
 A javító agent **NEM ugyanaz**, mint a végrehajtó agent — friss kontextussal indul,
 csak a javítási feladatot kapja meg, NEM az eredeti gate teljes terhét.
+
+**User-konzultáció csak az alábbi esetekben:**
+- **Scope-bővítés:** új feature, ami a v1 v scope-on kívül esik
+- **Safety-kritikus döntés:** pl. a robot fizikai biztonsága veszélyben
+- **3+ FAIL ciklus után:** az iteráció megakadt, a megközelítés alapja kérdéses
+- **Architekturális választás:** több egyenértékű alternatíva, user preferencia szükséges
+- **Backlog vs azonnali fix kérdés:** ha a javítás határeset
+
+**Minden más esetben az orchestrator autonóm módon javít** — új javító agent
+spawn, retry, és csak a gate végén jelez a usernek (PASS vagy elakadás).
+Ez **csökkenti a user kontextus-flood-ot**, és gyors végrehajtást ad.
+
+**Jelzés a usernek:**
+- Gate **lezárásakor** (✅ DONE) — egy tömör üzenet a PASS állapotról + a következő gate ajánlása
+- **Elakadásnál** — ha 3+ ciklus után sem PASS, vagy a fenti 5 user-konzultáció eset bekövetkezik
+- **Minden gate-záró commit után** — git push-szal együtt
 
 #### Kommunikációs protokoll
 
