@@ -12,6 +12,50 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ## Aktív feladatok (2026-04-06 CET)
 
+### 🟡 Trajectory Replay v2 — `trajectory_node` 4.2 állapotgép `DONE` ág kiterjesztése (2026-05-13 felfedezve G6 alatt)
+
+**Probléma:** A `trajectory_node` `DONE` phase-ben **csak `PLAY (cmd=3)`-ra reagál**, a `SAVE (cmd=1)`, `WIPE (cmd=2)`, `START_RECORDING (cmd=5)` parancsokat figyelmen kívül hagyja. Ezért egy AUTO PLAY → DONE ciklus után az `ok_go_supervisor` rotary váltása LEARN-re és új RECORDING fázis indítása **nem szinkronizálódik** a `trajectory_node`-dal — a node `DONE`-ban ragad, és a SAVE click NEM ment új yaml-t.
+
+**Bag-evidencia (g6_bag_learn 2026-05-13):**
+- 0.10s: `/trajectory/state` `DONE, 131, saved=True, traj_loaded=False`
+- 18.83s: LONG hold → ok_go_supervisor `WIPE` phase, de `/trajectory/state` változatlan
+- 37.34s: SHORT → ok_go_supervisor `SAVE` phase, de `/trajectory/state` változatlan (DONE marad, yaml NEM mentődik)
+- A teljes 120 s alatt a `trajectory_node` `DONE`-ban maradt, a SAVE/WIPE/START_RECORDING parancsokra nem reagált
+
+**Workaround G6 alatt:** `pkill` a `trajectory_node`-ot + `ok_go_supervisor`-t → friss IDLE startup.
+
+**Fix javaslat (4.2 tábla bővítés):**
+- `DONE | /ok_go/cmd = WIPE` → `IDLE` (yaml delete + buffer clear)
+- `DONE | /ok_go/cmd = START_RECORDING` → `CAPTURING` (új tanulás)
+- VAGY: az `ok_go_supervisor` 4.1 rotary 2→0 váltáskor küldje a `START_RECORDING (cmd=5)`-öt explicit (jelenleg csak a startup-időben generál ilyet)
+
+**Felfedezve:** 2026-05-13 G6 második LEARN ciklus, bag-elemzéssel azonosítva.
+
+---
+
+### 🟢 Trajectory Replay v1 burst-érzet 0.555 cap-en — acceleration tunning (2026-05-13 felfedezve G6 alatt)
+
+**Megfigyelés:** A felhasználó a G6 első sikeres "csak előre" ciklusoknál (`desired_linear_vel=0.555 m/s` = 2 km/h cap) érzett **hirtelen kitörő sebességet az egyenes szakaszokon**, miközben a fordulóknál jól szabályozott volt.
+
+**Bag-evidencia (g6_bag_play 0.278 m/s cap-en):**
+- max linear.x = 0.278 (cap betartva)
+- 0% volt > 0.35 m/s (semmilyen burst)
+- Egyenes ablak: lin_avg=0.255 m/s (~92% a desired-ből)
+- Forduló ablak: lin_avg=0.103 m/s, |ang|=0.134 rad/s (Regulated Pure Pursuit lelassítja)
+
+**Hipotézis:** A 0.555 cap-en a Regulated Pure Pursuit a fordulás (kis sugár, alacsony sebesség 0.10-0.15 m/s) **után az egyenes szakaszra 0 → 0.555 m/s gyors gyorsulást** csinál, és a `velocity_smoother max_accel` paraméter túl agresszív erre a robot tömegére (100+ kg).
+
+**Fix javaslat:**
+- `velocity_smoother`: csökkenteni `max_accel`-t (jelenleg default), pl. 0.3 m/s²-re
+- VAGY: `controller_server FollowPath` paraméter `regulated_linear_scaling_min_radius` emelése (a fordulások hosszabb íve simább átmenetet ad)
+- VAGY: a felvett trajectory pose-density egyenetlenségét csökkenteni — fordulás után az egyenes szakaszon több pose
+
+**Tesztelés:** új PLAY ciklus 0.555 cap-en + bag + összehasonlítás a 0.278-as bag-gel.
+
+**Felfedezve:** 2026-05-13 G6 első sikeres ciklusok, bag-elemzéssel megerősítve hogy 0.278 cap-en NEM jelentkezik.
+
+---
+
 ### 🔴 Trajectory Replay v2 — per-pose iteráció / `wait_for_pose` (2026-05-13 felfedezve G6 alatt)
 
 **Probléma:** A `trajectory_node` jelenleg `NavigateThroughPoses` action-t használ. A Nav2 `NavigateThroughPoses` szemantikája **"elérni a goal pose-t"**, NEM **"végigjárni az összes pose-t"**. Ha a felvett trajectory vége a kezdőpont közelében van (U-alakú tanulás), a controller_server **azonnal SUCCEEDED**-et ad, mert a robot a goal-tolerance-en (~0.25 m default) belül van.
