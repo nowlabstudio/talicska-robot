@@ -1,7 +1,7 @@
 # Trajectory Replay v2 — Projekt Szakasz
 
 **Indulás:** 2026-05-15
-**Állapot:** 🟡 IMPLEMENTÁCIÓ — G1 IN PROGRESS (2026-05-15)
+**Állapot:** 🟡 IMPLEMENTÁCIÓ — G1 ✅ DONE, G2 IN PROGRESS (2026-05-15)
 **Előzmény:** v1 ✅ KÉSZ — tag `replay-v1-g6-floortest-done`. A v1 5 backlog ítemét + egy nagy UX-redesign-t fed le a v2.
 **Hivatkozás:** Ez a fájl helyettesíti a `docs/backlog.md`-t a v2 szakasz lezárásáig. A szakasz lezárása után a tartalom archiválandó (vagy backlog-szintézis, vagy `docs/backup/phases/`-be mozgatva), és a backlog visszaveszi a fő-hivatkozás szerepét.
 
@@ -689,7 +689,7 @@ val    runtime (4.1 új)        (4.2 új +       burst                   ciklus
 | # | Gate | Állapot | Kezdés | Lezárás | Megjegyzés |
 |---|---|---|---|---|---|
 | G1 | SLAM-toolbox service validation | ✅ DONE | 2026-05-15 | 2026-05-15 | 9/9 PASS spec-corr. után, tag `replay-v2-g1-slam-validated` |
-| G2 | rc_teleop_node sebesség-cap runtime váltás | ⬜ TODO | — | — | |
+| G2 | rc_teleop_node sebesség-cap runtime váltás | 🟡 IN PROGRESS | 2026-05-15 | — | Plan részletezve 11.G2 szekcióban |
 | G3 | ok_go_supervisor refactor | ⬜ TODO | — | — | |
 | G4 | trajectory_node refactor | ⬜ TODO | — | — | |
 | G5 | bringup include + burst tunning | ⬜ TODO | — | — | |
@@ -835,42 +835,120 @@ Egyenként kerülnek kibővítésre az új session-ben. Sablon minden gate-hez:
 - A G4 trajectory_node implementáció igazodik a G1-validált API-hoz (5.3 szekció szerint)
 - **G7-re halasztva:** tényleges pause/resume viselkedés-megfigyelés robot-mozgással
 
+---
+
+### 11.G2 — `rc_teleop_node` sebesség-cap runtime váltás (bench)
+
+**Állapot:** 🟡 IN PROGRESS — 2026-05-15
+
+**Cél:** Validáljuk, hogy a `rc_teleop_node` `add_on_set_parameters_callback`-jén keresztül a `max_linear_vel` (3.89 → 0.2 m/s) és `max_angular_vel` (4.44 → 0.3 rad/s) paraméterek `ros2 param set`-tel runtime állíthatók, a hatás azonnal érvényesül (INFO log visszaigazol), és a baseline-ra vissza-set is működik.
+
+**Függőség (input):**
+- Robot stack fut, `/rc_teleop_node` jelen
+- `add_on_set_parameters_callback` regisztrálva (memória: `feedback_runtime_param_callback`, v1 G6-on már validálva)
+- Bench-safety: fizikai E-Stop aktív (user-confirmed) — semmilyen RC/cmd_vel publikálás NEM kell, csak param-call + log-figyelés
+
+**Előkészítés:**
+1. `ros2 node list | grep rc_teleop_node` — node jelenléte
+2. Baseline param-get: `ros2 param get /rc_teleop_node max_linear_vel` → várt: ~3.89
+3. Baseline param-get: `ros2 param get /rc_teleop_node max_angular_vel` → várt: ~4.44
+4. Container név verify: `docker compose ps` (a node a `robot` containerben)
+5. Source-verify: `grep -nE "add_on_set_parameters_callback|max_linear_vel|max_angular_vel" robot_teleop/src/rc_teleop_node.cpp` — callback a 98-126. sor körül, kötés a publish_tick()-hez 208-209. sor körül (memória szerinti hivatkozás)
+
+**PASS kritériumok (E-Stop-aktív, service+log szint):**
+
+| # | Teszt | Várt output |
+|---|---|---|
+| 1 | `ros2 param get /rc_teleop_node max_linear_vel` (baseline) | ~3.89 |
+| 2 | `ros2 param get /rc_teleop_node max_angular_vel` (baseline) | ~4.44 |
+| 3 | `ros2 param set /rc_teleop_node max_linear_vel 0.2` | `Set parameter successful` |
+| 4 | `ros2 param get /rc_teleop_node max_linear_vel` after set | 0.2 |
+| 5 | `docker logs robot --tail 100 \| grep -i max_linear_vel` after set | INFO log a node callback-jéből visszaigazol (pl. "max_linear_vel set to 0.20 m/s") |
+| 6 | `ros2 param set /rc_teleop_node max_angular_vel 0.3` | `Set parameter successful` |
+| 7 | `ros2 param get /rc_teleop_node max_angular_vel` after set | 0.3 |
+| 8 | `docker logs robot --tail 100 \| grep -i max_angular_vel` after set | INFO log visszaigazol |
+| 9 | Source-code verify: a publish_tick() (208-209. sor) közvetlenül használja a member változókat (`max_linear_vel_`/`max_angular_vel_`), amelyeket a callback frissít | kódolvasással igazolva, NEM futtatással (a robot-mozgás-igényű cap-érvényesülés G7-en) |
+| 10a | Reset: `ros2 param set /rc_teleop_node max_linear_vel 3.89` | `Set parameter successful` + get visszaadja a 3.89-et |
+| 10b | Reset: `ros2 param set /rc_teleop_node max_angular_vel 4.44` | `Set parameter successful` + get visszaadja a 4.44-et |
+
+**Halasztott (G7 élesteszt):** A tényleges sebesség-cap érvényesülése (`/cmd_vel` output 0.2 m/s-en) RC-mozgást igényel — E-Stop alatt nem ellenőrizhető. G7-en a LEARN_ACTIVE alatt a `trajectory_node` átállítja a paramétereket, és a /cmd_vel cap-elve lesz.
+
+**FAIL diagnosztika:**
+
+| Tünet | Gyökér-ok tartomány | Diagnosztika |
+|---|---|---|
+| `Set parameter successful` után `param get` régi értéket ad vissza | callback elutasította a setet (pl. constraint logic) | docker logs grep "rejected" / "out of range" |
+| `param set` után nincs INFO log | callback NEM logol vagy log-szint INFO alatt | `ros2 run --prefix gdb` debugger, vagy logolás patch |
+| `param set` after success, de `publish_tick()` régi érték használ | callback NEM frissíti a member változót (csak a parameter store-ba ír) | source-grep callback body — milyen field-eket frissít |
+| Node nem fut | container nem indult / hardware-hiba (RC bridge) | `docker compose ps`, `ros2 node info /rc_teleop_node` |
+
+**Visszalépési pont:** Ha a callback NEM frissíti a member változókat (eltér a `feedback_runtime_param_callback` memóriától), G2 BLOCKED → G3 BLOCKED, mert a LEARN_ACTIVE sebesség-cap szabály-érvényesülés ezen áll. Akkor: a v2-höz patch kell a `rc_teleop_node.cpp` 98-126. sorára (callback bővítés), vagy a `trajectory_node` ne hívjon `set_parameters`-t, hanem a `velocity_smoother`-en keresztül cap-eljen (NEM ajánlott, mert a velocity_smoother global, nem mode-szelektív).
+
+**Regressziós veszély:** A param-set tartós állapot, ha NEM állítjuk vissza, a robot RC-vezérlésében minden mozgás a 0.2 / 0.3 cap-en lesz. Ezért a G2 lezárása előtt **kötelező** a reset a baseline-ra (10a + 10b).
+
+**Lezárás (DONE feltétel):**
+- 10-ből 10 PASS kritérium teljesül (9 source-code verify-vel + 10a/10b reset)
+- A G7-re halasztott /cmd_vel cap-érvényesülés validáció backlogba/G7 plan-ba beírva
+- Teszt-output loggolva: `docs/backup/g2_results.md`
+- Kanban G2 → ✅ DONE
+- Commit: "feat(replay-v2): G2 rc_teleop_node runtime param váltás validation DONE"
+- Tag: `replay-v2-g2-param-validated`
+
+**Eredmény:** _(G2 lezárásakor töltődik)_
+
 **Végrehajtási prompt — agent indításhoz:**
 
 ```
-Cél: Validáld a SLAM-toolbox 3 natív service-ét (pause_new_measurements, clear_changes,
-serialize_map) bench-tesztben a Trajectory Replay v2 G1 gate-eként.
+Cél: Validáld a rc_teleop_node max_linear_vel + max_angular_vel runtime
+paraméter-váltását (Trajectory Replay v2 G2 gate).
 
 Workspace (host): /home/eduard/talicska-robot-ws/src/robot/talicska-robot
-Workspace (container): /root/talicska-ws (a service-call-okat a containeren belül futtasd)
-Phase-file: docs/phase_replay_v2.md 11.G1 szekció (teljes PASS kritérium-tábla)
+Container: `robot` (compose service neve; ros2 parancsokat docker exec-en
+keresztül futtasd)
+Phase-file: docs/phase_replay_v2.md 11.G2 szekció (teljes PASS-tábla)
 
-Bench-safety: fizikai E-Stop aktív (user-confirmed 2026-05-15) → semmilyen RC/cmd_vel
-parancsot NE publikálj. Az 5a/5b pause/resume teszt SERVICE-RESPONSE szintű, NEM
-kerékmozgással. A tényleges viselkedés-validáció G7 élesteszten lesz.
+Bench-safety: fizikai E-Stop aktív (user-confirmed). Semmilyen /cmd_vel /
+RC publish, kerékforgatás-trigger NE. G2 csak param-set/get + log-figyelés
++ source-code verify szint.
 
 Lépések:
-1. Service-felfedés: ros2 service list | grep slam_toolbox → várt: legalább 3 (pause_new_measurements,
-   clear_changes, serialize_map). Type-check mind a 3-ra.
-2. Pause-teszt 5a: ros2 service call /slam_toolbox/pause_new_measurements std_srvs/srv/SetBool
-   "{data: true}" — várt success: True (response).
-3. Resume-teszt 5b: ugyanaz "{data: false}" → success: True.
-4. Clear-teszt 6: ros2 service call /slam_toolbox/clear_changes slam_toolbox/srv/Clear "{}" —
-   válasz érkezik exception nélkül.
-5. Serialize-teszt 7+8: filename=/data/maps/g1_test/map → result: 0 + a 4 fájl megléte
-   (posegraph, data, pgm, yaml) + méret > 0.
-6. Mindent loggolj egy /tmp/g1_results.log fájlba, és tedd át docs/backup/g1_results.md-be
-   strukturáltan a 8-pontos PASS-tábla szerint (PASS/FAIL per sor).
+1. Pre-check:
+   - docker compose ps (a workspace gyökerében — vagy compose subdir-ben)
+   - docker exec robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && ros2 node list | grep rc_teleop_node'
+2. Baseline get (1, 2): max_linear_vel ~3.89, max_angular_vel ~4.44
+3. Set max_linear_vel=0.2 (3) → param set successful
+4. Verify get (4): 0.2
+5. Log-grep (5): docker logs robot --since 30s | grep -i max_linear_vel
+   → INFO log visszaigazol
+6. Set max_angular_vel=0.3 (6) → param set successful
+7. Verify get (7): 0.3
+8. Log-grep (8): INFO log visszaigazol
+9. Source-code verify (9): a /home/eduard/talicska-robot-ws/src/robot/talicska-robot/
+   src tree-ben grep -nE "max_linear_vel_|max_angular_vel_" a
+   rc_teleop_node.cpp publish_tick() blokkban (kb. 200-220. sor)
+10. RESET baseline (10a, 10b):
+    - param set max_linear_vel 3.89 → successful + get visszaadja
+    - param set max_angular_vel 4.44 → successful + get visszaadja
+    - **KÖTELEZŐ — RC üzemmódban a default cap visszaáll**
 
-PASS/FAIL jelentés: tömör report a phase-file 11.G1 táblája szerint (mind a 8 sor PASS/FAIL
-jelölve, FAIL esetén a diagnosztika oszlop kitöltve).
+Output dokumentum:
+- /home/eduard/talicska-robot-ws/src/robot/talicska-robot/docs/backup/g2_results.md
+- Struktúra: 10-pontos PASS tábla + részletes output + FAIL diagnosztika (ha van)
 
-FAIL policy (B opció): NE javíts magadtól. Tömör report-tal jelezd, és az orchestrator
-dönti el a következő lépést.
+KORLÁTOZÁSOK (B opció FAIL policy):
+- NE módosíts cpp/yaml/launch fájlt
+- NE commit-olj, NE push-olj
+- NE indíts /cmd_vel-t, RC publishet
+- HA FAIL: tömör report, ne javíts magadtól
+- Reset a baseline-ra MINDENKÉPPEN (10a, 10b), még FAIL esetén is
 
-Nem módosíthatsz: forráskódot (cpp/yaml), git állapotot (sem commit, sem push), launch
-fájlokat. CSAK service-call-ok és diagnosztikai parancsok (ros2 service/topic/node).
-A docs/backup/g1_results.md fájlt írhatod (test-output dokumentum).
+Output az orchestrator-hoz (~200 szó):
+1. 10-pontos PASS tábla összefoglalása
+2. INFO log-grep eredménye (van vagy nincs visszaigazolás)
+3. Source-code verify eredménye (callback frissíti-e a member változókat)
+4. FAIL esetén gyökér-ok hipotézis
+5. Baseline visszaállítva: igen / nem
+6. Befejezett: igen / részleges / blokkolt
 ```
 
 ---
