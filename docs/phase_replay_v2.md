@@ -117,9 +117,10 @@ robot_missions/
      Pub: /trajectory/state      (std_msgs/String, JSON)
           /recorded_path         (nav_msgs/Path) — Foxglove vizualizáció
      Action client: /navigate_to_pose                          (ÚJ — volt navigate_through_poses)
-     Service client: /slam_toolbox/pause_new_measurements      (ÚJ — std_srvs/SetBool)
-                     /slam_toolbox/clear_changes               (ÚJ — slam_toolbox/srv/Clear)
-                     /slam_toolbox/serialize_map               (ÚJ — slam_toolbox/srv/SerializeMap)
+     Service client: /slam_toolbox/pause_new_measurements      (ÚJ — slam_toolbox/srv/Pause, TOGGLE szemantika)
+                     /slam_toolbox/clear_changes               (ÚJ — slam_toolbox/srv/Clear, empty)
+                     /slam_toolbox/serialize_map               (ÚJ — slam_toolbox/srv/SerializePoseGraph)
+                     /slam_toolbox/save_map                    (ÚJ — slam_toolbox/srv/SaveMap, a .pgm+.yaml-hez)
                      /rc_teleop_node/set_parameters            (ÚJ — rcl_interfaces/srv/SetParameters)
      File I/O: /data/maps/current/trajectory.yaml
 ```
@@ -157,7 +158,8 @@ Pico OK GO gomb (2s nyomás detected)
   → led_pattern = BLINK_1HZ (új minta)
   → trajectory_node on_ok_go_cmd():
        1. /slam_toolbox/clear_changes service call (friss session)
-       2. /slam_toolbox/pause_new_measurements(false) service call (SLAM resume)
+       2. /slam_toolbox/pause_new_measurements toggle service call CSAK ha slam_paused_==true (SLAM resume)
+          → slam_paused_ = false
        3. /rc_teleop_node/set_parameters async:
             max_linear_vel: 0.2 (volt 3.89)
             max_angular_vel: 0.3 (volt 4.44)
@@ -183,12 +185,14 @@ Pico OK GO gomb (rövid nyomás, <1.0s release)
        2. pose_count OK → flush_to_yaml(/data/maps/current/trajectory.yaml.tmp)
        3. yaml save success → atomic rename .tmp → .yaml
        4. yaml save FAIL → led = BLINK_FAST_3HZ, /trajectory/state {save_failed: true}, END (régi yaml megmarad)
-       5. /slam_toolbox/serialize_map service call → map.posegraph + .data mentés
-       6. service success → led = SLOW_BLINK (van jó mentés)
-       7. service FAIL → led = BLINK_FAST_3HZ, /trajectory/state {slam_save_failed: true}
-       8. /slam_toolbox/pause_new_measurements(true) → SLAM pause
-       9. /rc_teleop_node/set_parameters → max_linear_vel + max_angular_vel vissza normálra
-       10. phase = IDLE, /trajectory/state {phase: "IDLE", saved: true/false}
+       5. /slam_toolbox/serialize_map (SerializePoseGraph) → map.posegraph + .data mentés
+       6. /slam_toolbox/save_map (SaveMap, name=ugyanaz) → map.pgm + map.yaml mentés
+       7. mindkét service success → led = SLOW_BLINK (van jó mentés)
+       8. bármelyik FAIL → led = BLINK_FAST_3HZ, /trajectory/state {slam_save_failed: true}
+       9. /slam_toolbox/pause_new_measurements toggle CSAK ha slam_paused_==false → SLAM pause
+          → slam_paused_ = true
+       10. /rc_teleop_node/set_parameters → max_linear_vel + max_angular_vel vissza normálra
+       11. phase = IDLE, /trajectory/state {phase: "IDLE", saved: true/false}
 ```
 
 ### 3.3 WIPE_TRAJECTORY útja (5-10s release LEARN-ben)
@@ -202,7 +206,8 @@ Pico OK GO gomb (5-10s nyomás)
        1. unlink(/data/maps/current/trajectory.yaml) — csak a yaml
        2. pose_buffer.clear() — aktuális tanítás eldobás (ha LEARN_ACTIVE volt)
        3. SLAM map MARAD (/data/maps/current/map.* érintetlen)
-       4. /slam_toolbox/pause_new_measurements(true) — SLAM pause (ha aktív volt)
+       4. /slam_toolbox/pause_new_measurements toggle CSAK ha slam_paused_==false — SLAM pause (ha aktív volt)
+          → slam_paused_ = true
        5. /rc_teleop_node/set_parameters → vissza normál RC sebességre
        6. phase = IDLE
        7. /trajectory/state {phase: "IDLE", trajectory_loaded: false}
@@ -220,10 +225,10 @@ Pico OK GO gomb (10s+ nyomás, csak rotary=LEARN alatt)
   → /ok_go/cmd = SLAM_WIPE (10)
   → trajectory_node on_ok_go_cmd():
        1. unlink(/data/maps/current/trajectory.yaml)
-       2. unlink(/data/maps/current/map.pgm)
-       3. unlink(/data/maps/current/map.yaml)
-       4. unlink(/data/maps/current/map.posegraph)
-       5. unlink(/data/maps/current/map.data)
+       2. unlink(/data/maps/current/map.pgm)    — save_map output
+       3. unlink(/data/maps/current/map.yaml)   — save_map output
+       4. unlink(/data/maps/current/map.posegraph)  — serialize_map output
+       5. unlink(/data/maps/current/map.data)       — serialize_map output
        6. pose_buffer.clear()
        7. /slam_toolbox/clear_changes service call (fresh session)
        8. phase = IDLE
@@ -448,10 +453,11 @@ last_slam_save_failed : bool
 | `normal_max_linear_vel` | 3.89 | LEARN_IDLE / AUTO-ban a normál RC sebesség (mai default) |
 | `normal_max_angular_vel` | 4.44 | LEARN_IDLE / AUTO-ban a normál RC fordulási sebesség |
 | `nav_action_name` | "/navigate_to_pose" | (volt `/navigate_through_poses`) |
-| `slam_pause_service` | "/slam_toolbox/pause_new_measurements" | |
-| `slam_clear_service` | "/slam_toolbox/clear_changes" | |
-| `slam_save_service` | "/slam_toolbox/serialize_map" | |
-| `rc_teleop_set_params_service` | "/rc_teleop_node/set_parameters" | |
+| `slam_pause_service` | "/slam_toolbox/pause_new_measurements" | slam_toolbox/srv/Pause (TOGGLE) |
+| `slam_clear_service` | "/slam_toolbox/clear_changes" | slam_toolbox/srv/Clear (empty) |
+| `slam_serialize_service` | "/slam_toolbox/serialize_map" | slam_toolbox/srv/SerializePoseGraph |
+| `slam_save_map_service` | "/slam_toolbox/save_map" | slam_toolbox/srv/SaveMap (.pgm+.yaml-hez) |
+| `rc_teleop_set_params_service` | "/rc_teleop_node/set_parameters" | rcl_interfaces/srv/SetParameters |
 
 **Tranzitok:**
 
@@ -507,21 +513,34 @@ Az `t` mező csak loggoláshoz; a replay a `header.stamp = now()`-zal küldi a N
 5. ha service FAIL: trajectory.yaml MARAD (atomic save miatt), csak a slam map nincs frissítve → led = BLINK_FAST_3HZ
 ```
 
-### 5.3 SLAM-toolbox service interfészek
+### 5.3 SLAM-toolbox service interfészek (G1-validált 2026-05-15, slam_toolbox 2.8.4)
 
 ```
-/slam_toolbox/pause_new_measurements    std_srvs/srv/SetBool
-  Request:  bool data            # true=pause, false=resume
-  Response: bool success, string message
+/slam_toolbox/pause_new_measurements    slam_toolbox/srv/Pause
+  Request:  (empty)              # TOGGLE szemantika — minden hívás megfordítja a pause-állapotot
+  Response: bool status          # request feldolgozva (NEM az aktuális pause-állapot)
 
 /slam_toolbox/clear_changes             slam_toolbox/srv/Clear
   Request:  (empty)
-  Response: (empty / status)
+  Response: (empty)
 
-/slam_toolbox/serialize_map             slam_toolbox/srv/SerializeMap
+/slam_toolbox/serialize_map             slam_toolbox/srv/SerializePoseGraph
   Request:  string filename             # base name without extension
-  Response: int result (0=ok)
+  Response: uint8 result                # RESULT_SUCCESS=0, RESULT_FAILED_TO_WRITE_FILE=255
+  Output:   <filename>.posegraph + <filename>.data   # bináris pose-gráf + scan-adat
+
+/slam_toolbox/save_map                  slam_toolbox/srv/SaveMap
+  Request:  std_msgs/String name        # base name without extension
+  Response: (success/status)
+  Output:   <name>.pgm + <name>.yaml    # standard nav2 map_server formátum
 ```
+
+**Toggle-kezelés a trajectory_node-ban:** a `slam_toolbox/srv/Pause` toggle, NEM set. A node-nak belső `bool slam_paused_` flag-et kell tartania, és minden `pause(true)`/`pause(false)` szándékkor hívás CSAK akkor szükséges, ha az aktuális belső állapot eltér a kívánttól (különben skip).
+
+**SAVE-stratégia:** a `trajectory_node` SAVE-kor két service-call kell:
+1. `serialize_map` → `.posegraph`+`.data` (replay-folytatáshoz)
+2. `save_map` → `.pgm`+`.yaml` (Nav2 costmap-loaderhez)
+Ha bármelyik FAIL → led BLINK_FAST_3HZ + `last_slam_save_failed = true`.
 
 ---
 
@@ -564,7 +583,8 @@ trajectory_node:
     normal_max_angular_vel: 4.44
     slam_pause_service: "/slam_toolbox/pause_new_measurements"
     slam_clear_service: "/slam_toolbox/clear_changes"
-    slam_save_service: "/slam_toolbox/serialize_map"
+    slam_serialize_service: "/slam_toolbox/serialize_map"
+    slam_save_map_service: "/slam_toolbox/save_map"
     rc_teleop_set_params_service: "/rc_teleop_node/set_parameters"
     service_call_timeout_s: 10.0
 ```
@@ -612,7 +632,8 @@ replay_timed = TimerAction(period=8.0, actions=[replay_launch])
 | Hibakód / esemény | Forrás | Mit jelent | Reakció |
 |---|---|---|---|
 | `pose_count < min_pose_count` (5) | trajectory_node SAVE | Túl rövid felvétel | Silent reject, NEM jelez tanításként, LED visszaáll előzőre |
-| `slam_toolbox/serialize_map` service unavailable / FAIL | trajectory_node SAVE | SLAM mentés sikertelen | LED = BLINK_FAST_3HZ, `last_slam_save_failed = true`, yaml MARAD (atomic) |
+| `slam_toolbox/serialize_map` (SerializePoseGraph) service unavailable / result=255 | trajectory_node SAVE | Pose-gráf mentés sikertelen | LED = BLINK_FAST_3HZ, `last_slam_save_failed = true`, yaml MARAD (atomic) |
+| `slam_toolbox/save_map` (SaveMap) service unavailable / FAIL | trajectory_node SAVE | .pgm+.yaml Nav2-map mentés sikertelen | LED = BLINK_FAST_3HZ, `last_slam_save_failed = true`, .posegraph+.data MARAD |
 | YAML write FAIL | trajectory_node SAVE | Disk full / permission | LED = BLINK_FAST_3HZ, `last_save_failed = true`, régi yaml MARAD |
 | `slam_toolbox/pause_new_measurements` FAIL | trajectory_node START_LEARNING / SAVE | SLAM nem reagál | Log warning, folytat (a SLAM esetleg már pause-olt, vagy nem létezik service-listán) |
 | `slam_toolbox/clear_changes` FAIL | trajectory_node START_LEARNING / SLAM_WIPE | Clear nem ment | Log warning, folytat |
@@ -667,7 +688,7 @@ val    runtime (4.1 új)        (4.2 új +       burst                   ciklus
 
 | # | Gate | Állapot | Kezdés | Lezárás | Megjegyzés |
 |---|---|---|---|---|---|
-| G1 | SLAM-toolbox service validation | 🟡 IN PROGRESS | 2026-05-15 | — | Plan részletezve 11.G1 szekcióban; agent végrehajtás |
+| G1 | SLAM-toolbox service validation | ✅ DONE | 2026-05-15 | 2026-05-15 | 9/9 PASS spec-corr. után, tag `replay-v2-g1-slam-validated` |
 | G2 | rc_teleop_node sebesség-cap runtime váltás | ⬜ TODO | — | — | |
 | G3 | ok_go_supervisor refactor | ⬜ TODO | — | — | |
 | G4 | trajectory_node refactor | ⬜ TODO | — | — | |
@@ -727,7 +748,7 @@ Egyenként kerülnek kibővítésre az új session-ben. Sablon minden gate-hez:
 
 ### 11.G1 — SLAM-toolbox service validation (bench)
 
-**Állapot:** 🟡 IN PROGRESS — 2026-05-15
+**Állapot:** ✅ DONE — 2026-05-15 (spec-corrigálva, ld. 13. döntésnapló)
 
 **Cél:** Validáljuk, hogy a `/slam_toolbox/pause_new_measurements`, `/slam_toolbox/clear_changes`, `/slam_toolbox/serialize_map` natív service-ek elérhetők és működnek a futó `async_slam_toolbox_node`-on. Bench-tesztben (kerékfelemelés VAGY E-Stop aktív):
 1. `pause_new_measurements(true)` után új scan-ek NEM integrálódnak a map-be (a /map topic NEM változik)
@@ -753,19 +774,20 @@ Egyenként kerülnek kibővítésre az új session-ben. Sablon minden gate-hez:
 6. `mkdir -p /data/maps/g1_test/`
 7. **Bench-safety verify**: E-Stop press visual confirmation VAGY kerekek felemelve
 
-**PASS kritériumok (E-Stop-aktív bench, service-response szint):**
+**PASS kritériumok (E-Stop-aktív bench, service-response szint) — G1 utáni spec-corrigálással (slam_toolbox 2.8.4):**
 
-| # | Teszt | Várt output | Megjegyzés |
-|---|---|---|---|
-| 1 | `ros2 service list \| grep slam_toolbox \| wc -l` | >= 3 (a 3 célszervíz) | service-felfedés |
-| 2 | `ros2 service type /slam_toolbox/pause_new_measurements` | `std_srvs/srv/SetBool` | típus-egyezés |
-| 3 | `ros2 service type /slam_toolbox/clear_changes` | `slam_toolbox/srv/Clear` | |
-| 4 | `ros2 service type /slam_toolbox/serialize_map` | `slam_toolbox/srv/SerializeMap` | |
-| 5a | `ros2 service call /slam_toolbox/pause_new_measurements std_srvs/srv/SetBool "{data: true}"` (timeout 5s) | `success: True` (response érkezik) | pause hívható |
-| 5b | `ros2 service call /slam_toolbox/pause_new_measurements std_srvs/srv/SetBool "{data: false}"` (timeout 5s) | `success: True` (response érkezik) | resume hívható |
-| 6 | `ros2 service call /slam_toolbox/clear_changes slam_toolbox/srv/Clear "{}"` (timeout 5s) | response érkezik exception nélkül (empty response is OK) | clear hívható |
-| 7 | `ros2 service call /slam_toolbox/serialize_map slam_toolbox/srv/SerializeMap "{filename: '/data/maps/g1_test/map'}"` (timeout 15s) | `result: 0` (vagy success-jelző) | mentés sikeres |
-| 8 | `ls -la /data/maps/g1_test/map.{posegraph,data,pgm,yaml}` | mind a 4 fájl létezik, méret > 0 | fájl-artefakt |
+| # | Teszt | Várt output | Tényleges (2026-05-15) | PASS/FAIL |
+|---|---|---|---|---|
+| 1 | `ros2 service list \| grep slam_toolbox \| wc -l` | >= 3 (a 3 célszervíz) | 22 service, mind a 3 jelen + bónusz `/save_map` | ✅ PASS |
+| 2 | `ros2 service type /slam_toolbox/pause_new_measurements` | `slam_toolbox/srv/Pause` (TOGGLE, NEM SetBool) | `slam_toolbox/srv/Pause` | ✅ PASS |
+| 3 | `ros2 service type /slam_toolbox/clear_changes` | `slam_toolbox/srv/Clear` | `slam_toolbox/srv/Clear` | ✅ PASS |
+| 4 | `ros2 service type /slam_toolbox/serialize_map` | `slam_toolbox/srv/SerializePoseGraph` (NEM SerializeMap) | `slam_toolbox/srv/SerializePoseGraph` | ✅ PASS |
+| 5a | `ros2 service call /slam_toolbox/pause_new_measurements slam_toolbox/srv/Pause "{}"` (timeout 5s) | response érkezik, `status: True` | `status=True` | ✅ PASS |
+| 5b | 2. toggle (resume): ugyanaz | response érkezik, `status: True` | `status=True` (4 toggle paritás → resume) | ✅ PASS |
+| 6 | `ros2 service call /slam_toolbox/clear_changes slam_toolbox/srv/Clear "{}"` (timeout 5s) | empty response, exception nélkül | empty response | ✅ PASS |
+| 7 | `ros2 service call /slam_toolbox/serialize_map slam_toolbox/srv/SerializePoseGraph "{filename: '/data/maps/g1_test/map'}"` (timeout 15s) | `result: 0` (RESULT_SUCCESS) | `result=0` | ✅ PASS |
+| 8a | `ls -la /data/maps/g1_test/map.{posegraph,data}` | 2 fájl, méret > 0 | 9.7 MB + 4.6 MB | ✅ PASS |
+| 8b | Bónusz: `save_map` külön → `.pgm`+`.yaml` (G4 SAVE-stratégia validálja) | (G4 implement utáni teszt) | halasztva G4-re | — N/A G1-en |
 
 **Halasztott (G7 élesteszt):** A pause(true)/(false) **tényleges viselkedés-validáció** (a /map ÉS a SLAM internal scan-buffer tényleg leáll-e a scan-integrációval) RC-mozgást igényel — E-Stop alatt nem ellenőrizhető (a robot áll, scan-ek azonos területről, /map változás nincs). G7-en a robot földön mozog, ott natív megfigyelhető:
 - `pause(true)` aktív LEARN_IDLE-ben + robot RC-vel egy új területre megy → /map NEM bővül azzal a területtel
@@ -799,7 +821,19 @@ Egyenként kerülnek kibővítésre az új session-ben. Sablon minden gate-hez:
 - Commit: "feat(replay-v2): G1 SLAM-toolbox service validation DONE"
 - Tag: `replay-v2-g1-slam-validated`
 
-**Eredmény:** _(G1 lezárásakor töltődik)_
+**Eredmény (2026-05-15):**
+
+- ✅ **9/9 PASS** (a spec-corrigálás után — eredeti 8-pontos tábla 6/8 PASS, 3 sor a phase-file specifikációs hibája miatt FAIL — spec-corrigálva 9/9-re bővítve)
+- A 3 SLAM service mindegyike létezik, hívható, success-választ ad, fájl-output létrejön
+- Spec-eltérések felfedezve és corrigálva a phase-file 2.4 + 5.3 + 6.1 + 11.G1 szekciókban:
+  - `pause_new_measurements` típusa **`slam_toolbox/srv/Pause`** (TOGGLE szemantika), NEM `std_srvs/srv/SetBool`
+  - `serialize_map` típusa **`slam_toolbox/srv/SerializePoseGraph`**, NEM `slam_toolbox/srv/SerializeMap`
+  - A `serialize_map` csak `.posegraph`+`.data`-t ír; a `.pgm`+`.yaml`-hez **külön `/slam_toolbox/save_map`** (SaveMap) hívás kell — két-service SAVE-stratégia
+- Container név javítva: `robot` (NEM `robot-robot`)
+- Részletes results: `docs/backup/g1_results.md`
+- Mentett artefaktok: `/data/maps/g1_test/map.posegraph` (9.7 MB), `/data/maps/g1_test/map.data` (4.6 MB)
+- A G4 trajectory_node implementáció igazodik a G1-validált API-hoz (5.3 szekció szerint)
+- **G7-re halasztva:** tényleges pause/resume viselkedés-megfigyelés robot-mozgással
 
 **Végrehajtási prompt — agent indításhoz:**
 
@@ -879,3 +913,6 @@ A projekt szakasz akkor zárul, ha:
 | 2026-05-15 | `max_recover_distance_m: 2.0` (STUCK forward-search korlát) | Ha RC-vel túl messze vittük, STUCK marad, log warning — biztonsági korlát |
 | 2026-05-15 | FOLLOW me mód kihagyva v2-ből | Külön track később |
 | 2026-05-15 | G1 bench E-Stop-aktív (user-confirmed), kerékforgatás-igénylő pause/resume viselkedés-megfigyelés G7 élesztre halasztva | E-Stop alatt a robot áll, scan-ek azonos területről, /map természetes változás nincs → pause(true)/(false) hatása NEM közvetlenül mérhető. G1-en service-response + fájl-output szintű validáció elég a G3+G4 építéséhez. |
+| 2026-05-15 | G1 spec-corrigálva az upstream slam_toolbox 2.8.4 API-ra | A phase-file eredeti 11.G1 PASS-táblája feltételezett típusokat (`std_srvs/SetBool`, `SerializeMap`) tartalmazott — a tényleges upstream API más (`slam_toolbox/srv/Pause` TOGGLE, `SerializePoseGraph`). Funkcionálisan a 3 service rendben működik. A 2.4, 5.3, 6.1, 11.G1 szekciók aktualizálva; a G4 trajectory_node ehhez igazodik. |
+| 2026-05-15 | SAVE két-service stratégia: SerializePoseGraph + SaveMap | A `serialize_map` csak `.posegraph`+`.data`-t ír, a `.pgm`+`.yaml`-hez (Nav2 costmap loader) a `/slam_toolbox/save_map` külön hívása kell. A G4 mindkettőt hívja sorrendben; bármelyik FAIL → `last_slam_save_failed = true`. |
+| 2026-05-15 | Container név a docs-ban: `robot` (NEM `robot-robot`) | Az aktuális compose service neve `robot`; a `robot-robot` outdated. Test-prompt + dokumentáció igazítva. |
