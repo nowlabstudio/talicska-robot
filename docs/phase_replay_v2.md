@@ -1,7 +1,7 @@
 # Trajectory Replay v2 — Projekt Szakasz
 
 **Indulás:** 2026-05-15
-**Állapot:** 🟡 TERVEZÉS → IMPLEMENTÁCIÓ (G1 indítható)
+**Állapot:** 🟡 IMPLEMENTÁCIÓ — G1 IN PROGRESS (2026-05-15)
 **Előzmény:** v1 ✅ KÉSZ — tag `replay-v1-g6-floortest-done`. A v1 5 backlog ítemét + egy nagy UX-redesign-t fed le a v2.
 **Hivatkozás:** Ez a fájl helyettesíti a `docs/backlog.md`-t a v2 szakasz lezárásáig. A szakasz lezárása után a tartalom archiválandó (vagy backlog-szintézis, vagy `docs/backup/phases/`-be mozgatva), és a backlog visszaveszi a fő-hivatkozás szerepét.
 
@@ -667,7 +667,7 @@ val    runtime (4.1 új)        (4.2 új +       burst                   ciklus
 
 | # | Gate | Állapot | Kezdés | Lezárás | Megjegyzés |
 |---|---|---|---|---|---|
-| G1 | SLAM-toolbox service validation | ⬜ TODO | — | — | Az új session indítása után indul |
+| G1 | SLAM-toolbox service validation | 🟡 IN PROGRESS | 2026-05-15 | — | Plan részletezve 11.G1 szekcióban; agent végrehajtás |
 | G2 | rc_teleop_node sebesség-cap runtime váltás | ⬜ TODO | — | — | |
 | G3 | ok_go_supervisor refactor | ⬜ TODO | — | — | |
 | G4 | trajectory_node refactor | ⬜ TODO | — | — | |
@@ -725,6 +725,122 @@ Egyenként kerülnek kibővítésre az új session-ben. Sablon minden gate-hez:
 
 ---
 
+### 11.G1 — SLAM-toolbox service validation (bench)
+
+**Állapot:** 🟡 IN PROGRESS — 2026-05-15
+
+**Cél:** Validáljuk, hogy a `/slam_toolbox/pause_new_measurements`, `/slam_toolbox/clear_changes`, `/slam_toolbox/serialize_map` natív service-ek elérhetők és működnek a futó `async_slam_toolbox_node`-on. Bench-tesztben (kerékfelemelés VAGY E-Stop aktív):
+1. `pause_new_measurements(true)` után új scan-ek NEM integrálódnak a map-be (a /map topic NEM változik)
+2. `pause_new_measurements(false)` után a scan integráció helyreáll (a /map változik)
+3. `clear_changes` hívható és válasz érkezik (nem dob exception-t)
+4. `serialize_map(filename)` mentés sikeres → `/data/maps/<filename>.{posegraph,data,pgm,yaml}` fájlok létrejönnek
+
+**Függőség (input):**
+- Robot stack fut (`make up`), `async_slam_toolbox_node` ACTIVE
+- RPLidar publikál `/scan` >= 5 Hz
+- TF tree konzisztens (`map → odom → base_link`)
+- **Bench-safety: fizikai E-Stop aktív (user-confirmed 2026-05-15)** → motor hardware-szinten leválasztva, RC-mozgás NINCS. Pause/resume közvetlen viselkedés-megfigyelés (RC kerékforgatás → /map változás) HALASZTVA G7 élesteszten. G1 csak service-response + fájl-output szintű validáció.
+
+**Előkészítés:**
+1. `make up` ellenőrzés (`docker compose ps` minden szolgáltatás Up/healthy)
+2. `ros2 node list | grep slam_toolbox` — node jelenléte
+3. `ros2 service list | grep /slam_toolbox/` — 3 service jelenléte
+4. `ros2 service type /slam_toolbox/{pause_new_measurements,clear_changes,serialize_map}` — típus-egyezés:
+   - `std_srvs/srv/SetBool`
+   - `slam_toolbox/srv/Clear`
+   - `slam_toolbox/srv/SerializeMap`
+5. `ros2 interface list | grep slam_toolbox/srv` — interfész csomagok elérhetők
+6. `mkdir -p /data/maps/g1_test/`
+7. **Bench-safety verify**: E-Stop press visual confirmation VAGY kerekek felemelve
+
+**PASS kritériumok (E-Stop-aktív bench, service-response szint):**
+
+| # | Teszt | Várt output | Megjegyzés |
+|---|---|---|---|
+| 1 | `ros2 service list \| grep slam_toolbox \| wc -l` | >= 3 (a 3 célszervíz) | service-felfedés |
+| 2 | `ros2 service type /slam_toolbox/pause_new_measurements` | `std_srvs/srv/SetBool` | típus-egyezés |
+| 3 | `ros2 service type /slam_toolbox/clear_changes` | `slam_toolbox/srv/Clear` | |
+| 4 | `ros2 service type /slam_toolbox/serialize_map` | `slam_toolbox/srv/SerializeMap` | |
+| 5a | `ros2 service call /slam_toolbox/pause_new_measurements std_srvs/srv/SetBool "{data: true}"` (timeout 5s) | `success: True` (response érkezik) | pause hívható |
+| 5b | `ros2 service call /slam_toolbox/pause_new_measurements std_srvs/srv/SetBool "{data: false}"` (timeout 5s) | `success: True` (response érkezik) | resume hívható |
+| 6 | `ros2 service call /slam_toolbox/clear_changes slam_toolbox/srv/Clear "{}"` (timeout 5s) | response érkezik exception nélkül (empty response is OK) | clear hívható |
+| 7 | `ros2 service call /slam_toolbox/serialize_map slam_toolbox/srv/SerializeMap "{filename: '/data/maps/g1_test/map'}"` (timeout 15s) | `result: 0` (vagy success-jelző) | mentés sikeres |
+| 8 | `ls -la /data/maps/g1_test/map.{posegraph,data,pgm,yaml}` | mind a 4 fájl létezik, méret > 0 | fájl-artefakt |
+
+**Halasztott (G7 élesteszt):** A pause(true)/(false) **tényleges viselkedés-validáció** (a /map ÉS a SLAM internal scan-buffer tényleg leáll-e a scan-integrációval) RC-mozgást igényel — E-Stop alatt nem ellenőrizhető (a robot áll, scan-ek azonos területről, /map változás nincs). G7-en a robot földön mozog, ott natív megfigyelhető:
+- `pause(true)` aktív LEARN_IDLE-ben + robot RC-vel egy új területre megy → /map NEM bővül azzal a területtel
+- `pause(false)` aktív LEARN_ACTIVE-ban → /map bővül
+
+**FAIL diagnosztika:**
+
+| Tünet | Gyökér-ok tartomány | Diagnosztika |
+|---|---|---|
+| `service not available` | `async_slam_toolbox_node` nem fut, vagy `/slam_toolbox` namespace-en kívül | `ros2 node info /slam_toolbox`, `ros2 node list` |
+| Service type unknown | slam_toolbox interfész csomag hiányzik a containerből | `ros2 pkg prefix slam_toolbox_msgs slam_toolbox`, `dpkg -l \| grep slam-toolbox` |
+| `pause(true)` után a /map mégis frissül | a slam_toolbox build nem támogatja a runtime pause-t (régi verzió) | `ros2 run slam_toolbox async_slam_toolbox_node --help`, ros2 interface show |
+| `serialize_map` timeout / FAIL | I/O hiba (volume mount), lemezhely vagy permission | `df -h /data`, `mount \| grep /data`, `ls -la /data/maps` |
+| `clear_changes` exception | csomag mismatch (ROS2 Jazzy verzió-eltérés) | `apt-cache policy ros-jazzy-slam-toolbox` |
+| Lidar /scan nem érkezik bench alatt | RPLidar áll, USB hiba | `ros2 topic hz /scan` várt: ~10 Hz |
+
+**Visszalépési pont:** Ha a 3 service nem natív vagy nem viselkedik várt módon:
+- (a) Fallback: SLAM lifecycle hívás (`/slam_toolbox/change_state` → `deactivate` → `activate`) durva pause-ként
+- (b) Fallback: Custom service-node az async_slam_toolbox_node helyett (NEM v2-ben — backlog)
+- (c) Worst-case: v2 SLAM-integráció kihagyva, a v1 minta (SLAM mindig fut, csak sebesség-cap a védelem) megőrizve → döntésnapló bejegyzés
+
+**Regressziós veszély:**
+- `clear_changes` valószínűleg friss session-t indít a meglévő map-en — ha a map-et is törli, az regressziós kockázat. **Mitigation:** előbb `serialize_map` (backup), majd `clear_changes`, majd verify a map megmaradt-e.
+- `pause_new_measurements(true)` a /map topic publikálását is leállíthatja — a Nav2 costmap (rolling=false) ettől nem érintett (a /map snapshot már megvan), de érdemes verify.
+
+**Lezárás (DONE feltétel):**
+- 8-ból 8 PASS kritérium teljesül (service-response + fájl-output szinten)
+- A G7-re halasztott pause/resume tényleges-viselkedés validáció backlogba/G7 plan-ba beírva
+- Teszt-output loggolva: `docs/backup/g1_results.md` (service list, type, hívás-response-ok, serialize_map fájl-listája)
+- Kanban G1 → ✅ DONE (9. szekció frissítése)
+- Commit: "feat(replay-v2): G1 SLAM-toolbox service validation DONE"
+- Tag: `replay-v2-g1-slam-validated`
+
+**Eredmény:** _(G1 lezárásakor töltődik)_
+
+**Végrehajtási prompt — agent indításhoz:**
+
+```
+Cél: Validáld a SLAM-toolbox 3 natív service-ét (pause_new_measurements, clear_changes,
+serialize_map) bench-tesztben a Trajectory Replay v2 G1 gate-eként.
+
+Workspace (host): /home/eduard/talicska-robot-ws/src/robot/talicska-robot
+Workspace (container): /root/talicska-ws (a service-call-okat a containeren belül futtasd)
+Phase-file: docs/phase_replay_v2.md 11.G1 szekció (teljes PASS kritérium-tábla)
+
+Bench-safety: fizikai E-Stop aktív (user-confirmed 2026-05-15) → semmilyen RC/cmd_vel
+parancsot NE publikálj. Az 5a/5b pause/resume teszt SERVICE-RESPONSE szintű, NEM
+kerékmozgással. A tényleges viselkedés-validáció G7 élesteszten lesz.
+
+Lépések:
+1. Service-felfedés: ros2 service list | grep slam_toolbox → várt: legalább 3 (pause_new_measurements,
+   clear_changes, serialize_map). Type-check mind a 3-ra.
+2. Pause-teszt 5a: ros2 service call /slam_toolbox/pause_new_measurements std_srvs/srv/SetBool
+   "{data: true}" — várt success: True (response).
+3. Resume-teszt 5b: ugyanaz "{data: false}" → success: True.
+4. Clear-teszt 6: ros2 service call /slam_toolbox/clear_changes slam_toolbox/srv/Clear "{}" —
+   válasz érkezik exception nélkül.
+5. Serialize-teszt 7+8: filename=/data/maps/g1_test/map → result: 0 + a 4 fájl megléte
+   (posegraph, data, pgm, yaml) + méret > 0.
+6. Mindent loggolj egy /tmp/g1_results.log fájlba, és tedd át docs/backup/g1_results.md-be
+   strukturáltan a 8-pontos PASS-tábla szerint (PASS/FAIL per sor).
+
+PASS/FAIL jelentés: tömör report a phase-file 11.G1 táblája szerint (mind a 8 sor PASS/FAIL
+jelölve, FAIL esetén a diagnosztika oszlop kitöltve).
+
+FAIL policy (B opció): NE javíts magadtól. Tömör report-tal jelezd, és az orchestrator
+dönti el a következő lépést.
+
+Nem módosíthatsz: forráskódot (cpp/yaml), git állapotot (sem commit, sem push), launch
+fájlokat. CSAK service-call-ok és diagnosztikai parancsok (ros2 service/topic/node).
+A docs/backup/g1_results.md fájlt írhatod (test-output dokumentum).
+```
+
+---
+
 ## 12. Záráskor
 
 A projekt szakasz akkor zárul, ha:
@@ -762,3 +878,4 @@ A projekt szakasz akkor zárul, ha:
 | 2026-05-15 | STUCK utáni felépülés: closest-next forward-search (NEM closest absolute) | A user a STUCK pont köré húzza ki a robotot, nem a kezdőpontra |
 | 2026-05-15 | `max_recover_distance_m: 2.0` (STUCK forward-search korlát) | Ha RC-vel túl messze vittük, STUCK marad, log warning — biztonsági korlát |
 | 2026-05-15 | FOLLOW me mód kihagyva v2-ből | Külön track később |
+| 2026-05-15 | G1 bench E-Stop-aktív (user-confirmed), kerékforgatás-igénylő pause/resume viselkedés-megfigyelés G7 élesztre halasztva | E-Stop alatt a robot áll, scan-ek azonos területről, /map természetes változás nincs → pause(true)/(false) hatása NEM közvetlenül mérhető. G1-en service-response + fájl-output szintű validáció elég a G3+G4 építéséhez. |
