@@ -9,6 +9,7 @@ Launches the full stack in dependency order:
      → bevárja: /robot/estop, /hardware/roboclaw/connected, /joint_states
      → safety.launch.py indul amikor READY (vagy 60s timeout után)
   5. navigation.launch.py — SLAM Toolbox + Nav2          (+6 s, timer)
+  6. replay.launch.py     — ok_go_supervisor + trajectory_node (+8 s, timer)
 
 All node parameters come from params_file (default: /config/robot_params.yaml).
 Docker Volume ./config:/config:ro mounts the file — no rebuild needed on change.
@@ -157,6 +158,26 @@ def generate_launch_description():
         ],
     )
 
+    # ----------------------------------------------------------------- replay --
+    # Trajectory Replay v2 (G5 2026-05-15): ok_go_supervisor + trajectory_node.
+    # A navigation után 8 s-mal indul (Nav2 lifecycle ACTIVATING ~6-7s körül),
+    # így a trajectory_node action client azonnal találja a /navigate_to_pose
+    # action server-t és a /slam_toolbox/* service-eket.
+    # A replay.launch.py paraméterek a robot_missions/config/replay.yaml-ból
+    # jönnek (csomag-belső default), NEM a /config/robot_params.yaml-ból.
+    replay = TimerAction(
+        period=8.0,
+        actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    PathJoinSubstitution([
+                        FindPackageShare("robot_missions"), "launch", "replay.launch.py"
+                    ])),
+                condition=IfCondition(LaunchConfiguration("use_nav")),
+            )
+        ],
+    )
+
     return LaunchDescription([
         params_file_arg,
         use_nav_arg,
@@ -168,4 +189,5 @@ def generate_launch_description():
         readiness_check,    # t=+2s: readiness probe indul (parallel teleop/sensors)
         safety_after_ready, # safety indul amikor readiness_proc exit-el
         navigation,
+        replay,             # t=+8s: ok_go_supervisor + trajectory_node (replay v2)
     ])

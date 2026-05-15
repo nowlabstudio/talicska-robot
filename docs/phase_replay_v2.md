@@ -1,7 +1,7 @@
 # Trajectory Replay v2 — Projekt Szakasz
 
 **Indulás:** 2026-05-15
-**Állapot:** 🟡 IMPLEMENTÁCIÓ — G1+G2+G3+G4 ✅ DONE, G5 IN PROGRESS — bringup + yaml tunning (2026-05-15)
+**Állapot:** 🟡 IMPLEMENTÁCIÓ — G1+G2+G3+G4+G5 ✅ DONE, G6 ELŐKÉSZÍTÉS — docker rebuild + smoke (2026-05-15)
 **Előzmény:** v1 ✅ KÉSZ — tag `replay-v1-g6-floortest-done`. A v1 5 backlog ítemét + egy nagy UX-redesign-t fed le a v2.
 **Hivatkozás:** Ez a fájl helyettesíti a `docs/backlog.md`-t a v2 szakasz lezárásáig. A szakasz lezárása után a tartalom archiválandó (vagy backlog-szintézis, vagy `docs/backup/phases/`-be mozgatva), és a backlog visszaveszi a fő-hivatkozás szerepét.
 
@@ -692,7 +692,7 @@ val    runtime (4.1 új)        (4.2 új +       burst                   ciklus
 | G2 | rc_teleop_node sebesség-cap runtime váltás | ✅ DONE | 2026-05-15 | 2026-05-15 | 10/10 PASS, callback frissíti a member-eket, baseline reset OK, tag `replay-v2-g2-param-validated` |
 | G3 | ok_go_supervisor refactor | ✅ DONE | 2026-05-15 | 2026-05-15 | 12/12 PASS, 572→914 LOC, syntax-clean, tag `replay-v2-g3-okgo-refactored` |
 | G4 | trajectory_node refactor | ✅ DONE | 2026-05-15 | 2026-05-15 | 16/16 PASS, 652→1350 LOC, syntax-clean, tag `replay-v2-g4-trajectory-refactored` |
-| G5 | bringup include + burst tunning | 🟡 IN PROGRESS | 2026-05-15 | — | Plan részletezve 11.G5 szekcióban |
+| G5 | bringup include + burst tunning | ✅ DONE | 2026-05-15 | 2026-05-15 | 12/12 PASS, 4 fájl módosítva, tag `replay-v2-g5-config-tuned` |
 | G6 | Post-rebuild revalidation | ⬜ TODO | — | — | |
 | G7 | Élesteszt 2-3 m ciklus | ⬜ TODO | — | — | |
 
@@ -1101,7 +1101,7 @@ Egyenként kerülnek kibővítésre az új session-ben. Sablon minden gate-hez:
 
 ### 11.G5 — `robot_bringup` auto-include + yaml tunning
 
-**Állapot:** 🟡 IN PROGRESS — 2026-05-15
+**Állapot:** ✅ DONE — 2026-05-15
 
 **Cél:** Konfigurációs változtatások a v2 új viselkedéshez:
 1. `robot_bringup/launch/robot.launch.py`-ba `replay.launch.py` include (TimerAction period=8.0, a navigation után)
@@ -1163,7 +1163,23 @@ A G5 független G3-G4-től (config-fájl munka), de a build és runtime G6-on é
 - Commit: "feat(replay-v2): G5 — bringup replay-include + velocity_smoother burst + nav2_params + replay.yaml params"
 - Tag: `replay-v2-g5-config-tuned`
 
-**Eredmény:** _(G5 lezárásakor töltődik)_
+**Eredmény (2026-05-15):**
+
+- ✅ **12/12 PASS** (YAML + Python AST syntax-check tiszta minden fájlra)
+- 4 fájl módosítva, +72/-25 sor:
+  - `config/robot_params.yaml` (+6): NAVIGATION_REPLAY profil `velocity_smoother.max_accel: [0.3, 0.0, 1.0]` + `max_decel: [-0.5, 0.0, -1.0]` burst-csökkentő
+  - `robot_bringup/config/nav2_params.yaml` (-2/+2): `xy_goal_tolerance 0.15→0.10`, `regulated_linear_scaling_min_radius 0.9→0.6`
+  - `robot_bringup/launch/robot.launch.py` (+22): `replay = TimerAction(period=8.0, ...)` a navigation után, `IfCondition(use_nav)`-vel, `FindPackageShare("robot_missions")` resolverrel
+  - `robot_missions/config/replay.yaml` (-25/+65): teljes újrastrukturálás v1→v2 — 13 ok_go_supervisor + 22 trajectory_node paraméter (a v1-ből megtartott `sampling_hz`, `dedup_*`, `trajectory_file`, `map_frame`, `base_frame`, `tf_lookup_timeout_ms` is benne van a 22-ben)
+- **CPP-yaml param-konzisztencia:** 13/13 (ok_go) + 22/22 (trajectory) MATCH, set-diff üres mindkét oldalon
+- v1-only paraméterek eltávolítva: `save_flash_duration_s`, `wipe_flash_duration_s`, `blink_5hz_period_s` (a G3 cpp nem deklarálja őket)
+- Részletes results: `docs/backup/g5_results.md`
+
+**Nyitott (G6/G7-re halasztva, nem-blocking):**
+- Runtime profil-merge a NAVIGATION_REPLAY `velocity_smoother`-en (G6 docker rebuild után verify-olandó)
+- `xy_goal_tolerance: 0.10` regressziós hatás más Nav2 use-case-ekre (G7 élesteszt)
+- `replay.launch.py` mindig fut a `make up`-pal (auto-include); G6-on verify hogy a passzív IDLE-állapot nem zavar más node-okat
+- A `IfCondition(use_nav)` döntés a replay-re — logikus, mert Nav2 nélkül a service-call-ok nem találnák a target node-okat
 
 **Végrehajtási prompt — agent indításhoz:** lásd egyedi prompt az orchestrator-tól.
 

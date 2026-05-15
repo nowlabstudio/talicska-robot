@@ -1,38 +1,57 @@
 # =============================================================================
-# replay.yaml — Trajectory Replay v1 paraméterek (mindkét node)
+# replay.yaml — Trajectory Replay v2 paraméterek (mindkét node)
 # =============================================================================
-# A phase-file `docs/phase_trajectory_replay.md` 6 + S4 szekciói szerint.
+# A phase-file `docs/phase_replay_v2.md` 6.1 szekciója szerint.
+# G3 (ok_go_supervisor.cpp): 13 declare_parameter
+# G4 (trajectory_node.cpp):  22 declare_parameter (7 v1 + 15 új v2)
+# A yaml-ban MINDEN cpp-ben declare-olt paraméternek default-tel szerepelnie kell.
 # =============================================================================
 
 ok_go_supervisor:
   ros__parameters:
-    # Gomb dekódolás
-    short_max_s: 1.0        # SHORT trigger küszöb (release-kor)
-    long_min_s:  5.0        # LONG trigger küszöb (held >=)
+    # ── Gomb-dekódolás küszöbök (4.1 szerint) ────────────────────────────
+    short_max_s: 1.0          # SHORT trigger küszöb (release-kor)
+    medium_min_s: 1.5         # MEDIUM tartomány alja
+    medium_max_s: 3.0         # MEDIUM tartomány teteje (over = LONG)
+    long_min_s: 5.0           # LONG trigger küszöb (held >=)
+    slam_wipe_min_s: 10.0     # SLAM_WIPE küszöb (extra hosszú hold)
 
-    # LED minta időtartamok
-    save_flash_duration_s: 2.0
-    wipe_flash_duration_s: 16.0
+    # ── Idő-paraméterek ──────────────────────────────────────────────────
+    learn_timeout_s: 300.0    # LEARN_ACTIVE max időtartam (5 perc, silent timeout)
+    wipe_steady_duration_s: 2.0  # WIPE LED steady-on időtartama
 
-    # Blink periódusok (a LED 50 Hz timer használja)
-    blink_2hz_period_s: 0.25
-    blink_4hz_period_s: 0.125
-    blink_5hz_period_s: 0.1
+    # ── LED periódusok (50 Hz timer használja, 4.1 LED-tábla) ────────────
+    slow_blink_period_s: 1.0        # 0.5 Hz (slow blink)
+    blink_1hz_period_s: 0.5         # 1 Hz
+    blink_2hz_period_s: 0.25        # 2 Hz
+    blink_4hz_period_s: 0.125       # 4 Hz
+    blink_fast_3hz_period_s: 0.15   # ~3.3 Hz (fast warning blink)
+    wipe_fast_flash_period_s: 0.1   # 5 Hz (wipe fast-flash phase)
 
 trajectory_node:
   ros__parameters:
-    # TF capture
+    # ── v1-ből megtartott paraméterek (G4 cpp 204-211) ───────────────────
     sampling_hz: 10.0                # TF lookup ráta CAPTURING fázisban
     dedup_min_dist_m: 0.02           # spatial dedup küszöb
     dedup_min_yaw_rad: 0.035         # ~2° dedup küszöb
-    tf_lookup_timeout_ms: 50         # lookupTransform timeout
+    trajectory_file: "/data/maps/current/trajectory.yaml"
+    map_frame: "map"
+    base_frame: "base_link"
+    tf_lookup_timeout_ms: 50         # lookupTransform timeout (ms)
 
-    # Frames
-    map_frame: map
-    base_frame: base_link
-
-    # Fájl I/O
-    trajectory_file: /data/maps/current/trajectory.yaml
-
-    # Nav2 action
-    nav_action_name: /navigate_through_poses
+    # ── ÚJ v2 paraméterek (G4 cpp 213-234, 15 db) ────────────────────────
+    nav_action_name: "/navigate_to_pose"          # A variáns (NavigateToPose per-pose + preempt)
+    wait_for_pose_threshold_m: 0.10               # look-ahead preempt küszöb
+    waypoint_decimation: 3                        # minden N. pose-t küld waypoint-ként
+    min_pose_count: 5                             # silent reject küszöb
+    max_recover_distance_m: 2.0                   # closest_next_pose_search max távolság (RESTART_FROM_STUCK)
+    slow_max_linear_vel: 0.2                      # LEARN_ACTIVE alatt rc_teleop sebesség-cap (lin)
+    slow_max_angular_vel: 0.3                     # LEARN_ACTIVE alatt rc_teleop sebesség-cap (ang)
+    normal_max_linear_vel: 3.89                   # alaphelyzet sebesség (14 km/h)
+    normal_max_angular_vel: 4.44                  # alaphelyzet forgási sebesség
+    slam_pause_service: "/slam_toolbox/pause_new_measurements"
+    slam_clear_service: "/slam_toolbox/clear_changes"
+    slam_serialize_service: "/slam_toolbox/serialize_map"
+    slam_save_map_service: "/slam_toolbox/save_map"
+    rc_teleop_set_params_service: "/rc_teleop_node/set_parameters"
+    service_call_timeout_s: 10.0                  # service-hívás max wait

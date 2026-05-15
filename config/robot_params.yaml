@@ -165,6 +165,12 @@ _profiles_:
     velocity_smoother:
       max_velocity: [0.555, 0.0, 1.5]
       min_velocity: [-0.2, 0.0, -1.5]
+      # G5 (2026-05-15) burst tunning: a 0.555 m/s cap-en a RegulatedPurePursuit
+      # gyorsít a v1 default (kb. 2.5 m/s²) felgyorsulással → ráng. Csökkentjük
+      # a max_accel-t [0.3, 0.0, 1.0]-re és a max_decel-t [-0.5, 0.0, -1.0]-re
+      # → simább replay-mozgás. CSAK a NAVIGATION_REPLAY profilban (RC/NAV nem érintve).
+      max_accel:    [0.3, 0.0, 1.0]
+      max_decel:    [-0.5, 0.0, -1.0]
 
 
 # =============================================================================
