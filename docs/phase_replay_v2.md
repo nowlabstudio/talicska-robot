@@ -691,7 +691,7 @@ val    runtime (4.1 új)        (4.2 új +       burst                   ciklus
 | G1 | SLAM-toolbox service validation | ✅ DONE | 2026-05-15 | 2026-05-15 | 9/9 PASS spec-corr. után, tag `replay-v2-g1-slam-validated` |
 | G2 | rc_teleop_node sebesség-cap runtime váltás | ✅ DONE | 2026-05-15 | 2026-05-15 | 10/10 PASS, callback frissíti a member-eket, baseline reset OK, tag `replay-v2-g2-param-validated` |
 | G3 | ok_go_supervisor refactor | ✅ DONE | 2026-05-15 | 2026-05-15 | 12/12 PASS, 572→914 LOC, syntax-clean, tag `replay-v2-g3-okgo-refactored` |
-| G4 | trajectory_node refactor | ⬜ TODO | — | — | |
+| G4 | trajectory_node refactor | 🟡 IN PROGRESS | 2026-05-15 | — | Plan részletezve 11.G4 szekcióban |
 | G5 | bringup include + burst tunning | ⬜ TODO | — | — | |
 | G6 | Post-rebuild revalidation | ⬜ TODO | — | — | |
 | G7 | Élesteszt 2-3 m ciklus | ⬜ TODO | — | — | |
@@ -993,6 +993,87 @@ Egyenként kerülnek kibővítésre az új session-ben. Sablon minden gate-hez:
 3. (opcionális) `on_long_event` `was_active` dead-code cleanup G3-ban → G4 review-kor mérlegelendő
 
 **Végrehajtási prompt — agent indításhoz:** lásd egyedi prompt az orchestrator-tól (agent NEM ír memóriát, agent NEM commit-ol, az orchestrator csinálja meg).
+
+---
+
+### 11.G4 — `trajectory_node.cpp` refactor (új 4.2 + NavigateToPose + SLAM clients)
+
+**Állapot:** 🟡 IN PROGRESS — 2026-05-15
+
+**Cél:** A `robot_missions/src/trajectory_node.cpp` (v1, 652 LOC) teljes refaktora a phase-file **4.2 új állapotgép** + **NavigateToPose** (volt `NavigateThroughPoses`) + **SLAM service-clients** (Pause/Clear/SerializePoseGraph/SaveMap) + **look-ahead preempt** + **closest-next forward-search** STUCK-recovery + **`rc_teleop_node/set_parameters`** async client szerint. A G4 a v2 legnagyobb tech-pivotja.
+
+**Függőség (input):**
+- G1 ✅ DONE: SLAM service API validálva (`slam_toolbox/srv/Pause` TOGGLE, `SerializePoseGraph`, `Clear`, `SaveMap`)
+- G2 ✅ DONE: `rc_teleop_node` callback frissíti a member változókat, runtime váltás azonnal hat a /cmd_vel-en
+- G3 ✅ DONE: `ok_go_supervisor` 4.1 új `/ok_go/cmd` enum (10=SLAM_WIPE, 11=LEARN_TIMEOUT, 12=RESTART_FROM_STUCK), új phase nevek
+- A v1 `trajectory_node.cpp` állapota: `replay-v1-g6-floortest-done` tag (652 LOC)
+- A phase-file 4.2 szekciója: új `phase` enum (IDLE, CAPTURING, ACTIVE_GOAL, PAUSED, CANCELLED, DONE, STUCK), új paraméterek, új tranzitok
+- A phase-file 3.1-3.7 szekciói: végig minden lépcső a START_LEARNING / SAVE / WIPE / SLAM_WIPE / PLAY / STUCK / E-Stop útjához
+
+**G3-ról halasztott 3 nyitott kérdés (a G4 lezárja):**
+1. `RESTART_FROM_STUCK` idempotencia (`/ok_go/cmd=12` + safety_state-figyelés egyszerre is jöhet → csak egy alkalom action-goal indítás kell)
+2. `last_save_failed` flag reset a SUCCESS-után (a `/trajectory/state` JSON-ban a következő SAVE-kor false-ra állítani)
+3. (G3-ban) `on_long_event` `was_active` dead-code — G4-ben review-kor opcionálisan eltávolítható
+
+**Előkészítés:**
+1. Olvasd be a `robot_missions/src/trajectory_node.cpp` aktuális v1 verzióját (652 LOC)
+2. Olvasd be a `robot_missions/CMakeLists.txt`-t és `package.xml`-t — várhatóan **bővítés szükséges**:
+   - `find_package(slam_toolbox REQUIRED)` (vagy `slam_toolbox_msgs`, attól függően melyik csomag tartalmazza a srv-ket)
+   - `find_package(rcl_interfaces REQUIRED)` (a `SetParameters` srv-hez)
+   - `find_package(nav2_msgs REQUIRED)` ha a `NavigateToPose` action-t használjuk (NEM `NavigateThroughPoses`)
+3. Olvasd be a phase-file 4.2 + 3.1-3.7 + 5.3 + 6.1 (replay.yaml új paraméterek) + 7 (hibamódok) szekciókat
+4. Olvasd be az `nav2_msgs/action/NavigateToPose.action` interfész-definíciót (header path: `/opt/ros/jazzy/include/nav2_msgs/action/`)
+
+**PASS kritériumok (kód-szintű, build-nélküli, syntax+include-check szint):**
+
+| # | Teszt | Várt |
+|---|---|---|
+| 1 | Új `Phase` enum 7 érték: IDLE, CAPTURING, ACTIVE_GOAL, PAUSED, CANCELLED, DONE, STUCK | grep-verify |
+| 2 | NavigateToPose action client (volt NavigateThroughPoses) | `#include <nav2_msgs/action/navigate_to_pose.hpp>` + `rclcpp_action::create_client<nav2_msgs::action::NavigateToPose>` |
+| 3 | SLAM service-clients regisztrálva: Pause (TOGGLE), Clear, SerializePoseGraph, SaveMap | 4 db `create_client<...>()` + 4 különböző srv-include (`#include <slam_toolbox/srv/pause.hpp>`, stb.) |
+| 4 | `rc_teleop_node/set_parameters` async client | `#include <rcl_interfaces/srv/set_parameters.hpp>` + `create_client<rcl_interfaces::srv::SetParameters>("/rc_teleop_node/set_parameters")` |
+| 5 | Új paraméterek declare_parameter: `wait_for_pose_threshold_m` (0.10), `waypoint_decimation` (3), `min_pose_count` (5), `max_recover_distance_m` (2.0), `slow_max_linear_vel` (0.2), `slow_max_angular_vel` (0.3), `normal_max_linear_vel` (3.89), `normal_max_angular_vel` (4.44), `nav_action_name` (/navigate_to_pose), `slam_pause_service`, `slam_clear_service`, `slam_serialize_service`, `slam_save_map_service`, `rc_teleop_set_params_service`, `service_call_timeout_s` (10.0) | grep-verify |
+| 6 | `current_index_` + `target_index_` mezők + look-ahead preempt logika a feedback-callback-ben (dist < wait_for_pose_threshold_m → cancel+send_next) | kódolvasással |
+| 7 | `closest_next_pose_search()` algoritmus a STUCK-recovery-hez (forward-search a current_index-től, max_recover_distance limit) | kódolvasással |
+| 8 | SLAM Pause TOGGLE-kezelés: `bool slam_paused_` belső flag, hívás CSAK ha aktuális != kívánt | kódolvasással |
+| 9 | SAVE két-service: `serialize_map` (SerializePoseGraph) ÉS `save_map` (SaveMap) sorrendben; bármelyik FAIL → `last_slam_save_failed = true` (`save_failed` reset a 2. nyitott kérdés alapján: SUCCESS-után `last_slam_save_failed = false` is) | kódolvasással |
+| 10 | Új tranzitok 4.2 tábla szerint (IDLE→CAPTURING START_LEARNING-re, CAPTURING→IDLE SAVE/WIPE/SLAM_WIPE/LEARN_TIMEOUT-ra, IDLE→ACTIVE_GOAL PLAY-re, ACTIVE_GOAL feedback-ciklus, STUCK→ACTIVE_GOAL RESTART_FROM_STUCK-ra) | kódolvasással |
+| 11 | `min_pose_count` silent-reject SAVE-kor: `pose_count < min_pose_count` → led visszaáll előzőre, NEM yaml write, NEM serialize_map, NEM save_map | kódolvasással |
+| 12 | E-Stop / state="RC" kezelés: ACTIVE_GOAL → cancel_goal_async() → CANCELLED (paused-mode); felengedéskor auto-resume vagy CH5=ROBOT-vissza explicit PLAY | kódolvasással |
+| 13 | `RESTART_FROM_STUCK` idempotens: ha már ACTIVE_GOAL-ban vagy, az explicit cmd=12 NEM indít új closest-next-search-et (csak ha phase==STUCK vagy CANCELLED) | kódolvasással (G3 1. nyitott kérdés lezárása) |
+| 14 | Syntax-check: `g++ -fsyntax-only -std=c++17` ROS Jazzy include-okkal | nincs syntax-error (include-warning OK, ha csak az -I path hiányos) |
+| 15 | CMakeLists.txt bővítés: `find_package(slam_toolbox REQUIRED)`, `find_package(nav2_msgs REQUIRED)`, `find_package(rcl_interfaces REQUIRED)`; `ament_target_dependencies` listán mind a 3 | diff-check |
+| 16 | package.xml bővítés: `<depend>slam_toolbox</depend>`, `<depend>nav2_msgs</depend>`, `<depend>rcl_interfaces</depend>` | diff-check |
+
+**FAIL diagnosztika:**
+
+| Tünet | Gyökér-ok | Diagnosztika |
+|---|---|---|
+| `slam_toolbox/srv/pause.hpp` not found | A `slam_toolbox` package nem providál srv-include path-ot a public include-okhoz | `apt-cache show ros-jazzy-slam-toolbox \| grep -i depends`; alternatíva: `slam_toolbox_msgs` (ha külön csomag) |
+| `nav2_msgs/action/navigate_to_pose.hpp` not found | nav2_msgs include path | `find /opt/ros/jazzy -name "navigate_to_pose.hpp"` |
+| `current_index_` race-condition a feedback-callback és cancel között | concurrent access nincs lock-olva | bevezess `std::mutex pose_index_mutex_` |
+| `closest_next_pose_search()` túl messze keres → restart hibás | max_recover_distance_m túl nagy / túl kicsi | yaml-tunning lépés a G6/G7-en |
+
+**Visszalépési pont:** Ha a refactor nem fér bele a 120-180 perc keret-be vagy a syntax-check FAIL marad: rollback a `replay-v1-g6-floortest-done` tag-re (`git checkout replay-v1-g6-floortest-done -- robot_missions/src/trajectory_node.cpp`) + re-plan.
+
+**Regressziós veszély:**
+- A `NavigateToPose` action-név `/navigate_to_pose` (NEM `/navigate_through_poses`) — ha más node a régi action-t várja vagy a Nav2 BT-XML nem expose-olja, FAIL. **Mitigation:** Nav2 jazzy default BT auto-register-ezi mindkettőt, és a `nav2_bringup` `navigation.launch.py` default-ja a `bt_navigator.navigate_through_poses` és `navigate_to_pose` actionoket is publikálja.
+- A `last_save_failed` flag reset a SUCCESS-után új viselkedés v1-hez képest (a v1 nem reset-elt) — a `/trajectory/state` JSON-ban a következő SAVE-kor false-ra állítani. A G3 ok_go_supervisor csak a `save_failed=true` esetén állít BLINK_FAST_3HZ-re, false esetén SLOW_BLINK → kompatibilis.
+- A `slam_toolbox::srv::Pause` TOGGLE szemantika: ha a node belső `slam_paused_` állapota desync-be kerül a slam_toolbox tényleges állapotával (pl. egy 3rd-party hívás), a `pause(true)`/`pause(false)` "intent"-ek nem érvényesülnek. **Mitigation:** dokumentálva mint ismert korlát, csak az ok_go/cmd flow-n keresztül hívunk pause-t, és a node-restart minden indulásnál `slam_paused_ = false`-szal indul (alapértelmezett SLAM aktív).
+
+**Lezárás (DONE feltétel):**
+- 16/16 PASS kritérium teljesül (a build és runtime G6-on)
+- Diff-review: a v1 → v2 cpp diff áttekinthető, deviations dokumentálva a `docs/backup/g4_results.md`-ben
+- G3-ról halasztott 3 nyitott kérdés ✅ lezárva (idempotencia + save_failed reset + dead-code cleanup, ha indokolt)
+- Kanban G4 → ✅ DONE
+- Commit: "feat(replay-v2): G4 trajectory_node.cpp refactor — new 4.2 FSM + NavigateToPose + SLAM clients + preempt + closest-next"
+- Tag: `replay-v2-g4-trajectory-refactored`
+
+**Eredmény:** _(G4 lezárásakor töltődik)_
+
+**Végrehajtási prompt — agent indításhoz:** lásd egyedi prompt az orchestrator-tól.
+
+---
 
 ---
 
