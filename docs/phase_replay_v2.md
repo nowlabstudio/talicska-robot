@@ -692,7 +692,7 @@ val    runtime (4.1 új)        (4.2 új +       burst                   ciklus
 | G2 | rc_teleop_node sebesség-cap runtime váltás | ✅ DONE | 2026-05-15 | 2026-05-15 | 10/10 PASS, callback frissíti a member-eket, baseline reset OK, tag `replay-v2-g2-param-validated` |
 | G3 | ok_go_supervisor refactor | ✅ DONE | 2026-05-15 | 2026-05-15 | 12/12 PASS, 572→914 LOC, syntax-clean, tag `replay-v2-g3-okgo-refactored` |
 | G4 | trajectory_node refactor | ✅ DONE | 2026-05-15 | 2026-05-15 | 16/16 PASS, 652→1350 LOC, syntax-clean, tag `replay-v2-g4-trajectory-refactored` |
-| G5 | bringup include + burst tunning | ⬜ TODO | — | — | |
+| G5 | bringup include + burst tunning | 🟡 IN PROGRESS | 2026-05-15 | — | Plan részletezve 11.G5 szekcióban |
 | G6 | Post-rebuild revalidation | ⬜ TODO | — | — | |
 | G7 | Élesteszt 2-3 m ciklus | ⬜ TODO | — | — | |
 
@@ -1094,6 +1094,76 @@ Egyenként kerülnek kibővítésre az új session-ben. Sablon minden gate-hez:
 2. Feedback-preempt timing-jitter (van fallback a `result_callback` SUCCEEDED-ban)
 3. Atomic save `fsync()` portability (POSIX rename-atomicity ext4-en OK)
 4. `current_goal_handle_` async access (single-threaded executor → OK)
+
+**Végrehajtási prompt — agent indításhoz:** lásd egyedi prompt az orchestrator-tól.
+
+---
+
+### 11.G5 — `robot_bringup` auto-include + yaml tunning
+
+**Állapot:** 🟡 IN PROGRESS — 2026-05-15
+
+**Cél:** Konfigurációs változtatások a v2 új viselkedéshez:
+1. `robot_bringup/launch/robot.launch.py`-ba `replay.launch.py` include (TimerAction period=8.0, a navigation után)
+2. `config/robot_params.yaml` — `velocity_smoother` burst tunning (`max_accel`, `max_decel`)
+3. `robot_bringup/config/nav2_params.yaml` — `general_goal_checker.xy_goal_tolerance` 0.15 → 0.10 (per-pose pontosabb)
+4. `robot_missions/config/replay.yaml` — G3+G4 új paraméterek default-jainak hozzáadása
+
+A G5 független G3-G4-től (config-fájl munka), de a build és runtime G6-on érvényesül.
+
+**Függőség (input):**
+- G3 ✅ DONE: ok_go_supervisor új paraméterek listája ismert (13 új)
+- G4 ✅ DONE: trajectory_node új paraméterek listája ismert (15 új)
+- A phase-file 6.1 szekciója: replay.yaml új paraméterek
+- A phase-file 6.2 szekciója: robot_params.yaml burst tunning diff
+- A phase-file 6.3 szekciója: nav2_params.yaml finomítás
+- A phase-file 6.4 szekciója: robot.launch.py replay include
+
+**Előkészítés:**
+1. Olvasd be: `robot_bringup/launch/robot.launch.py`, `config/robot_params.yaml`, `robot_bringup/config/nav2_params.yaml`, `robot_missions/config/replay.yaml`, `robot_missions/launch/replay.launch.py`
+2. Verify: a `replay.launch.py` léte és milyen node-okat indít (`ok_go_supervisor`, `trajectory_node`)
+
+**PASS kritériumok (kód+yaml-szintű, build-nélküli):**
+
+| # | Teszt | Várt |
+|---|---|---|
+| 1 | `robot_bringup/launch/robot.launch.py`-ban `replay.launch.py` include (TimerAction period=8.0, a navigation után) | grep `replay.launch.py` |
+| 2 | `IncludeLaunchDescription` import jelen (ha nem volt eddig) | grep `IncludeLaunchDescription` |
+| 3 | `FindPackageShare("robot_missions")` resolver jelen | grep |
+| 4 | `config/robot_params.yaml` NAVIGATION_REPLAY profil `velocity_smoother.max_accel: [0.3, 0.0, 1.0]` | grep |
+| 5 | `config/robot_params.yaml` NAVIGATION_REPLAY profil `velocity_smoother.max_decel: [-0.5, 0.0, -1.0]` | grep |
+| 6 | `robot_bringup/config/nav2_params.yaml` `general_goal_checker.xy_goal_tolerance: 0.10` (volt 0.15) | grep |
+| 7 | `robot_bringup/config/nav2_params.yaml` `controller_server.FollowPath.regulated_linear_scaling_min_radius: 0.6` (új) | grep |
+| 8 | `robot_missions/config/replay.yaml` `ok_go_supervisor` szekció bővítve a 13 új G3-paraméterrel (medium_min/max_s, slam_wipe_min_s, learn_timeout_s, wipe_steady_duration_s, 6 LED-periódus, és a min_pose_count átadás) | grep + szekció-verify |
+| 9 | `robot_missions/config/replay.yaml` `trajectory_node` szekció bővítve a 15 új G4-paraméterrel (nav_action_name, wait_for_pose_threshold_m, waypoint_decimation, min_pose_count, max_recover_distance_m, slow/normal_max_linear/angular_vel, 4 slam_*_service, rc_teleop_set_params_service, service_call_timeout_s) | grep + szekció-verify |
+| 10 | YAML syntax-check: `python3 -c 'import yaml; yaml.safe_load(open("config/robot_params.yaml"))'` + ugyanaz a 2 másik yaml-ra | NEM dob exception-t |
+| 11 | Launch-file syntax-check: `python3 -c "import ast; ast.parse(open('robot_bringup/launch/robot.launch.py').read())"` | NEM dob SyntaxError-t |
+| 12 | A `replay.launch.py` továbbra is futtatható egyedül (manuális teszt G6/G7-en) — itt csak grep-verify hogy létezik | `ls robot_missions/launch/replay.launch.py` |
+
+**FAIL diagnosztika:**
+
+| Tünet | Gyökér-ok | Diagnosztika |
+|---|---|---|
+| YAML parse error | TAB/space mismatch, vagy hibás dict-szerkezet | `yamllint`, vagy python yaml.safe_load traceback |
+| Launch-file SyntaxError | Python import vagy zárójel-hiba | `python3 -c "import ast; ast.parse(...)"` line+col info |
+| `replay.launch.py` nincs | a fájl-pathnek létezni kell (v1 G6 óta) | `ls robot_missions/launch/` |
+| velocity_smoother profil-merge nem érvényesül | NAVIGATION_REPLAY profil nem aktív kódból | a v1 G3 már validálta a profil-merge-et; a G5-ben csak yaml-szerkezet |
+
+**Visszalépési pont:** Yaml hibák esetén git checkout az adott fájlra (`git checkout HEAD -- <file>`) + re-edit.
+
+**Regressziós veszély:**
+- A `xy_goal_tolerance` 0.15 → 0.10 szigorítása más Nav2 use-case-ekre is hat (NEM csak a replay-re). **Mitigation:** v1 G6 élesteszten a 0.15 elég volt egy pose-elérésnek, a 0.10 csak per-pose pontosabb illeszkedést ad → minor regressziós kockázat, G7-en validálva
+- A `velocity_smoother.max_accel: [0.3, ...]` csökkenti a max gyorsulást (v1: kb. 2.5). A normál RC üzemben ez tompa response-t adhat. **Mitigation:** csak a NAVIGATION_REPLAY profilban (RC üzemben más profil aktív). Verify: a profil-merge a `flatten_for_ros2` lépésnél történik (v1 G3-fix)
+- A `replay.launch.py` auto-include az általános `make up`-pal indul → a `replay`-node-ok mindig futnak, NEM csak rotary=AUTO/LEARN-ben. Ez OK: a node-ok belül phase-orientáltak (IDLE-ben passzív)
+
+**Lezárás (DONE feltétel):**
+- 12/12 PASS kritérium teljesül (a build és runtime G6-on)
+- Diff-review: a 4 yaml/launch fájl változás dokumentálva `docs/backup/g5_results.md`-ben
+- Kanban G5 → ✅ DONE
+- Commit: "feat(replay-v2): G5 — bringup replay-include + velocity_smoother burst + nav2_params + replay.yaml params"
+- Tag: `replay-v2-g5-config-tuned`
+
+**Eredmény:** _(G5 lezárásakor töltődik)_
 
 **Végrehajtási prompt — agent indításhoz:** lásd egyedi prompt az orchestrator-tól.
 
