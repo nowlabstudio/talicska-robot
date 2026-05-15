@@ -1,7 +1,7 @@
 # Trajectory Replay v2 — Projekt Szakasz
 
 **Indulás:** 2026-05-15
-**Állapot:** 🟡 IMPLEMENTÁCIÓ — G1 ✅ DONE, G2 IN PROGRESS (2026-05-15)
+**Állapot:** 🟡 IMPLEMENTÁCIÓ — G1+G2 ✅ DONE, G3 IN PROGRESS (2026-05-15)
 **Előzmény:** v1 ✅ KÉSZ — tag `replay-v1-g6-floortest-done`. A v1 5 backlog ítemét + egy nagy UX-redesign-t fed le a v2.
 **Hivatkozás:** Ez a fájl helyettesíti a `docs/backlog.md`-t a v2 szakasz lezárásáig. A szakasz lezárása után a tartalom archiválandó (vagy backlog-szintézis, vagy `docs/backup/phases/`-be mozgatva), és a backlog visszaveszi a fő-hivatkozás szerepét.
 
@@ -689,7 +689,7 @@ val    runtime (4.1 új)        (4.2 új +       burst                   ciklus
 | # | Gate | Állapot | Kezdés | Lezárás | Megjegyzés |
 |---|---|---|---|---|---|
 | G1 | SLAM-toolbox service validation | ✅ DONE | 2026-05-15 | 2026-05-15 | 9/9 PASS spec-corr. után, tag `replay-v2-g1-slam-validated` |
-| G2 | rc_teleop_node sebesség-cap runtime váltás | 🟡 IN PROGRESS | 2026-05-15 | — | Plan részletezve 11.G2 szekcióban |
+| G2 | rc_teleop_node sebesség-cap runtime váltás | ✅ DONE | 2026-05-15 | 2026-05-15 | 10/10 PASS, callback frissíti a member-eket, baseline reset OK, tag `replay-v2-g2-param-validated` |
 | G3 | ok_go_supervisor refactor | ⬜ TODO | — | — | |
 | G4 | trajectory_node refactor | ⬜ TODO | — | — | |
 | G5 | bringup include + burst tunning | ⬜ TODO | — | — | |
@@ -839,7 +839,7 @@ Egyenként kerülnek kibővítésre az új session-ben. Sablon minden gate-hez:
 
 ### 11.G2 — `rc_teleop_node` sebesség-cap runtime váltás (bench)
 
-**Állapot:** 🟡 IN PROGRESS — 2026-05-15
+**Állapot:** ✅ DONE — 2026-05-15
 
 **Cél:** Validáljuk, hogy a `rc_teleop_node` `add_on_set_parameters_callback`-jén keresztül a `max_linear_vel` (3.89 → 0.2 m/s) és `max_angular_vel` (4.44 → 0.3 rad/s) paraméterek `ros2 param set`-tel runtime állíthatók, a hatás azonnal érvényesül (INFO log visszaigazol), és a baseline-ra vissza-set is működik.
 
@@ -894,7 +894,18 @@ Egyenként kerülnek kibővítésre az új session-ben. Sablon minden gate-hez:
 - Commit: "feat(replay-v2): G2 rc_teleop_node runtime param váltás validation DONE"
 - Tag: `replay-v2-g2-param-validated`
 
-**Eredmény:** _(G2 lezárásakor töltődik)_
+**Eredmény (2026-05-15):**
+
+- ✅ **10/10 PASS** (baseline get + set linear/angular + callback INFO log + source-code verify + reset)
+- Callback regisztráció: `add_on_set_parameters_callback` a `rc_teleop_node.cpp` 98-126. sor körül
+- A callback **közvetlenül a member változókat írja**: `max_linear_vel_` (113. sor), `max_angular_vel_` (116. sor körül), és INFO logot ír mindkét set-re
+- A `publish_tick()` (208/209. sor) ezeket a member változókat használja a /cmd_vel kalkulációhoz → runtime váltás AZONNAL hat
+- Member-deklarációk: 226/227. sor (típus: double)
+- INFO log példa: `[rc_teleop_node]: max_linear_vel set to 0.20 m/s`, `max_angular_vel set to 0.30 rad/s`
+- **Baseline visszaállítva** a teszt végén: lin=3.89, ang=4.44 (kötelező 10a+10b lépés teljesítve, INFO log + get-verify mindkét értékre)
+- Részletes results: `docs/backup/g2_results.md`
+- **G7-re halasztva:** tényleges sebesség-cap érvényesülés a /cmd_vel output-on (RC-mozgás-igényű)
+- A G4 trajectory_node `set_parameters` async call használhatja a `/rc_teleop_node/set_parameters` service-t bizalmasan — a callback frissíti a member-eket, ami a publish_tick-en át a /cmd_vel-en azonnal érvényesül
 
 **Végrehajtási prompt — agent indításhoz:**
 
