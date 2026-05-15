@@ -693,7 +693,7 @@ val    runtime (4.1 új)        (4.2 új +       burst                   ciklus
 | G3 | ok_go_supervisor refactor | ✅ DONE | 2026-05-15 | 2026-05-15 | 12/12 PASS, 572→914 LOC, syntax-clean, tag `replay-v2-g3-okgo-refactored` |
 | G4 | trajectory_node refactor | ✅ DONE | 2026-05-15 | 2026-05-15 | 16/16 PASS, 652→1350 LOC, syntax-clean, tag `replay-v2-g4-trajectory-refactored` |
 | G5 | bringup include + burst tunning | ✅ DONE | 2026-05-15 | 2026-05-15 | 12/12 PASS, 4 fájl módosítva, tag `replay-v2-g5-config-tuned` |
-| G6 | Post-rebuild revalidation | ⬜ TODO | — | — | |
+| G6 | Post-rebuild revalidation | 🟡 IN PROGRESS | 2026-05-15 | — | Plan részletezve 11.G6 szekcióban, várjuk a user OK-t a rebuild + mozgás-smoke-ra |
 | G7 | Élesteszt 2-3 m ciklus | ⬜ TODO | — | — | |
 
 ---
@@ -1182,6 +1182,103 @@ A G5 független G3-G4-től (config-fájl munka), de a build és runtime G6-on é
 - A `IfCondition(use_nav)` döntés a replay-re — logikus, mert Nav2 nélkül a service-call-ok nem találnák a target node-okat
 
 **Végrehajtási prompt — agent indításhoz:** lásd egyedi prompt az orchestrator-tól.
+
+---
+
+### 11.G6 — Docker rebuild + post-rebuild revalidation
+
+**Állapot:** 🟡 IN PROGRESS — 2026-05-15 (várjuk a user OK-t)
+
+**Cél:** A G3+G4+G5 változások egyben beépítése a `robot-robot:latest` image-be (~20p rebuild), majd post-rebuild smoke-teszt szakaszolva:
+- **G6a** Docker rebuild + container restart (~20p, autonóm OK)
+- **G6b** Service-szintű smoke: node list, topic publikáció, /trajectory/state, /ok_go/state, LED-topic (~10p, autonóm OK E-Stop alatt)
+- **G6c** Mock /ok_go/cmd publikáció — state-machine átmenetek (~15p, autonóm OK E-Stop alatt, SLAM service-clientek és set_parameters async hívások érvényesülésének verify-olása)
+- **G6d** ⚠️ **MOZGÁS-IGÉNYŰ smoke**: tényleges PLAY → /navigate_to_pose → motor mozgás verify (felhasználói JELZÉS szükséges, NEM autonóm)
+
+**Függőség:**
+- G3+G4+G5 ✅ DONE (cpp + yaml + launch fájlok a main-en, tag-elve)
+- Docker compose Up állapot (azt majd a rebuild után visszakapcsolni)
+- Bench-safety: fizikai E-Stop aktív (G6a-G6c-hez); G6d-hez bench-felemelés vagy élesteszt-előkészület
+
+**Előkészítés:**
+1. Verify clean state: `git status` (csak az ismert untracked: `scripts/ros_readiness_check.sh`)
+2. `make down` (vagy `docker compose down`) — leállítás a rebuild előtt
+3. `make build` vagy `docker compose build robot` — a `robot-robot:latest` image újraépítése a frissített cpp+yaml+launch tartalommal (~20p)
+4. `make up` — restart
+
+**PASS kritériumok:**
+
+**G6a — Rebuild + restart:**
+
+| # | Teszt | Várt |
+|---|---|---|
+| a1 | `docker compose build robot` | exit=0, no compilation errors |
+| a2 | `docker compose up -d` | exit=0, all services Up |
+| a3 | `docker compose ps` | `robot` és kapcsolódó szolgáltatások healthy |
+
+**G6b — Service-szintű smoke (E-Stop alatt):**
+
+| # | Teszt | Várt |
+|---|---|---|
+| b1 | `ros2 node list \| grep -E "ok_go_supervisor\|trajectory_node"` | mindkét node fut |
+| b2 | `ros2 topic list \| grep -E "/ok_go/(cmd\|state)\|/trajectory/state\|/robot/okgo_led"` | mind a 4 topic publikált |
+| b3 | `ros2 topic echo /trajectory/state --once` | JSON parse-olható, phase=IDLE, trajectory_loaded=false vagy true a /data/maps/current/trajectory.yaml jelenléte szerint |
+| b4 | `ros2 topic echo /ok_go/state --once` | JSON, phase=LEARN_IDLE (default rotary=LEARN) |
+| b5 | `ros2 topic hz /robot/okgo_led` | 20 Hz (tick_led periodikus) |
+| b6 | `ros2 param list /ok_go_supervisor \| grep medium_min_s` | jelen (G3 új paraméter) |
+| b7 | `ros2 param list /trajectory_node \| grep wait_for_pose_threshold_m` | jelen (G4 új paraméter) |
+
+**G6c — Mock /ok_go/cmd state-machine smoke (E-Stop alatt):**
+
+| # | Teszt | Várt |
+|---|---|---|
+| c1 | Publikálj `/ok_go/cmd` = 5 (START_LEARNING) | `/trajectory/state` phase=CAPTURING; SLAM Pause toggle hívás logban; set_parameters max_linear_vel=0.2, max_angular_vel=0.3 log |
+| c2 | Pose-buffer növekedés verify: `/recorded_path` topic vagy `/trajectory/state.pose_count` növekszik | a CAPTURING alatt 10 Hz-en TF capture, dedup szűri ha nincs mozgás (E-Stop alatt nincs — pose_count közel 0 marad) |
+| c3 | Publikálj `/ok_go/cmd` = 1 (SAVE) `min_pose_count < 5` alatt | silent reject: phase=IDLE, /trajectory/state.silent_reject=true, LED visszaáll előzőre |
+| c4 | Publikálj `/ok_go/cmd` = 2 (WIPE_TRAJECTORY) | trajectory.yaml unlink, phase=IDLE, /trajectory/state.trajectory_loaded=false |
+| c5 | Publikálj `/ok_go/cmd` = 11 (LEARN_TIMEOUT) | silent eldob (NEM mentés), phase=IDLE, set_params normal_*-vissza |
+| c6 | LED-pattern verify: minden átmenet után a `/robot/okgo_led` topic-on a várt minta (frekvencia + duty-cycle) | `ros2 topic hz` + visuális verify |
+
+**⚠️ G6d — MOZGÁS-IGÉNYŰ smoke (JELZÉS-szükséges):**
+
+| # | Teszt | Várt | Bench-safety |
+|---|---|---|---|
+| d1 | Robot földön VAGY kerekek felemelve; bench-safety operátor jelen, sürgősségi RC kéznél | — | felhasználó-megerősítés |
+| d2 | Pre-feltétel: van mentett trajectory (vagy az élesteszten felvesszük: LEARN→SAVE→AUTO flow rövid 1m egyenes felvétellel) | /data/maps/current/trajectory.yaml létezik | felhasználói teszt-előkészítés |
+| d3 | Publikálj `/ok_go/cmd` = 3 (PLAY) | `/trajectory/state` phase=ACTIVE_GOAL, NavigateToPose action goal sent, look-ahead preempt érvényesül (cancel + új goal a 3-adik pose-ra `dist < 0.10` alapján) | bench-safety + mozgás |
+| d4 | Trajectory végpontjának eléréskor: phase=DONE, LED=STEADY_ON | — | mozgás |
+| d5 | Mid-PLAY RC-override (CH5=RC) → PAUSED → CH5=ROBOT vissza → resume current_index-től | phase=PAUSED → ACTIVE_GOAL, /cmd_vel cap=0.555 fenntartva | mozgás |
+| d6 | STUCK-szimuláció (kézi akadály a robot elé) → Nav2 ABORTED → phase=STUCK → RC-vel kihúzás → CH5=ROBOT → RESTART_FROM_STUCK closest-next search → phase=ACTIVE_GOAL | log: closest_next_pose_search idx + dist | mozgás |
+
+**FAIL diagnosztika:**
+
+| Tünet | Gyökér-ok | Diagnosztika |
+|---|---|---|
+| Rebuild exit≠0 | cpp compile-error (G3/G4 syntax-check kihagyott valamit) | `docker compose build robot 2>&1 \| tail -100` |
+| Node nem indul a restart után | replay.launch.py include hibás vagy yaml-parse | `docker logs robot \| grep -i replay\|trajectory_node\|ok_go_supervisor` |
+| SLAM Pause hívás FAIL | g1 spec-eltérés más service-en | `ros2 service call /slam_toolbox/pause_new_measurements slam_toolbox/srv/Pause "{}"` direct |
+| LED-topic 0 Hz | tick_led nem fut, vagy tick-periódus paraméter rossz | `ros2 param get /ok_go_supervisor blink_2hz_period_s` |
+| PLAY után 0 cm mozgás (v1 G6 incidens-tanulság) | NavigateToPose helyett még NavigateThroughPoses-t használ | `ros2 action list \| grep navigate_to_pose`; trajectory_node log |
+
+**Visszalépési pont:** Ha G6a (rebuild) FAIL → cpp compile-error → vissza G3/G4 review-ba (a syntax-only check nem fogja meg a teljes ROS-include path-okkal kapcsolatos error-okat). Ha G6b/c/d FAIL → logika-bug a G3/G4-ben, dokumentálva visszalépés.
+
+**Regressziós veszély:**
+- A rebuild során a teljes `talicska-ws` build-elődik a containerben, így minden más csomag (`robot_teleop`, `safety_supervisor`, stb.) is. Ha a `robot_missions/CMakeLists.txt` G4-es bővítése (`slam_toolbox`, `rcl_interfaces`) hatással van a build-sorrendre, esetleg más csomag FAIL-elhet.
+- A `replay.launch.py` auto-include a teljes stack indulásánál — ha a `robot_missions` csomag nem épült rendben, a launch FAIL-el, és a teljes stack startup-ja akadhat.
+
+**Lezárás (DONE feltétel):**
+- G6a (rebuild + restart): 3/3 PASS
+- G6b (service smoke): 7/7 PASS
+- G6c (mock cmd smoke): 6/6 PASS
+- G6d (mozgás smoke): 6/6 PASS — VAGY tolerált félképesség + backlog-bejegyzés (ha pl. PLAY pose-elérés alatt 0 cm motion-jel jelenik meg → STUCK-marad — élesteszt-tanulság)
+- Teszt-output loggolva: `docs/backup/g6_results.md`
+- Kanban G6 → ✅ DONE
+- Commit: "feat(replay-v2): G6 — docker rebuild + post-rebuild revalidation DONE"
+- Tag: `replay-v2-g6-revalidated`
+
+**Eredmény:** _(G6 lezárásakor töltődik)_
+
+**Végrehajtási prompt:** szakaszolva — G6a+b+c agent autonóm, G6d felhasználói előkészítéssel + agent vagy orchestrator közvetlen vezérléssel.
 
 ---
 
