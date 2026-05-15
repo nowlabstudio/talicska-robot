@@ -1,7 +1,7 @@
 # Trajectory Replay v2 — Projekt Szakasz
 
 **Indulás:** 2026-05-15
-**Állapot:** 🟡 IMPLEMENTÁCIÓ — G1+G2+G3 ✅ DONE, G4 IN PROGRESS — trajectory_node refactor (2026-05-15)
+**Állapot:** 🟡 IMPLEMENTÁCIÓ — G1+G2+G3+G4 ✅ DONE, G5 IN PROGRESS — bringup + yaml tunning (2026-05-15)
 **Előzmény:** v1 ✅ KÉSZ — tag `replay-v1-g6-floortest-done`. A v1 5 backlog ítemét + egy nagy UX-redesign-t fed le a v2.
 **Hivatkozás:** Ez a fájl helyettesíti a `docs/backlog.md`-t a v2 szakasz lezárásáig. A szakasz lezárása után a tartalom archiválandó (vagy backlog-szintézis, vagy `docs/backup/phases/`-be mozgatva), és a backlog visszaveszi a fő-hivatkozás szerepét.
 
@@ -691,7 +691,7 @@ val    runtime (4.1 új)        (4.2 új +       burst                   ciklus
 | G1 | SLAM-toolbox service validation | ✅ DONE | 2026-05-15 | 2026-05-15 | 9/9 PASS spec-corr. után, tag `replay-v2-g1-slam-validated` |
 | G2 | rc_teleop_node sebesség-cap runtime váltás | ✅ DONE | 2026-05-15 | 2026-05-15 | 10/10 PASS, callback frissíti a member-eket, baseline reset OK, tag `replay-v2-g2-param-validated` |
 | G3 | ok_go_supervisor refactor | ✅ DONE | 2026-05-15 | 2026-05-15 | 12/12 PASS, 572→914 LOC, syntax-clean, tag `replay-v2-g3-okgo-refactored` |
-| G4 | trajectory_node refactor | 🟡 IN PROGRESS | 2026-05-15 | — | Plan részletezve 11.G4 szekcióban |
+| G4 | trajectory_node refactor | ✅ DONE | 2026-05-15 | 2026-05-15 | 16/16 PASS, 652→1350 LOC, syntax-clean, tag `replay-v2-g4-trajectory-refactored` |
 | G5 | bringup include + burst tunning | ⬜ TODO | — | — | |
 | G6 | Post-rebuild revalidation | ⬜ TODO | — | — | |
 | G7 | Élesteszt 2-3 m ciklus | ⬜ TODO | — | — | |
@@ -998,7 +998,7 @@ Egyenként kerülnek kibővítésre az új session-ben. Sablon minden gate-hez:
 
 ### 11.G4 — `trajectory_node.cpp` refactor (új 4.2 + NavigateToPose + SLAM clients)
 
-**Állapot:** 🟡 IN PROGRESS — 2026-05-15
+**Állapot:** ✅ DONE — 2026-05-15
 
 **Cél:** A `robot_missions/src/trajectory_node.cpp` (v1, 652 LOC) teljes refaktora a phase-file **4.2 új állapotgép** + **NavigateToPose** (volt `NavigateThroughPoses`) + **SLAM service-clients** (Pause/Clear/SerializePoseGraph/SaveMap) + **look-ahead preempt** + **closest-next forward-search** STUCK-recovery + **`rc_teleop_node/set_parameters`** async client szerint. A G4 a v2 legnagyobb tech-pivotja.
 
@@ -1069,7 +1069,31 @@ Egyenként kerülnek kibővítésre az új session-ben. Sablon minden gate-hez:
 - Commit: "feat(replay-v2): G4 trajectory_node.cpp refactor — new 4.2 FSM + NavigateToPose + SLAM clients + preempt + closest-next"
 - Tag: `replay-v2-g4-trajectory-refactored`
 
-**Eredmény:** _(G4 lezárásakor töltődik)_
+**Eredmény (2026-05-15):**
+
+- ✅ **16/16 PASS** (syntax-check clean: 0 warning, 0 error még `-Wpedantic`-kal is)
+- LOC: v1 652 → v2 **1350** (+698 sor, +107%)
+- Új `Phase` enum 7 értékkel (IDLE, CAPTURING, ACTIVE_GOAL, PAUSED, CANCELLED, DONE, STUCK)
+- **NavigateToPose** action client (volt `NavigateThroughPoses`) — per-pose küldés + feedback look-ahead preempt (cancel + új goal a `target_index + waypoint_decimation`-edik pose-ra, ha `dist < wait_for_pose_threshold_m`)
+- **4 SLAM service-client**: `slam_toolbox/srv/{Pause, Clear, SerializePoseGraph, SaveMap}` — a `slam_toolbox` csomagból (NEM `slam_toolbox_msgs`, az nem létezik Jazzy-ben)
+- **SLAM Pause TOGGLE-aware**: `slam_paused_` belső flag, `set_slam_pause(want_paused)` helper skip-eli a hívást, ha a kívánt állapot már megvan
+- **`rc_teleop_node/set_parameters`** async client (rcl_interfaces) — slow_*/normal_* sebesség-cap váltás LEARN_ACTIVE be-/kilépéskor
+- **SAVE két-service** sequencial async-chain: yaml atomic → SerializePoseGraph → SaveMap; bármelyik FAIL → `last_slam_save_failed = true`; teljes SUCCESS → mindkét flag reset
+- **closest-next forward-search** STUCK-recovery (`max_recover_distance_m=2.0` korlát; NOT_FOUND → STUCK marad)
+- **min_pose_count silent-reject** (default 5)
+- **E-Stop kezelés**: ACTIVE_GOAL → cancel_goal_async → CANCELLED; NAVIGATION-vissza → auto-recovery
+- **RESTART_FROM_STUCK idempotens**: cmd=12 és safety_state recovery ugyanazt a függvényt hívja `STUCK|CANCELLED` guard mögött (= G3 1. nyitott kérdés zárása)
+- 15 új v2 paraméter mind a phase-file 6.1 szerinti default-tel
+- **CMakeLists.txt** bővítve: `find_package(slam_toolbox REQUIRED)` + `find_package(rcl_interfaces REQUIRED)` + 2 sor `ament_target_dependencies` listán
+- **package.xml** bővítve: `<depend>slam_toolbox</depend>` + `<depend>rcl_interfaces</depend>`
+- **G3-ról halasztott 3 nyitott kérdés mind lezárva**: idempotencia guard ✅, save_failed reset SUCCESS-után ✅, dead-code N/A (v2 teljes refaktor új handler-patternnel, nem örökölte a v1 redundanciát)
+- Részletes results: `docs/backup/g4_results.md`
+
+**Nyitott kérdések G5-G6-ra halasztva (mindegyik nem-blocking):**
+1. CAPTURING-ban E-Stop alatti `t`-counter (csak logging, nem törött)
+2. Feedback-preempt timing-jitter (van fallback a `result_callback` SUCCEEDED-ban)
+3. Atomic save `fsync()` portability (POSIX rename-atomicity ext4-en OK)
+4. `current_goal_handle_` async access (single-threaded executor → OK)
 
 **Végrehajtási prompt — agent indításhoz:** lásd egyedi prompt az orchestrator-tól.
 
@@ -1120,3 +1144,5 @@ A projekt szakasz akkor zárul, ha:
 | 2026-05-15 | Container név a docs-ban: `robot` (NEM `robot-robot`) | Az aktuális compose service neve `robot`; a `robot-robot` outdated. Test-prompt + dokumentáció igazítva. |
 | 2026-05-15 | G3 LOC v1 572 → v2 914 (+342, +60%) | A 4.1 új állapotgép 8 phase + 9 LED minta + 6-zónás timing + 5p timeout + E-Stop guard + 3 új /ok_go/cmd enum-érték jelentős expansion. Syntax-check clean, build G6-on. |
 | 2026-05-15 | G3 → G4 átfedés: 3 nyitott kérdés (RESTART_FROM_STUCK idempotencia, save_failed reset, dead-code cleanup) | A G4 trajectory_node 4.2 refactor lefedi mindhármat; explicit lista a 11.G3 Eredmény és 11.G4 Függőség szekciókban. |
+| 2026-05-15 | SLAM service include csomag: `slam_toolbox` (NEM `slam_toolbox_msgs`) | A `slam_toolbox_msgs` csomag NEM létezik a ROS Jazzy disztribúcióban; a srv-k a `slam_toolbox` fő csomagban vannak (`slam_toolbox/srv/{Pause,Clear,SerializePoseGraph,SaveMap}.hpp`). `find_package(slam_toolbox REQUIRED)` + `<depend>slam_toolbox</depend>`. |
+| 2026-05-15 | G4 LOC v1 652 → v2 1350 (+698 sor, +107%) | A 4.2 új 7 phase + 4 SLAM service-client TOGGLE-kezeléssel + NavigateToPose + look-ahead preempt + closest-next forward-search + SAVE két-service async-chain + set_parameters integráció + min_pose_count silent-reject + E-Stop kezelés + RESTART_FROM_STUCK idempotens guard nagy expansion. Syntax-check clean -Wpedantic-kal is. |

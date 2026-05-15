@@ -21,6 +21,9 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
+# v2 G4 — SLAM service-clients + rc_teleop set_parameters
+find_package(slam_toolbox REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 
 # OK GO supervisor — gomb dekódolás, állapotgép, LED minta, parancsközvetítés.
 add_executable(ok_go_supervisor src/ok_go_supervisor.cpp)
@@ -29,7 +32,9 @@ ament_target_dependencies(ok_go_supervisor
   std_msgs
 )
 
-# Trajectory node — TF capture, YAML I/O, NavigateThroughPoses action client.
+# Trajectory node — TF capture, YAML I/O, NavigateToPose action client,
+# SLAM service-clients (Pause/Clear/SerializePoseGraph/SaveMap),
+# rc_teleop set_parameters async client (v2 G4 refactor).
 add_executable(trajectory_node src/trajectory_node.cpp)
 ament_target_dependencies(trajectory_node
   rclcpp
@@ -41,6 +46,8 @@ ament_target_dependencies(trajectory_node
   tf2
   tf2_ros
   tf2_geometry_msgs
+  slam_toolbox
+  rcl_interfaces
 )
 target_link_libraries(trajectory_node yaml-cpp)
 
