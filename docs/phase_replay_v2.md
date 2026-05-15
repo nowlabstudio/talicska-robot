@@ -1,7 +1,7 @@
 # Trajectory Replay v2 — Projekt Szakasz
 
 **Indulás:** 2026-05-15
-**Állapot:** 🟡 IMPLEMENTÁCIÓ — G1+G2 ✅ DONE, G3 IN PROGRESS — ok_go_supervisor refactor (2026-05-15)
+**Állapot:** 🟡 IMPLEMENTÁCIÓ — G1+G2+G3 ✅ DONE, G4 IN PROGRESS — trajectory_node refactor (2026-05-15)
 **Előzmény:** v1 ✅ KÉSZ — tag `replay-v1-g6-floortest-done`. A v1 5 backlog ítemét + egy nagy UX-redesign-t fed le a v2.
 **Hivatkozás:** Ez a fájl helyettesíti a `docs/backlog.md`-t a v2 szakasz lezárásáig. A szakasz lezárása után a tartalom archiválandó (vagy backlog-szintézis, vagy `docs/backup/phases/`-be mozgatva), és a backlog visszaveszi a fő-hivatkozás szerepét.
 
@@ -690,7 +690,7 @@ val    runtime (4.1 új)        (4.2 új +       burst                   ciklus
 |---|---|---|---|---|---|
 | G1 | SLAM-toolbox service validation | ✅ DONE | 2026-05-15 | 2026-05-15 | 9/9 PASS spec-corr. után, tag `replay-v2-g1-slam-validated` |
 | G2 | rc_teleop_node sebesség-cap runtime váltás | ✅ DONE | 2026-05-15 | 2026-05-15 | 10/10 PASS, callback frissíti a member-eket, baseline reset OK, tag `replay-v2-g2-param-validated` |
-| G3 | ok_go_supervisor refactor | 🟡 IN PROGRESS | 2026-05-15 | — | Plan részletezve 11.G3 szekcióban |
+| G3 | ok_go_supervisor refactor | ✅ DONE | 2026-05-15 | 2026-05-15 | 12/12 PASS, 572→914 LOC, syntax-clean, tag `replay-v2-g3-okgo-refactored` |
 | G4 | trajectory_node refactor | ⬜ TODO | — | — | |
 | G5 | bringup include + burst tunning | ⬜ TODO | — | — | |
 | G6 | Post-rebuild revalidation | ⬜ TODO | — | — | |
@@ -911,7 +911,7 @@ Egyenként kerülnek kibővítésre az új session-ben. Sablon minden gate-hez:
 
 ### 11.G3 — `ok_go_supervisor.cpp` refactor (új 4.1 állapotgép + UX)
 
-**Állapot:** 🟡 IN PROGRESS — 2026-05-15
+**Állapot:** ✅ DONE — 2026-05-15
 
 **Cél:** A `robot_missions/src/ok_go_supervisor.cpp` (v1, 572 LOC) teljes refaktora a phase-file **4.1 új állapotgép** + új timing-térkép + új LED-pattern enum + 5p tanítási timeout + SLAM-pause szabály (parancsközvetítésben) szerint. A G3 KÓDVÁLTOZÁS, a build és runtime-validáció G6-on.
 
@@ -972,7 +972,25 @@ Egyenként kerülnek kibővítésre az új session-ben. Sablon minden gate-hez:
 - Commit: "feat(replay-v2): G3 ok_go_supervisor.cpp refactor — new 4.1 FSM + LED + timing + 5p timeout"
 - Tag: `replay-v2-g3-okgo-refactored` (NEM PUSH-olunk container build előtt, de a kód a main-re kerül)
 
-**Eredmény:** _(G3 lezárásakor töltődik)_
+**Eredmény (2026-05-15):**
+
+- ✅ **12/12 PASS** (syntax-check clean: 0 warning, 0 error)
+- LOC: v1 572 → v2 **914** (+342 sor, +60%)
+- Új `Phase` enum 8 értékkel (LEARN_IDLE, LEARN_ACTIVE, AUTO_DISABLED, AUTO_LOADED, PLAYING, PAUSED, DONE, STUCK)
+- Új `LedPattern` enum 9 mintával (OFF, STEADY_ON, SLOW_BLINK, BLINK_FAST_3HZ, BLINK_1HZ, BLINK_2HZ, BLINK_4HZ, WIPE_FAST_FLASH, WIPE_FLASH)
+- 13 új `declare_parameter` (medium_min/max, slam_wipe_min, learn_timeout, wipe_steady_duration, 6 LED-periódus)
+- 6-zónás timing-térkép (SHORT < 1.0s, CANCEL 1.0-1.5s, MEDIUM 1.5-3.0s, CANCEL 3.0-5.0s, LONG 5.0-10.0s, VERY_LONG ≥ 10.0s csak rotary=LEARN-en)
+- 5p `learn_timeout_s` timer-tick a `tick_fsm`-ben (sor 710-721), silent eldob
+- E-Stop: `estop_active_` member, 4 guard a callback-belépőkön (sor 254/363/686), 1 re-eval `evaluate_phase_on_external_change()` (sor 350-358) a felengedéskor
+- `/ok_go/cmd` enum bővítés: 10=SLAM_WIPE, 11=LEARN_TIMEOUT, 12=RESTART_FROM_STUCK
+- `tick_led()` 20 Hz mind a 9 mintát kezeli + WIPE_FLASH 2s STEADY+automata visszaállás
+- CMakeLists.txt + package.xml **változatlan** (rclcpp + std_msgs továbbra is elég)
+- Részletes results: `docs/backup/g3_results.md`
+
+**G4-re halasztott nyitott kérdések:**
+1. `RESTART_FROM_STUCK` double-trigger (explicit cmd a G3-ból + implicit `safety_state` figyelés a G4 trajectory_node-ban) → G4 idempotens kell legyen
+2. `save_failed` flag reset a trajectory_node SUCCESS-után → G4 explicit feladat
+3. (opcionális) `on_long_event` `was_active` dead-code cleanup G3-ban → G4 review-kor mérlegelendő
 
 **Végrehajtási prompt — agent indításhoz:** lásd egyedi prompt az orchestrator-tól (agent NEM ír memóriát, agent NEM commit-ol, az orchestrator csinálja meg).
 
@@ -1019,3 +1037,5 @@ A projekt szakasz akkor zárul, ha:
 | 2026-05-15 | G1 spec-corrigálva az upstream slam_toolbox 2.8.4 API-ra | A phase-file eredeti 11.G1 PASS-táblája feltételezett típusokat (`std_srvs/SetBool`, `SerializeMap`) tartalmazott — a tényleges upstream API más (`slam_toolbox/srv/Pause` TOGGLE, `SerializePoseGraph`). Funkcionálisan a 3 service rendben működik. A 2.4, 5.3, 6.1, 11.G1 szekciók aktualizálva; a G4 trajectory_node ehhez igazodik. |
 | 2026-05-15 | SAVE két-service stratégia: SerializePoseGraph + SaveMap | A `serialize_map` csak `.posegraph`+`.data`-t ír, a `.pgm`+`.yaml`-hez (Nav2 costmap loader) a `/slam_toolbox/save_map` külön hívása kell. A G4 mindkettőt hívja sorrendben; bármelyik FAIL → `last_slam_save_failed = true`. |
 | 2026-05-15 | Container név a docs-ban: `robot` (NEM `robot-robot`) | Az aktuális compose service neve `robot`; a `robot-robot` outdated. Test-prompt + dokumentáció igazítva. |
+| 2026-05-15 | G3 LOC v1 572 → v2 914 (+342, +60%) | A 4.1 új állapotgép 8 phase + 9 LED minta + 6-zónás timing + 5p timeout + E-Stop guard + 3 új /ok_go/cmd enum-érték jelentős expansion. Syntax-check clean, build G6-on. |
+| 2026-05-15 | G3 → G4 átfedés: 3 nyitott kérdés (RESTART_FROM_STUCK idempotencia, save_failed reset, dead-code cleanup) | A G4 trajectory_node 4.2 refactor lefedi mindhármat; explicit lista a 11.G3 Eredmény és 11.G4 Függőség szekciókban. |
