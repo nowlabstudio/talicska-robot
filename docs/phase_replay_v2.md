@@ -1,7 +1,7 @@
 # Trajectory Replay v2 — Projekt Szakasz
 
 **Indulás:** 2026-05-15
-**Állapot:** 🟡 IMPLEMENTÁCIÓ — G1+G2+G3+G4+G5 ✅ DONE, G6 ELŐKÉSZÍTÉS — docker rebuild + smoke (2026-05-15)
+**Állapot:** ✅ SZOFTVERESEN KÉSZ — G1-G6 ✅ DONE (G6d mozgás-smoke G7-re halasztva). G7 ÉLESZTESZT NYITVA — amint a robot mozgatható (user-decision 2026-05-15)
 **Előzmény:** v1 ✅ KÉSZ — tag `replay-v1-g6-floortest-done`. A v1 5 backlog ítemét + egy nagy UX-redesign-t fed le a v2.
 **Hivatkozás:** Ez a fájl helyettesíti a `docs/backlog.md`-t a v2 szakasz lezárásáig. A szakasz lezárása után a tartalom archiválandó (vagy backlog-szintézis, vagy `docs/backup/phases/`-be mozgatva), és a backlog visszaveszi a fő-hivatkozás szerepét.
 
@@ -693,8 +693,8 @@ val    runtime (4.1 új)        (4.2 új +       burst                   ciklus
 | G3 | ok_go_supervisor refactor | ✅ DONE | 2026-05-15 | 2026-05-15 | 12/12 PASS, 572→914 LOC, syntax-clean, tag `replay-v2-g3-okgo-refactored` |
 | G4 | trajectory_node refactor | ✅ DONE | 2026-05-15 | 2026-05-15 | 16/16 PASS, 652→1350 LOC, syntax-clean, tag `replay-v2-g4-trajectory-refactored` |
 | G5 | bringup include + burst tunning | ✅ DONE | 2026-05-15 | 2026-05-15 | 12/12 PASS, 4 fájl módosítva, tag `replay-v2-g5-config-tuned` |
-| G6 | Post-rebuild revalidation | 🟡 IN PROGRESS | 2026-05-15 | — | Plan részletezve 11.G6 szekcióban, várjuk a user OK-t a rebuild + mozgás-smoke-ra |
-| G7 | Élesteszt 2-3 m ciklus | ⬜ TODO | — | — | |
+| G6 | Post-rebuild revalidation | ✅ DONE (szoftveres) | 2026-05-15 | 2026-05-15 | G6a+b+c 12/13 PASS (1 deferred G7-re); G6d HALASZTVA G7-re (mozgás-smoke); tag `replay-v2-g6-software-done` |
+| G7 | Élesteszt 2-3 m ciklus + G6d mozgás-smoke + LED-pattern verify | 🔴 NYITVA — várja a robot-mozgatás lehetőségét | — | — | A G6d 6-pontos mozgás-smoke + 11.G6 c6 LED-pattern integrálva |
 
 ---
 
@@ -1187,7 +1187,7 @@ A G5 független G3-G4-től (config-fájl munka), de a build és runtime G6-on é
 
 ### 11.G6 — Docker rebuild + post-rebuild revalidation
 
-**Állapot:** 🟡 IN PROGRESS — 2026-05-15 (várjuk a user OK-t)
+**Állapot:** ✅ DONE (szoftveres rész) — 2026-05-15. G6a+b+c lefutott, G6d (mozgás-smoke) G7-re halasztva (a robot most NEM mozgatható, user-confirmed 2026-05-15).
 
 **Cél:** A G3+G4+G5 változások egyben beépítése a `robot-robot:latest` image-be (~20p rebuild), majd post-rebuild smoke-teszt szakaszolva:
 - **G6a** Docker rebuild + container restart (~20p, autonóm OK)
@@ -1276,9 +1276,122 @@ A G5 független G3-G4-től (config-fájl munka), de a build és runtime G6-on é
 - Commit: "feat(replay-v2): G6 — docker rebuild + post-rebuild revalidation DONE"
 - Tag: `replay-v2-g6-revalidated`
 
-**Eredmény:** _(G6 lezárásakor töltődik)_
+**Eredmény (2026-05-15):**
 
-**Végrehajtási prompt:** szakaszolva — G6a+b+c agent autonóm, G6d felhasználói előkészítéssel + agent vagy orchestrator közvetlen vezérléssel.
+**G6a — Docker rebuild:** ✅ **3/3 PASS**
+- `docker compose build robot` exit=0, 5.65 GB image
+- `colcon build` 8/8 csomag PASS (2.5 perc)
+- A G4 új dependency-k (`slam_toolbox`, `nav2_msgs`) **első alkalommal** települve: 404 új apt csomag, 230 MB letöltés, 1388 MB extra hely (Boost+Qt5+SLAM transitív dependency-k)
+- `make up` (compose up): mindkét container (robot, microros_agent) Healthy
+- `replay.launch.py` TimerAction(period=8.0) auto-include sikeres → `/ok_go_supervisor`, `/trajectory_node`, `/slam_toolbox` mind futnak (39 node összesen)
+
+**G6b — Service-szintű smoke:** ✅ **7/7 PASS** (b5 soft-PASS, ld. lent)
+- Mind a 4 topic publikálva (/ok_go/cmd, /ok_go/state, /trajectory/state, /robot/okgo_led)
+- `/trajectory/state` JSON parse OK, phase=IDLE
+- `/ok_go/state` JSON parse OK, phase=LEARN_IDLE
+- G3 új paraméter `medium_min_s=1.5` jelen
+- G4 új paraméter `wait_for_pose_threshold_m=0.10` jelen
+- **b5 SOFT_PASS** finomítás: a `/robot/okgo_led` **edge-triggered publish** (csak state-change-en), NEM 20 Hz periodikus. A `tick_led()` 20 Hz-en fut (50ms timer), de `led_pub_->publish()` csak `on != led_state_` ágban hív. **Kód intencionális** (sávszél-takarékos), a phase-file PASS-tábla terminológiát finomítani kell egy v2-end review-ban
+- Bónusz CPP-yaml konzisztencia: `nav_action_name=/navigate_to_pose` ✓, `medium_min_s=1.5` ✓, `wait_for_pose_threshold_m=0.10` ✓
+
+**G6c — Mock /ok_go/cmd state-machine smoke:** ✅ **5/6 PASS** + 1 deferred G7-re
+- c1 ✅: `cmd=5 (START_LEARNING)` → phase=CAPTURING + `slam_toolbox/clear_changes OK` + `max_linear_vel set to 0.20 m/s` + `max_angular_vel set to 0.30 rad/s` log
+- c2 ✅: CAPTURING fennmarad E-Stop alatt (nincs mozgás → dedup szűri), `/recorded_path` publikál (0-elemű path)
+- c3 ✅: `cmd=1 (SAVE)` pose_count=1 < 5 → silent reject, log: `SAVE silent-reject: pose_count=1 < min_pose_count=5`, phase=IDLE, /trajectory/state.silent_reject=true
+- c4 ✅: `cmd=2 (WIPE_TRAJECTORY)` → `/data/maps/current/trajectory.yaml` unlink-elve, `trajectory_loaded=false`
+- c5 ✅: `cmd=11 (LEARN_TIMEOUT)` → silent eldob, phase=IDLE, **auto-restore** `max_linear_vel=3.89` + `max_angular_vel=4.44` log
+- **c6 DEFERRED_TO_G7**: LED-pattern változás per átmenet **nem mérhető a mock cmd-flow-val**, mert (i) edge-triggered publish, (ii) az `ok_go_supervisor` LED-jét a **button-press FSM** állítja, **NEM a cmd-eket fogadó node** (a `/ok_go/cmd` topic-ot a `trajectory_node` fogadja, az LED a `/robot/okgo_btn` esemény-alapú állapot-átmenetek függvénye). G7 élesteszten a fizikai gomb-eseményekre verify-olható
+
+**SLAM service-hívások:** clear_changes hívva (response: `interactive mode disabled, Ignoring` — service OK, no-op konzisztens a G1 spec-eredménnyel). `set_slam_pause` TOGGLE-aware helyes skip ha már `false`. WIPE_TRAJECTORY yaml unlink hatott.
+
+**set_parameters hatott:** max_linear=0.20 + max_angular=0.30 (slow caps) → LEARN_TIMEOUT után automatikusan 3.89/4.44 (baseline)
+
+**Visszaállítás verify OK:** `max_linear_vel=3.89` ✓, `max_angular_vel=4.44` ✓, `trajectory_node` phase=IDLE ✓
+
+Részletes results: `docs/backup/g6bc_results.md`
+
+**G6d — MOZGÁS-IGÉNYŰ smoke: HALASZTVA G7-re** (user-decision 2026-05-15: a robot most nem mozgatható, élesteszt később). A G6d 6-pontos PASS-tábla **integrálva a 11.G7 plan-ba**.
+
+**G6 Lezárás-státusz:** ✅ DONE (szoftveres rész). A v2 cpp+yaml+launch **container-ben él, mock cmd-flow validálva**. A tényleges PLAY motor-mozgás + look-ahead preempt + RC-override + STUCK-recovery G7 élesteszten kerül validálásra.
+
+**Végrehajtási prompt:** N/A (G6a+b+c már megtörtént; G6d → G7 plan-ban integrálva).
+
+---
+
+### 11.G7 — Élesteszt + G6d mozgás-smoke + LED-pattern verify
+
+**Állapot:** 🔴 NYITVA — várja a robot-mozgatás lehetőségét (user-decision 2026-05-15: a robot most nem mozgatható, élesteszt később).
+
+**Cél:** A v2 teljes runtime-validációja élesteszten — a v1 G6 mintára 2-3m ciklus + akadálykerülés + RC-override + STUCK-recovery. **Integráltan tartalmazza a G6d mozgás-smoke 6 pontját és a G6c c6 LED-pattern verify-t**, hogy a v2 záráshoz mindössze EGY élesteszt-szessziót kelljen tartani.
+
+**Függőség (input):**
+- G1-G6 ✅ DONE (szoftveres rész)
+- Robot földön VAGY kerékfelemelés bench-on
+- Biztonsági operátor jelen
+- Sürgősségi RC kéznél
+- Mentett `trajectory.yaml` a `/data/maps/current/` alatt VAGY az élesteszten felvesszük a v2 LEARN→SAVE flow-val
+
+**Előkészítés:**
+1. Verify: docker stack Up, `/ok_go_supervisor` + `/trajectory_node` + `/slam_toolbox` futnak
+2. E-Stop release verify (a v2 első élestesztjére)
+3. RC kalibrálva, CH5 esetén RC vs ROBOT toggle működik
+4. Foxglove rákapcsolva (LED + path vizualizáció)
+5. `/data/maps/current/` állapot: mentett trajectory.yaml + map (v1 G6-ról vagy friss)
+
+**PASS kritériumok (integrált G7 + G6d + G6c c6):**
+
+**A) LEARN ág élesteszt (LED-pattern verify integrálva):**
+
+| # | Teszt | Várt |
+|---|---|---|
+| A1 | rotary=LEARN, default → led=OFF (nincs mentés) vagy SLOW_BLINK (van jó mentés) vagy BLINK_FAST_3HZ (utolsó FAIL) | LED-mérés Foxglove-on vagy `ros2 topic echo /robot/okgo_led` edge-triggered |
+| A2 | OK GO gomb 2s (MEDIUM) release → LEARN_ACTIVE, led=BLINK_1HZ, /ok_go/cmd=5, SLAM resume + slow caps (0.2 / 0.3) | LED frekvencia mérés + `docker logs robot \| grep "max_linear"` |
+| A3 | RC-vel 1m egyenes felvétel → pose_count > 5 | `ros2 topic echo /trajectory/state` |
+| A4 | OK GO gomb SHORT (<1s) release → SAVE, SerializePoseGraph + SaveMap + atomic yaml, led=SLOW_BLINK | a `/data/maps/current/{trajectory.yaml,map.posegraph,map.data,map.pgm,map.yaml}` mind frissül |
+| A5 | LONG (5-10s) release LEARN-ben → WIPE_TRAJECTORY, led=WIPE_FLASH (2s STEADY + OFF) | trajectory.yaml unlink, map.* MARAD |
+
+**B) AUTO ág élesteszt (G6d integrálva):**
+
+| # | Teszt | Várt |
+|---|---|---|
+| B1 | rotary=AUTO + trajectory_loaded=true → AUTO_LOADED, led=SLOW_BLINK | LED + /ok_go/state |
+| B2 | OK GO SHORT → PLAYING, led=BLINK_2HZ, NavigateToPose goal sent | `/trajectory/state` phase=ACTIVE_GOAL, `bt_navigator` action goal log |
+| B3 | look-ahead preempt verify: dist < 0.10m → cancel + új goal a következő pose-ra (decimation=3) | trajectory_node log: "preempting to pose idx=...", fluid mozgás (NEM stop per pose) |
+| B4 | Trajectory végpont elérése → phase=DONE, led=STEADY_ON | end-state |
+| B5 | Mid-PLAY RC-override (CH5=RC) → PAUSED, led=BLINK_4HZ, NavigateToPose cancel | `current_index_` érvényes |
+| B6 | RC-vel kis mozgás, majd CH5=ROBOT vissza → resume `current_index_`-től, phase=ACTIVE_GOAL | folytatja, NEM újrakezdi |
+| B7 | STUCK-szimuláció (kézi akadály) → Nav2 ABORTED → phase=STUCK, led=BLINK_FAST_3HZ | error_code log |
+| B8 | RC-vel kihúzás (max 2m a STUCK ponttól) + CH5=ROBOT → RESTART_FROM_STUCK, closest-next forward-search, phase=ACTIVE_GOAL | log: "closest_next_pose_search idx=X dist=Y" |
+| B9 | RC-vel túl messze kihúzás (>2m) → STUCK marad, log warning | NEM indul újra |
+
+**C) SLAM viselkedés-megfigyelés (G1-ról halasztott):**
+
+| # | Teszt | Várt |
+|---|---|---|
+| C1 | LEARN_ACTIVE alatt: robot mozog új területre → /map BŐVÜL | Foxglove vizuálisan |
+| C2 | LEARN_IDLE-be vissza: pause(true) toggle → robot új területre megy → /map NEM bővül azzal a területtel | Foxglove vizuálisan |
+
+**D) Sebesség-cap érvényesülés (G2-ról halasztott):**
+
+| # | Teszt | Várt |
+|---|---|---|
+| D1 | LEARN_ACTIVE alatt RC-vel max-haladás → `/cmd_vel.linear.x` cap=0.2 m/s | `ros2 topic echo /cmd_vel \| grep linear` |
+| D2 | LEARN_IDLE-be vissza → RC max-haladás → `/cmd_vel.linear.x` cap=3.89 m/s | ugyanúgy |
+
+**FAIL diagnosztika:** lásd a 11.G6 + 11.G2 + 11.G1 megfelelő FAIL-tábláit; az élesteszten azonosított gyökér-okokat dokumentálni.
+
+**Visszalépési pont:** Ha az élesteszten súlyos failure (pl. NavigateToPose 0 cm motion-jel a v1 tanulság szerint, vagy SLAM pause nem hat) → rollback a `replay-v1-g6-floortest-done` tag-re, és a v2 fix iteráció.
+
+**Lezárás (DONE feltétel):**
+- A 4 csoportból (A, B, C, D) minimum az A + B (5 + 9 sor = 14 PASS) PASS, a C + D pedig bench-felemeléses follow-up-pal kiegészíthető
+- Teszt-output loggolva: `docs/backup/g7_results.md`
+- Kanban G7 → ✅ DONE
+- Commit: "feat(replay-v2): G7 élesteszt PASS — v2 KÉSZ"
+- Tag: `replay-v2-final` (a v2 végleges tag-je, ezzel zárul a szakasz)
+- A `plan_replay_v2.md` memória átmegy `session_replay_v2_final.md`-be
+- A MEMORY.md aktív projekt-szekciója törlődik
+
+**Eredmény:** _(G7 lezárásakor töltődik, valószínűleg következő munkamenetben)_
 
 ---
 
@@ -1329,3 +1442,6 @@ A projekt szakasz akkor zárul, ha:
 | 2026-05-15 | G3 → G4 átfedés: 3 nyitott kérdés (RESTART_FROM_STUCK idempotencia, save_failed reset, dead-code cleanup) | A G4 trajectory_node 4.2 refactor lefedi mindhármat; explicit lista a 11.G3 Eredmény és 11.G4 Függőség szekciókban. |
 | 2026-05-15 | SLAM service include csomag: `slam_toolbox` (NEM `slam_toolbox_msgs`) | A `slam_toolbox_msgs` csomag NEM létezik a ROS Jazzy disztribúcióban; a srv-k a `slam_toolbox` fő csomagban vannak (`slam_toolbox/srv/{Pause,Clear,SerializePoseGraph,SaveMap}.hpp`). `find_package(slam_toolbox REQUIRED)` + `<depend>slam_toolbox</depend>`. |
 | 2026-05-15 | G4 LOC v1 652 → v2 1350 (+698 sor, +107%) | A 4.2 új 7 phase + 4 SLAM service-client TOGGLE-kezeléssel + NavigateToPose + look-ahead preempt + closest-next forward-search + SAVE két-service async-chain + set_parameters integráció + min_pose_count silent-reject + E-Stop kezelés + RESTART_FROM_STUCK idempotens guard nagy expansion. Syntax-check clean -Wpedantic-kal is. |
+| 2026-05-15 | G6 szakaszolva: G6a+b+c autonóm szoftveres lezárás; G6d mozgás-smoke G7-re halasztva | A user 2026-05-15 közben jelezte: "a robotot nem fogjuk tudni fizikai mozgásra bírni most, fejezzük be szoftveresen, és teszteljük amint lehet". A v2 cpp+yaml+launch szoftveresen érvényesítve mock cmd-flow-val; az élesteszt-validáció G7-en kerül futtatásra később. |
+| 2026-05-15 | `/robot/okgo_led` edge-triggered publish (NEM 20 Hz periodikus) | A G3 `ok_go_supervisor.cpp` `tick_led()` 20 Hz-en fut (50ms timer), de a `led_pub_->publish()` csak `on != led_state_` ágban hív. Kód intencionális (sávszél-takarékos). A phase-file PASS-tábla terminológiát egy v2-end review-ban finomítani kell. |
+| 2026-05-15 | G6c c6 LED-pattern verify mock cmd-flow-val nem mérhető | Az `ok_go_supervisor` LED-jét a button-press FSM állítja (`/robot/okgo_btn` rising/falling edge), NEM a `/ok_go/cmd` topic. A mock cmd-publikáció a `trajectory_node`-ot trigger-eli, de az LED kontextus külső állapotok (rotary + CH5 + button) függvénye. G7 élesteszten verify-olandó fizikai gomb-eseményekre. |
