@@ -1,7 +1,7 @@
 # Trajectory Replay v2 — Projekt Szakasz
 
 **Indulás:** 2026-05-15
-**Állapot:** 🟡 IMPLEMENTÁCIÓ — G1+G2 ✅ DONE, G3 IN PROGRESS (2026-05-15)
+**Állapot:** 🟡 IMPLEMENTÁCIÓ — G1+G2 ✅ DONE, G3 IN PROGRESS — ok_go_supervisor refactor (2026-05-15)
 **Előzmény:** v1 ✅ KÉSZ — tag `replay-v1-g6-floortest-done`. A v1 5 backlog ítemét + egy nagy UX-redesign-t fed le a v2.
 **Hivatkozás:** Ez a fájl helyettesíti a `docs/backlog.md`-t a v2 szakasz lezárásáig. A szakasz lezárása után a tartalom archiválandó (vagy backlog-szintézis, vagy `docs/backup/phases/`-be mozgatva), és a backlog visszaveszi a fő-hivatkozás szerepét.
 
@@ -690,7 +690,7 @@ val    runtime (4.1 új)        (4.2 új +       burst                   ciklus
 |---|---|---|---|---|---|
 | G1 | SLAM-toolbox service validation | ✅ DONE | 2026-05-15 | 2026-05-15 | 9/9 PASS spec-corr. után, tag `replay-v2-g1-slam-validated` |
 | G2 | rc_teleop_node sebesség-cap runtime váltás | ✅ DONE | 2026-05-15 | 2026-05-15 | 10/10 PASS, callback frissíti a member-eket, baseline reset OK, tag `replay-v2-g2-param-validated` |
-| G3 | ok_go_supervisor refactor | ⬜ TODO | — | — | |
+| G3 | ok_go_supervisor refactor | 🟡 IN PROGRESS | 2026-05-15 | — | Plan részletezve 11.G3 szekcióban |
 | G4 | trajectory_node refactor | ⬜ TODO | — | — | |
 | G5 | bringup include + burst tunning | ⬜ TODO | — | — | |
 | G6 | Post-rebuild revalidation | ⬜ TODO | — | — | |
@@ -907,60 +907,74 @@ Egyenként kerülnek kibővítésre az új session-ben. Sablon minden gate-hez:
 - **G7-re halasztva:** tényleges sebesség-cap érvényesülés a /cmd_vel output-on (RC-mozgás-igényű)
 - A G4 trajectory_node `set_parameters` async call használhatja a `/rc_teleop_node/set_parameters` service-t bizalmasan — a callback frissíti a member-eket, ami a publish_tick-en át a /cmd_vel-en azonnal érvényesül
 
-**Végrehajtási prompt — agent indításhoz:**
+---
 
-```
-Cél: Validáld a rc_teleop_node max_linear_vel + max_angular_vel runtime
-paraméter-váltását (Trajectory Replay v2 G2 gate).
+### 11.G3 — `ok_go_supervisor.cpp` refactor (új 4.1 állapotgép + UX)
 
-Workspace (host): /home/eduard/talicska-robot-ws/src/robot/talicska-robot
-Container: `robot` (compose service neve; ros2 parancsokat docker exec-en
-keresztül futtasd)
-Phase-file: docs/phase_replay_v2.md 11.G2 szekció (teljes PASS-tábla)
+**Állapot:** 🟡 IN PROGRESS — 2026-05-15
 
-Bench-safety: fizikai E-Stop aktív (user-confirmed). Semmilyen /cmd_vel /
-RC publish, kerékforgatás-trigger NE. G2 csak param-set/get + log-figyelés
-+ source-code verify szint.
+**Cél:** A `robot_missions/src/ok_go_supervisor.cpp` (v1, 572 LOC) teljes refaktora a phase-file **4.1 új állapotgép** + új timing-térkép + új LED-pattern enum + 5p tanítási timeout + SLAM-pause szabály (parancsközvetítésben) szerint. A G3 KÓDVÁLTOZÁS, a build és runtime-validáció G6-on.
 
-Lépések:
-1. Pre-check:
-   - docker compose ps (a workspace gyökerében — vagy compose subdir-ben)
-   - docker exec robot bash -c 'source /opt/ros/jazzy/setup.bash && source /root/talicska-ws/install/setup.bash && ros2 node list | grep rc_teleop_node'
-2. Baseline get (1, 2): max_linear_vel ~3.89, max_angular_vel ~4.44
-3. Set max_linear_vel=0.2 (3) → param set successful
-4. Verify get (4): 0.2
-5. Log-grep (5): docker logs robot --since 30s | grep -i max_linear_vel
-   → INFO log visszaigazol
-6. Set max_angular_vel=0.3 (6) → param set successful
-7. Verify get (7): 0.3
-8. Log-grep (8): INFO log visszaigazol
-9. Source-code verify (9): a /home/eduard/talicska-robot-ws/src/robot/talicska-robot/
-   src tree-ben grep -nE "max_linear_vel_|max_angular_vel_" a
-   rc_teleop_node.cpp publish_tick() blokkban (kb. 200-220. sor)
-10. RESET baseline (10a, 10b):
-    - param set max_linear_vel 3.89 → successful + get visszaadja
-    - param set max_angular_vel 4.44 → successful + get visszaadja
-    - **KÖTELEZŐ — RC üzemmódban a default cap visszaáll**
+**Függőség (input):**
+- G1+G2 ✅ DONE (a SLAM API és a runtime param váltás validálva — a 4.1 új parancsok elküldhetők a /ok_go/cmd-on, a trajectory_node fogja végrehajtani G4-ben)
+- A v1 `ok_go_supervisor.cpp` állapota: `replay-v1-g6-floortest-done` tag (572 LOC)
+- A phase-file 4.1 szekciója: új `phase` enum (LEARN_IDLE, LEARN_ACTIVE, AUTO_DISABLED, AUTO_LOADED, PLAYING, PAUSED, DONE, STUCK), új LedPattern enum (9 minta), új timing-térkép (SHORT/MEDIUM/LONG/VERY_LONG), új tranzitok
 
-Output dokumentum:
-- /home/eduard/talicska-robot-ws/src/robot/talicska-robot/docs/backup/g2_results.md
-- Struktúra: 10-pontos PASS tábla + részletes output + FAIL diagnosztika (ha van)
+**Előkészítés:**
+1. Olvasd be a `robot_missions/src/ok_go_supervisor.cpp` aktuális v1 verzióját
+2. Olvasd be a `robot_missions/CMakeLists.txt`-t és `package.xml`-t (rclcpp dependencies)
+3. Olvasd be a phase-file 4.1 szekciót (állapotgép + timing + LED + 5p timeout)
+4. Tervezd meg a refactor minimum-invazív útját:
+   - Kihagyni a v1 `Phase` enum értékeit, helyébe a 4.1 új értékek
+   - Kihagyni a v1 `LedPattern` enum értékeit, helyébe a 4.1 új 9 minta
+   - `on_button()` + `tick_fsm()` átdolgozása az új timing-térkép szerint
+   - Új paraméterek `declare_parameter`-rel
+   - 5p `learn_timeout_s` timer-tick + `learn_start_time` mezőkezelés
+   - E-Stop kezelés: gombok+kapcsolók ignored, felengedés re-eval
 
-KORLÁTOZÁSOK (B opció FAIL policy):
-- NE módosíts cpp/yaml/launch fájlt
-- NE commit-olj, NE push-olj
-- NE indíts /cmd_vel-t, RC publishet
-- HA FAIL: tömör report, ne javíts magadtól
-- Reset a baseline-ra MINDENKÉPPEN (10a, 10b), még FAIL esetén is
+**PASS kritériumok (kód-szintű, build-nélküli):**
 
-Output az orchestrator-hoz (~200 szó):
-1. 10-pontos PASS tábla összefoglalása
-2. INFO log-grep eredménye (van vagy nincs visszaigazolás)
-3. Source-code verify eredménye (callback frissíti-e a member változókat)
-4. FAIL esetén gyökér-ok hipotézis
-5. Baseline visszaállítva: igen / nem
-6. Befejezett: igen / részleges / blokkolt
-```
+| # | Teszt | Várt |
+|---|---|---|
+| 1 | Új `Phase` enum a 4.1 szerinti 8 értékkel: LEARN_IDLE, LEARN_ACTIVE, AUTO_DISABLED, AUTO_LOADED, PLAYING, PAUSED, DONE, STUCK | grep-verify |
+| 2 | Új `LedPattern` enum a 4.1 szerinti 9 mintával: OFF, STEADY_ON, SLOW_BLINK, BLINK_FAST_3HZ, BLINK_1HZ, BLINK_2HZ, BLINK_4HZ, WIPE_FAST_FLASH, WIPE_FLASH | grep-verify |
+| 3 | Új paraméterek declare_parameter-rel: `short_max_s`, `medium_min_s`, `medium_max_s`, `long_min_s`, `slam_wipe_min_s`, `learn_timeout_s`, `wipe_steady_duration_s`, `blink_1hz_period_s`, `blink_fast_3hz_period_s`, `wipe_fast_flash_period_s`, `blink_2hz_period_s`, `blink_4hz_period_s`, `slow_blink_period_s` | grep-verify |
+| 4 | Új timing-térkép release-kor: <1.0s=SHORT, 1.0-1.5s=CANCEL, 1.5-3.0s=MEDIUM, 3.0-5.0s=CANCEL, 5.0-10.0s=LONG, >=10.0s=VERY_LONG (csak ha rotary=LEARN) | kódolvasással |
+| 5 | LEARN ág tranzitok a 4.1 táblája szerint (LEARN_IDLE↔LEARN_ACTIVE, MEDIUM→START_LEARNING (5), SHORT→SAVE (1), LONG→WIPE_TRAJECTORY (2), VERY_LONG→SLAM_WIPE (10)) | kódolvasással |
+| 6 | AUTO ág tranzitok a 4.1 táblája szerint (AUTO_DISABLED, AUTO_LOADED, PLAYING, PAUSED, DONE, STUCK; SHORT→PLAY (3), trajectory SUCCEEDED→DONE, ABORTED→STUCK, CH5=RC→PAUSED, CH5=ROBOT+rotary=AUTO→PLAYING) | kódolvasással |
+| 7 | 5p tanítási timeout: `now() - learn_start_time > learn_timeout_s` → LEARN_IDLE + `/ok_go/cmd = LEARN_TIMEOUT (11)`, silent eldobás | kódolvasással |
+| 8 | E-Stop kezelés: `state == "ESTOP"` → gombok+kapcsolók ignored, held-counter pause; felengedéskor re-eval a rotary+CH5+button-állapotra | kódolvasással |
+| 9 | `/ok_go/cmd` enum bővítve: 1=SAVE, 2=WIPE_TRAJECTORY, 3=PLAY, 4=PAUSE, 5=START_LEARNING, 6=PAUSE_RECORDING, 7=RESUME_RECORDING, 8=WIPE_COMPLETE, 9=STOP, **10=SLAM_WIPE**, **11=LEARN_TIMEOUT**, **12=RESTART_FROM_STUCK** | grep-verify (a v2 új értékek 10, 11, 12 jelen) |
+| 10 | LED-pattern publikáció `/robot/okgo_led`-en a 9 minta szerint (a tick_led 20 Hz-en jó periódusokkal: SLOW_BLINK 1s/1s, BLINK_FAST_3HZ 150ms, BLINK_1HZ 500ms, BLINK_2HZ 250ms, BLINK_4HZ 125ms, WIPE_FAST_FLASH 100ms) | kódolvasással |
+| 11 | Syntax-check: `g++ -fsyntax-only` vagy `clang -fsyntax-only -c` a refaktorált cpp-re | nincs syntax-error |
+| 12 | CMakeLists.txt és package.xml változatlanok (nincs új lib dependency) | diff-check |
+
+**FAIL diagnosztika:**
+
+| Tünet | Gyökér-ok | Diagnosztika |
+|---|---|---|
+| Syntax-error a syntax-check-nél | rclcpp API változás vagy include hiány | `clang -fsyntax-only -I/opt/ros/jazzy/include` |
+| Phase enum hiányos | refactor incomplete | grep `Phase::` definíciók |
+| LED minta hiányzik vagy hibás | tick_led nem támogatja a periódust | grep `case LedPattern::` |
+| Hiányzó parameter declare | refactor incomplete | grep `declare_parameter` |
+| 5p timeout logika hiányzik | timer-tick nem ellenőrzi | grep `learn_start_time` + `learn_timeout_s` |
+
+**Visszalépési pont:** Ha a refactor során logikai probléma (pl. egy 4.1 tranzitor ellentmond a v1 G2/G3-fix-eknek a `safety_supervisor` szempontjából), a v1 állapotra rollback (`git checkout replay-v1-g6-floortest-done -- robot_missions/src/ok_go_supervisor.cpp`) és re-plan.
+
+**Regressziós veszély:**
+- Ha a v1-es Phase enum értékeit más node (trajectory_node v1) használja stringként, a `/trajectory/state` JSON parse-olás eltörhet. **Mitigation:** G4-ben a trajectory_node 4.2 ehhez igazodik (új phase nevek). Köztes állapot: G3 commit után, G4 előtt a `/trajectory/state` parse hibázhat — de a két gate egy rebuild-be megy (G6), úgyhogy köztes runtime-állapot nem áll elő.
+- LedPattern enum értékek számértékei eltérhetnek v1-től; ha más node (pl. mock) a számértékre épít, eltörik. **Mitigation:** csak az `ok_go_supervisor` publikál `/robot/okgo_led`-et (Bool, nem enum), a belső LedPattern enum is csak interne. Külső impactum nincs.
+
+**Lezárás (DONE feltétel):**
+- 12/12 PASS kritérium teljesül (a build és runtime G6-on)
+- Diff-review: a v1 → v2 cpp diff áttekinthető, deviations dokumentálva a `docs/backup/g3_results.md`-ben
+- Kanban G3 → ✅ DONE
+- Commit: "feat(replay-v2): G3 ok_go_supervisor.cpp refactor — new 4.1 FSM + LED + timing + 5p timeout"
+- Tag: `replay-v2-g3-okgo-refactored` (NEM PUSH-olunk container build előtt, de a kód a main-re kerül)
+
+**Eredmény:** _(G3 lezárásakor töltődik)_
+
+**Végrehajtási prompt — agent indításhoz:** lásd egyedi prompt az orchestrator-tól (agent NEM ír memóriát, agent NEM commit-ol, az orchestrator csinálja meg).
 
 ---
 
