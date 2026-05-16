@@ -61,6 +61,21 @@
       <MaxMessageSize>65500B</MaxMessageSize>
     </General>
 
+    <!-- DDS socket buffer-eket explicit nagyítás a NITROS PointCloud2 (3.69 MB)
+         + Isaac Humble↔Jazzy cross-distro 80% drop fix (2026-05-16):
+         - default 1MB rmem/wmem a 3.69MB-os message-mérethez kicsi → UDP fragment
+           loss → RTPS retransmit storm → effektív 3Hz Jazzy oldalon (mért).
+         - Host sysctl `net.core.rmem_max=64M, wmem_max=64M` + cyclonedds explicit
+           16MB socket buffer együtt a kernel UDP reassembly buffer-t kihasználva
+           a 3.69MB-os PointCloud2-t loopback-on átküldi veszteség nélkül.
+         - 16MB elég 4-5 üzenet egyidejű puffereléséhez 3.69MB-eshez.
+         - Jetson Orin Nano 8GB RAM-on ~16MB socket buffer × ~10 participant = 160MB
+           összes overhead, RAM-budget OK (jelenleg 3.5GB használat). -->
+    <Internal>
+      <SocketReceiveBufferSize min="2MiB" max="16MiB"/>
+      <SocketSendBufferSize min="2MiB" max="16MiB"/>
+    </Internal>
+
     <Discovery>
       <ParticipantIndex>auto</ParticipantIndex>
       <!-- 64: a stack ~33 participant-ot futtat (rplidar, slam_toolbox, ekf,
