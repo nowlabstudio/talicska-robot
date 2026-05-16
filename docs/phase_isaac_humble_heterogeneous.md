@@ -1,10 +1,51 @@
 # Phase — NVIDIA Isaac ROS Heterogén Humble + Jazzy Stack (Opció E)
 
-**Státusz:** AKTIVÁLÁSRA KÉSZ, új session-ben indítható
+**Státusz:** **H5-H7 PASS 2026-05-16 este, H8 24h burn-in NYITVA**
 **Létrejött:** 2026-05-16
-**Várt indítás:** user-általi megerősítéssel, robot bench-en
 **Lezárási kritérium:** H7 PASS + 24 óra burn-in
 **Időhorizont:** 2026 H2 (JetPack 7.2) megjelenéséig — utána az Isaac 4.x natív Orin-Jazzy ágra lehet ugrani
+
+---
+
+## Frissítés 2026-05-16 este — H5 ÁTTÖRÉS
+
+Hosszú diagnosztika után (8 órányi iteráció, 7 build) az E-stack PUBLIKÁL pointcloud-ot:
+
+- ✅ **H5 PASS** — Root cause azonosítva: a librealsense **2.55.1** RSUSB build instabil JP6 r36.4-on (control_transfer EAGAIN flood, 0 frame). A Jazzy stack 2.56.4-tel 30 Hz depth ugyanezen kamerán. **Fix: librealsense bump 2.55.1 → 2.56.4** + apt-cleanup (NE telepítsd a `ros-humble-realsense2-camera`-t, mert a `ros-humble-librealsense2` 2.57.7 cmake config konfliktust okoz a source build 2.56.4-szel). A Dockerfile.isaac-humble frissítve, image `c5ef2530f22e` (17.2 GB) build PASS, container Up + RestartCount 0 + RealSense Node Is Up + NITROS pipeline ACTIVE.
+- 🟡 **H6 RÉSZLEGES PASS** — 30 fps depth profile bind-mountolt `realsense_params.isaac.yaml`-szel:
+  - `/image_rect` (color): **30 Hz** stabil
+  - `/aligned_depth_to_color/image_raw`: 30 Hz
+  - `/depth/image_rect_raw` (raw Z16): 30 Hz
+  - `/depth` (NITROS metric float32): 18 Hz (NITROS convert_metric drop ~12 Hz)
+  - **`/camera/depth/points`: 15.95 Hz warmup után** (cél 25 Hz közeli, point_cloud_xyz pose_tree drop)
+  - GPU peak 4% / median 3% (cél > 5% median NEM teljesül, de NITROS aktivitás bizonyított)
+  - RAM 245 MB / 8 GB (cél < 6 GB, bőven OK)
+  - RestartCount 0 / 5 perc stress
+- 🟡 **H7 RÉSZLEGES PASS** — Jazzy `robot` container LÁTJA a `/camera/depth/points`-et (cross-distro discovery), echo --once valid header (`frame_id: camera_color_optical_frame`). Jazzy-side rate **~3 Hz** (vs Humble 16 Hz) — type-hash incompatibility drop (Humble↔Jazzy cyclonedds), de Nav2 VoxelLayer 10 Hz update-hez bőven elég. Type-hash warning ~110 / 5 perc (kozmetikai).
+- ⚪ **H8 NYITVA** — 24h burn-in (passzív, user-indítás)
+
+### A 7 H5-iteráció (failures + fixes)
+
+| # | Hiba | Fix |
+|---|---|---|
+| v1 | `docker compose build` buildkit DNS fail | `build.network: host` ([[feedback_docker_buildkit_dns]]) |
+| v2 | librmw_cyclonedds_cpp.so dlopen | `ros-humble-rmw-cyclonedds-cpp` apt csomag |
+| v3 | Standard apt librealsense2 nem detektál D435i | librealsense source build RSUSB ([[feedback_jetson_librealsense_rsusb]]) |
+| v4 | GXF_INVALID_DATA_FORMAT (NITROS) | Isaac fork `release/4.51.1-isaac` colcon overlay |
+| v5 | Isaac fork 2.57.7-tel build-elt, nem 2.55.1-tel | Source install prefix `/opt/ros/humble` + rm `librealsense2.so.2.57*` |
+| v6 | 0 frame (control_transfer EAGAIN) — stock launch is fail | **libRS 2.55.1 → 2.56.4 bump** (root cause) |
+| v7 | colcon "but not all the files it references" | **NE telepítsd `ros-humble-realsense2-camera`-t** (apt-féle 2.57.7 cmake target konfliktus) |
+
+### Eredménydatabank (2026-05-16 21:50)
+
+- Container: `ros2_realsense_isaac`, image `ros2-realsense:humble-isaac-3.2-talicska` (c5ef2530f22e)
+- libRS: 2.56.4 RSUSB
+- Isaac fork: release/4.51.1-isaac colcon overlay /opt/realsense_ws
+- CV-CUDA: 0.16.0 cuda12 aarch64 (`/opt/nvidia/cvcuda0/lib/libcvcuda.so.0`)
+- isaac-ros-examples 3.2.5-0jammy apt-csomag
+- Launch: `launch/isaac_realsense.launch.py` (3 NITROS node — realsense + convert_metric + point_cloud_xyz)
+- YAML: `realsense_params.isaac.yaml` (bind-mountolt 30 fps profile, IMU off, emitter on)
+- Topics: `/camera/depth/points` (sensor_msgs/PointCloud2 + nitros), `/image_rect`, `/depth`, `/aligned_depth_to_color/*`, `/tf_static`
 
 ---
 
