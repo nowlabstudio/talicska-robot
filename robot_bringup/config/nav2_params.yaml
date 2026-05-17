@@ -25,7 +25,7 @@ planner_server:
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: nav2_navfn_planner::NavfnPlanner
-      tolerance: 0.15
+      tolerance: 1.0
       use_astar: true
       allow_unknown: true
 
@@ -70,8 +70,8 @@ controller_server:
       use_cost_regulated_linear_velocity_scaling: false
       regulated_linear_scaling_min_radius: 0.6   # G5 (2026-05-15): volt 0.9, hosszabb ívek fordulóknál
       regulated_linear_scaling_min_speed: 0.25
-      use_rotate_to_heading: true
-      allow_reversing: false
+      use_rotate_to_heading: false      # 2026-05-17 G7: allow_reversing-gel együtt false-nak kell lennie (RPP plugin követelmény)
+      allow_reversing: true             # 2026-05-17 G7: tolatva visszafele tudja lejátszani a trajektóriát fordulás nélkül
       rotate_to_heading_min_angle: 0.785
       max_angular_accel: 3.2
       max_robot_pose_search_dist: 10.0

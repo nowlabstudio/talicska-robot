@@ -451,10 +451,9 @@ rc_teleop_node:
     max_linear_vel:    3.89
     # max_angular_vel: angular.z teljes-turn-input mellett (rad/s).
     # Fizikai max 2*max_linear_vel/wheel_sep = 11.11 rad/s (full spin-in-place).
-    # 2026-05-12 földi RC-teszt validáció: 4.44 rad/s ≈ 255°/s ad finom kontrollt
-    # 100 kg-os roveren a Basicmicro EEPROM Dec=200000 (≈9.7 rad/s² fékezés) mellett —
-    # túlfutás kanyar-stopnál konzisztens, max sebességnél is irányítható.
-    max_angular_vel:   4.44
+    # 2026-05-17 RC-test: 2.5 rad/s (~143°/s) kényelmes manuális fordulás 100kg-os roveren.
+    # (3.89-ről csökkentve — túl gyors volt joystick-control mellett.)
+    max_angular_vel:   2.5
     rc_mode_threshold: 0.5    # RC mode kanal értéke felett RC módba vált
     publish_rate_hz:   50.0   # Matches diff_drive_controller 50 Hz update rate
     # deadzone: ez alatti joystick értékeket nullának tekinti (mechanikus drift szűrés)

@@ -45,10 +45,12 @@ trajectory_node:
     waypoint_decimation: 3                        # minden N. pose-t küld waypoint-ként
     min_pose_count: 5                             # silent reject küszöb
     max_recover_distance_m: 2.0                   # closest_next_pose_search max távolság (RESTART_FROM_STUCK)
+    # POLICY 2026-05-17: slow caps + Nav2 autonóm = angular szám-értéke = linear (homogén);
+    # normál RC manuális mode = angular 2.5 rad/s (kényelmes joystick-control 100kg-os roveren)
     slow_max_linear_vel: 0.2                      # LEARN_ACTIVE alatt rc_teleop sebesség-cap (lin)
-    slow_max_angular_vel: 0.3                     # LEARN_ACTIVE alatt rc_teleop sebesség-cap (ang)
+    slow_max_angular_vel: 0.2                     # LEARN_ACTIVE alatt rc_teleop sebesség-cap (ang) — egyező a lin-nel
     normal_max_linear_vel: 3.89                   # alaphelyzet sebesség (14 km/h)
-    normal_max_angular_vel: 4.44                  # alaphelyzet forgási sebesség
+    normal_max_angular_vel: 2.5                   # normál RC manuális fordulás — kényelmes (lin-nel NEM egyező)
     slam_pause_service: "/slam_toolbox/pause_new_measurements"
     slam_clear_service: "/slam_toolbox/clear_changes"
     slam_serialize_service: "/slam_toolbox/serialize_map"

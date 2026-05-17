@@ -12,6 +12,101 @@ Hosszú távú ötletek, nem sürgős feladatok gyűjtőhelye.
 
 ## Aktív feladatok (2026-04-06 CET)
 
+### 🔴 Trajectory Replay v2 G7 — B-csoport újra-validáció (2026-05-17 felfedezve)
+
+**Állapot:** G7 A-csoport ✅ TELJES (5/5 PASS), B-csoport BLOKKOLVA két config-bug miatt — fixek megírva, B2-B9 + C+D validáció új sessionbe áthelyezve.
+
+**Az újra-validáció scope-ja:**
+- **B2-B9 (9 sor):** A B-csoport teljes újra-validációja, a két bugfix után
+- **C1-C2 (2 sor):** SLAM viselkedés — független a bugoktól, lehet egy menetben
+- **D1-D2 (2 sor):** cmd_vel cap-mérés — független a bugoktól, lehet egy menetben
+
+**Két blokkoló bug (lásd `[[session_replay_v2_g7_bugs]]` memóriában):**
+
+1. **`behavior_server` `cmd_vel` remap-hiányzik** (`robot_bringup/launch/navigation.launch.py:119-125`):
+   - A Nav2 recovery action-ök (spin, backup, drive_on_heading) cmd-jét a `/cmd_vel` topic-ra publikálják
+   - `ros2 topic info /cmd_vel`: Publisher count=4 (mind behavior_server), Subscription count=0 → DEAD-END
+   - **Fix:** `remappings=[("cmd_vel", "cmd_vel_nav2")]` a behavior_server Node-ra a `navigation.launch.py`-ben
+
+2. **`planner_server` GridBased FAIL globális costmap-en** (runtime, nem konfig-szintű):
+   - A felvétel végén álló robotttól (~2m a starting pózától) a planner NEM talál utat, még `tolerance=1.0` mellett sem
+   - Gyanú: `static_layer` (slam_toolbox map) blokkolja a start-cellát, vagy `inflation_layer` (0.25m radius) hibás akadálycellákat ad
+   - **Fix-stratégia (próbálni sorban):**
+     a. Foxglove vizualizáció: `/global_costmap/costmap` — látni melyik cella akadály
+     b. `inflation_radius: 0.25 → 0.10` (yaml + runtime)
+     c. `static_layer.enabled: false` (csak obstacle_layer alapján)
+     d. `/global_costmap/clear_around_robot` service-call B2 indítás előtt
+     e. Planner tolerance: 1.0 → 2.0 (tartalék)
+
+**Megőrizendő config-mods 2026-05-17 G7 alatt (yaml-fixek a workspace-ben):**
+- `nav2_params.yaml.planner_server.GridBased.tolerance: 1.0` (volt 0.15)
+- `nav2_params.yaml.controller_server.FollowPath.allow_reversing: true`, `use_rotate_to_heading: false`
+- `robot_params.yaml.rc_teleop_node.max_angular_vel: 2.5` (volt 4.44, ergonómiai)
+- `replay.yaml.normal_max_angular_vel: 2.5`, `slow_max_angular_vel: 0.2` (homogén angular=linear policy a slow caps-en + ergonómiai 2.5 normál RC-n)
+
+**Lépéssorrend új sessionben:**
+1. Behavior_server remap fix (`navigation.launch.py`) → `colcon build --packages-select robot_bringup` → container restart
+2. Foxglove globális costmap diagnosztika
+3. B-csoport retry (B2-B9, 9 sor) + C1-C2 + D1-D2 (4+9=13 sor)
+4. A+B 14+ PASS → G7 ✅ → tag `replay-v2-final`
+
+**Új backlog-ítemek a session konverzációból:**
+- STUCK auto-reverse-and-retry: robot tolat hátra a fordulás-kollízió miatt, majd újra PLAY pose[0]-ra
+- `ok_go_supervisor` runtime param fix: `slow_max_angular_vel`/`normal_max_angular_vel` deklarálatlan → `ros2 param set` failed
+- `/data/maps/current/` régi `.mcap` cleanup (May 12-i 67MB slam_test3)
+- **SLAM_WIPE nem teljes**: a `clear_changes` service csak az utolsó SAVE óta változásokat törli, NEM a teljes pose-graph-ot. A `/map` topic még a régi map-et publikálja → Foxglove-on látható. Fix opciók: (a) `slam_toolbox/deserialize_map` egy üres-map fájllal, (b) `slam_toolbox` node lifecycle reset (lifecycle_manager_slam shutdown → re-init), (c) `serialize_map` flush az üres állapot kényszerítésére. Test: a SLAM_WIPE után a `/map` topic friss-publikált map-je legyen üres (NEM a régi területek).
+
+**FAIL diagnosztika 2026-05-17-i log részletek a `session_replay_v2_g7_bugs.md`-ben.**
+
+---
+
+### 🟡 D435i `color/image_raw` + `depth/color/points` rate-anomália — debug-szakasz (2026-05-16 felfedezve I1 alatt)
+
+**Probléma:** Prod-config baseline mérés a D435i streamekre (subscriber-rel aktívan), 30 sec window:
+- `/camera/camera/depth/image_rect_raw` = **29.9 Hz** ✅ (kontroll)
+- `/camera/camera/infra1+2/image_rect_raw` = **30.0 Hz** ✅
+- `/camera/camera/color/image_raw` = **11.0 Hz** ❌ (várt 30, kb. 37%)
+- `/camera/camera/depth/color/points` = **13.9 Hz** ❌ (várt 30, kb. 46%), max gap **0.62 s**
+
+**Megfigyelt mintázat:**
+- A color + points-on **lazy publisher**: subscriber nélkül 0 Hz (publisher count=1, subscription count=0), subscribe-ra elindul a stream
+- Subscribe-aktívan is **stabilan alacsonyabb** mint a depth/infra — nem csak rampup
+- Std dev: color 94 ms, points 79 ms — magas jitter
+
+**Lehetséges okok (priorizálva, 2026-05-16 I2-előtti olvasásszintű elemzéssel megerősítve):**
+
+1. **🎯 Pointcloud color-binding (LEGERŐSEBB HIPOTÉZIS)** — node-log + yaml megerősíti:
+   - `realsense_params.yaml`: `pointcloud__neon_.allow_no_texture_points: false` — a pointcloud csak akkor ad ki pontot, ha **van color frame is**
+   - Color stream 11 Hz × pointcloud bind → points rate ~12-14 Hz (matching!)
+   - **Fix-jelölt:** `allow_no_texture_points: true` VAGY a color rate javítása
+2. **🎯 GPU acceleration OFF** — node-launch-arg: `accelerate_gpu_with_glsl:=false`. A pointcloud generation **CPU-only** fut, miközben a Jetson GPU 0%-on van (mért: I1+I2). 
+   - **Fix-jelölt:** `accelerate_gpu_with_glsl:=true` — várhatóan 5-10× gyorsabb pointcloud
+3. **🎯 Color default 1280×720×30 RGB8** — node-log megerősíti: `Open profile: Color(0), Format: RGB8, Width: 1280, Height: 720, FPS: 30`. Ez ~80 MB/s USB-bandwidth, magasabb mint a depth+infra 848×480. Más streamek mind 848×480, csak a color magas resolution.
+   - **Fix-jelölt:** explicit `rgb_camera.color_profile: 848x480x30` (homogén streamekkel a frame-pairing könnyebb)
+4. **USB bandwidth overhead** — `lsusb -v` szerint USB 3.2 link (5000M), kernel-szintű USB error / reset / disconnect **nincs** az utolsó 30 percben (kizárva)
+5. **`enable_sync:=false`** — frame-sync KI, color+depth nem szinkronizált → a pointcloud-bind extra várakozást okozhat
+   - **Fix-jelölt:** `enable_sync:=true` próba
+6. **librealsense FW 5.17.0.10** — release notes WebFetch nem talált 5.17.x firmware-specifikus issuelist-et (csak SDK release-eket). Nem zárható ki, de kevésbé valószínű, mert a depth+infra mind 30 Hz stabil.
+
+**Hatás a v2.1-re:**
+- A `phase_replay_v2_1.md` pipeline-ja `5 Hz`-re throttle-ol — a jelenlegi 13.9 Hz **elég**, NEM blokkoló
+- DE: a max gap 0.62 s problémát okozhat a fantom-akadály detekcióban (kép-frame elcsúszás → costmap stale)
+
+**Hatás a VIO-fázisra (v2.5/v3):**
+- Ha a color stream is kell (RGB-D VIO mód), a 11 Hz **kevés** — debug kötelező a VIO előtt
+
+**Debug-tervezet (külön szakasz, NEM része a 2 napos IMU-tesztnek):**
+1. `rgb_camera.color_profile` explicit beállítás (pl. 640×480×30)
+2. `enable_sync:=true` próba — esetleg HW-frame-sync stabilizál
+3. USB bandwidth mérés (`usbtop` vagy `iperf3` analógia USB-3 bus-ra)
+4. Stream-szelektív teszt: csak color → csak depth → csak points → együtt → kapcsolat
+5. librealsense changelog 5.17.x ismert issue keresés
+
+**Felfedezve:** 2026-05-16 I1 (`docs/phase_d435i_imu_test.md` I1 baseline szekció).
+**Indítás várt:** v2.1 előkészítés vagy VIO-fázis előtt.
+
+---
+
 ### 🟡 Trajectory Replay v2 — `trajectory_node` 4.2 állapotgép `DONE` ág kiterjesztése (2026-05-13 felfedezve G6 alatt)
 
 **Probléma:** A `trajectory_node` `DONE` phase-ben **csak `PLAY (cmd=3)`-ra reagál**, a `SAVE (cmd=1)`, `WIPE (cmd=2)`, `START_RECORDING (cmd=5)` parancsokat figyelmen kívül hagyja. Ezért egy AUTO PLAY → DONE ciklus után az `ok_go_supervisor` rotary váltása LEARN-re és új RECORDING fázis indítása **nem szinkronizálódik** a `trajectory_node`-dal — a node `DONE`-ban ragad, és a SAVE click NEM ment új yaml-t.
