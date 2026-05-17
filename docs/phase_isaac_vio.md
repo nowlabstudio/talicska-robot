@@ -1,9 +1,18 @@
 # Phase — Isaac cuVSLAM VIO PoC (D435i Stereo + IMU)
 
-**Státusz:** VÁZLAT, aktiválható a következő 24h-os session-ben (kombinált H8 + I3 + VH1)
+**Státusz:** **VH1 PARTIAL PASS + VH2 attempt — motion-validáció PARKOLVA a G7 v2 élesteszt mellé** (2026-05-17, autonóm 24h session)
 **Létrejött:** 2026-05-17
-**Előfeltétel:** [[phase_isaac_humble_heterogeneous]] H5-H7 PASS ✅ (Isaac heterogén stack operational, 30 Hz NITROS pointcloud, cross-distro DDS fix kész)
-**Lezárási kritérium:** VH1 PASS (stereo cuVSLAM drift < 1m / 10min statikus körülmények közt)
+**Frissítve:** 2026-05-17 (VH1+VH2 mérések, frame_id pitfall, Foxglove USB-stress findings)
+**Előfeltétel:** [[phase_isaac_humble_heterogeneous]] H1-H8 PASS ✅ (heterogén stack operational, 30 Hz NITROS, cross-distro DDS fix, 6.36h burn-in tiszta)
+**Lezárási kritérium:** VH1.5 motion-validáció (≥5cm pose-range 5-10cm tilt során) + drift < 1m / 10min statikus
+
+## 🅿️ PARKOLVA (mindkettő user-jelenlétet + fizikai interakciót igényel — G7 v2 élesteszt mellé)
+
+- **VH1.5** — kontrollált kamera-mozgás validáció (felemelni 5-10cm, elforgatni, pose-update mérni)
+- **VH2 motion** — stereo-inertial validáció bench HW-rotation-nal
+- **VH3 EKF integration** — bench rotation után validálható
+
+A `phase_replay_v2.md` 11.G7 szekció + ez a phase együtt fognak futni, amikor a robot fizikailag mozgatható.
 
 ---
 
@@ -99,17 +108,19 @@ A cuVSLAM `output_frame:=camera_odom` paraméter EXPLICIT-en — **NEM `map`**. 
 - VH3 cuVSLAM ↔ EKF fúzió (Opció β: BNO085 master + cuVSLAM extra)
 - VH4 Loop closure ütközés-feloldás slam_toolbox-szal (cuVSLAM `output_frame:=camera_odom`)
 
-### TODO (a 24h-os session-ben aktiválandó)
-- [ ] **VH1 — Stereo cuVSLAM PoC (IMU-mentes első)** — ~3-4 h
+### TODO
+
+- [ ] **VH1.5** — kontrollált kamera-mozgás motion-validáció (~30 perc, **PARKOLT G7 mellé** — user-jelenlét kell)
+- [ ] **VH2 motion** — stereo-inertial validáció bench HW-rotation-nal (**PARKOLT G7 mellé**)
+- [ ] **VH3** — `robot_localization` ekf.yaml integráció (Opció β); bench HW-rotation teszt (**PARKOLT G7 mellé**)
+- [ ] **VH4** — Loop closure ütközés-feloldás slam_toolbox-szal; TF-tree zártság-verify
 
 ### In Progress
-- (üres)
+- (üres — minden aktív munka parkolva)
 
-### Review
-- (üres)
-
-### Done
-- (üres)
+### Done (2026-05-17, autonóm 24h session)
+- ✅ **VH1 — Stereo cuVSLAM PoC IMU-off (PARTIAL PASS)** — pipeline operational, 30 Hz odom, vo_state SUCCESS 100% 10 perc statikus, 460MB RAM, 65% CPU; pose 0,0,0 (motion-validáció VH1.5-re parkolva)
+- ✅ **VH2 — Stereo-inertial config + frame_id alignment** — `enable_imu_fusion: True`, `base_frame: camera_infra1_optical_frame`, `imu_frame: camera_gyro_optical_frame` commit-olva (6f72233); IMU pre-integration aktív (track_time 14ms), 0 TF warning, pose statikus scene-en 0,0,0 (várhatóan ZUPT-style intentioned behavior — motion-test eldönti)
 
 ---
 
@@ -323,4 +334,77 @@ VH1 PASS után: VH2-VH4 új session-ben (a felhasználó döntésétől függőe
 
 ---
 
-**Phase státusz:** VÁZLAT, aktiválható a 24h-os autonóm session-ben VH1-ként.
+**Phase státusz:** VH1+VH2 technikailag kész (commit 6f72233), motion-validáció PARKOLVA G7 mellé.
+
+---
+
+## 9. Live results — per-gate findings (append-only)
+
+### VH1 — Stereo cuVSLAM PoC IMU-off (2026-05-17 06:55-07:10, PARTIAL PASS)
+
+**Setup:**
+- Apt install: `ros-humble-isaac-ros-visual-slam 3.2.6-0jammy` (ephemeral container-ben)
+- YAML edit: `emitter_enabled: 1→0`, `enable_infra1/2: false→true`
+- Launch edit: visual_slam_node a ComposableNodeContainer-be, `enable_imu_fusion: False`
+- Container restart (NEM force-recreate, apt install perzisztens)
+- Commit: 84b22aa (realsense-jetson main)
+
+**PASS-tábla:**
+
+| Gate | Cél | Tényleges | Verdict |
+|---|---|---|---|
+| /visual_slam/tracking/odometry rate | ≥ 20 Hz | 29.98 Hz | ✅ |
+| vo_state SUCCESS arány | OK | 1 throughout 17988 sample (100%) | ✅ |
+| Drift max statikus | < 1 m | 0.0000 m | ✅ (caveat) |
+| Container restart | 0 | 0 | ✅ |
+| Isaac RAM | < 1 GB | 460 MiB | ✅ |
+| Isaac CPU | — | 65% | ✅ |
+| Track exec time | — | 1.54 ms / frame | ✅ |
+| /infra1 / /infra2 rate | 30 Hz | 30.0 / 29.5 Hz | ✅ |
+| /camera/depth/points (emitter OFF) | 30 Hz | 30 Hz (passive stereo OK) | ✅ |
+
+**Verdict:** PARTIAL PASS — pipeline operational, motion-validáció **deferred VH1.5-re**.
+
+### VH2 — Stereo-inertial config + frame_id debug (2026-05-17 07:15-07:30)
+
+**3 iteráció — frame_id mismatch debugging:**
+
+| # | imu_frame param | base_frame param | Eredmény |
+|---|---|---|---|
+| 1 | `camera_gyro_optical_frame` | `camera_link` | pose 0,0,0; nincs explicit warning (de TF camera_link nem létezik silent) |
+| 2 | `camera_imu_optical_frame` | `camera_infra1_optical_frame` | pose 0,0,0; **explicit warning-flood**: "Invalid frame ID 'camera_imu_optical_frame'" |
+| 3 (commit 6f72233) | `camera_gyro_optical_frame` | `camera_infra1_optical_frame` | pose 0,0,0; **0 TF warning**, IMU pre-integration aktív (track_time 14ms vs 1.54ms VH1 baseline) |
+
+**Root cause finding:**
+
+A realsense fork `unite_imu_method: 2` egy **fiktív `camera_imu_optical_frame`-mel** publishálja a `/imu` topic-ot, ami **NEM létezik** a TF-fában. A realsense csak `camera_gyro_optical_frame` és `camera_accel_optical_frame`-eket publish-ol mint static TF. Lásd [[feedback_cuvslam_frame_id_pitfall]].
+
+**Mellék-finding — Foxglove cross-distro USB stress:**
+
+A VH2 első iterációja alatt **libusb control_transfer EAGAIN** warning-flood (a H5 root cause-ának visszatérése) + frame_delta 133-181 ms spike-ok. **Foxglove zárása után 0 libusb error** 1 perc alatt. A Foxglove cross-distro subscribe a high-bandwidth IR streamre USB-bandwidth pressure-t okoz. Lásd [[feedback_foxglove_cross_distro_usb_stress]].
+
+**Final state (commit 6f72233):**
+- vo_state SUCCESS 100% (905 sample / 30s)
+- track_execution_time mean 14ms (IMU pre-integration confirmed aktív)
+- 0 TF warning
+- Pose statikus scene-en továbbra is 0,0,0
+
+**Hipotézis:** ZUPT-style intentioned static-rejection — a textúra-szegény bench (passive IR, max-min pixel ~30) + sub-threshold gyro noise (0.001-0.007 rad/s) miatt cuVSLAM explicit identity-t ad ki. **Csak motion-teszttel verifikálható**, ami VH1.5-be parkolt.
+
+### VH1.5 — Motion-validáció (PARKOLT G7 mellé)
+
+**Cél:** eldönteni hogy a 0,0,0 pose ZUPT-static-rejection (intentioned) VAGY silent fall-back (broken).
+
+**Lépések (~30 perc, bench-en, user-felügyelt, kerékfelemelés nem kell):**
+
+1. Foxglove subscribe `/visual_slam/tracking/odometry` panel VAGY terminál: `ros2 topic echo /visual_slam/tracking/odometry --field pose.pose.position`
+2. **Manuálisan megfogod a kamerát**, felemeled 5-10 cm-re, 3-5 mp megtartod
+3. Várt: pose mérhetően változik (>5 cm range)
+4. Visszateszed, kamera nyugton — pose visszaáll 0,0,0 közelébe vagy a drift miatt máshova
+
+**PASS-küszöb:**
+- ✅ Tilt során pose-range >5cm a 3 tengelyen összesen → cuVSLAM követi a mozgást
+- ✅ Visszatételkor pose-velocity < 0.05 m/s → tracking stabil
+- ❌ Ha tilt-re sem mozdul → debug-szakasz (rectified_images flag, NITROS subscription chain, cuVSLAM internal feature-count)
+
+**Output: VH1 FULL PASS vagy debug-továbbmenetel.**
