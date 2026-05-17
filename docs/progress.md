@@ -6,6 +6,31 @@
 
 ---
 
+## 2026-05-17 — Isaac H8 burn-in + I3/I4 IMU + VH1/VH2 cuVSLAM (24h autonomous session)
+
+**Eredmény:** A teljes Isaac heterogén stack H1-H8 PASS (6.36h reduced burn-in tiszta), a D435i IMU hardware-sync precíz (gyro median jitter **1.24 ms**, cuVSLAM <5ms küszöb alatt 4× margin), a cuVSLAM stereo-inertial pipeline szoftveresen kész. **Motion-validáció PARKOLT G7 v2 élesteszt mellé** — egy session-ben mehet.
+
+**Fő referencia:** `docs/state_snapshot_2026_05_17.md` (teljes stack capability + 6-hetes történet + 14 következő lépés priorit szerint). `docs/phase_isaac_vio.md` 9. szekció (VH1+VH2 Live Results + VH1.5 motion-test protokoll).
+
+**Új facts + memóriák:**
+- D435i IMU "fagyaszt" fact véglegesen kivezetve (I3+I4 PASS Isaac stackben is)
+- BNO085 marad EKF master (long-tail jitter p95 312ms, de wheel + magnetometer + 100 Hz elég Nav2-höz)
+- D435i = VIO master (hardware-sync 130× szigorúbb p95-ön)
+- Új memóriák: `feedback_cuvslam_frame_id_pitfall`, `feedback_foxglove_cross_distro_usb_stress`, `feedback_cuvslam_static_pose`, `plan_navigation_roadmap`
+
+**Commits:**
+- `84b22aa` (realsense-jetson main) — H8+I3+I4+VH1 yaml/launch/backup
+- `6f72233` (realsense-jetson main) — VH2 stereo-inertial config + frame_id fix
+- `d1e4be2` (talicska-robot feat/isaac-humble-migration) — phase_isaac_vio.md VH1+VH2 Live Results
+
+**Mit ad hozzá a stack-hez (motion-test PASS után):**
+- VIO mint odom1 az EKF-be (Opció β: BNO085 master + cuVSLAM extra)
+- Loop closure backup a slam_toolbox 2D-mellett (3D vizuális)
+- Felkészülés Follow Me-re és autonomous exploration-re
+- Robot top safe speed várt megduplázás 0.5-0.7 → 1.0-1.2 m/s amint a v2.1 VoxelLayer is kész
+
+---
+
 ## 2026-05-13 ESTE — Trajectory Replay v1 ✅ KÉSZ (G1-G7 + G6 mind PASS)
 
 **Eredmény:** A Trajectory Replay v1 feature **kódbázis + élesteszt-szinten kész**. Egyetlen napos szakasz, **7 gate** ✅ DONE (G1 stack-validation → G2 safety semantika → G3 profil-merge → G4 twist_mux → G5 modulszintű integráció → G7 post-rebuild revalidation → G6 élesteszt).
